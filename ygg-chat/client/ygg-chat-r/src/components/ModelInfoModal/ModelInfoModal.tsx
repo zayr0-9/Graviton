@@ -78,19 +78,19 @@ export const ModelInfoModal: React.FC<ModelInfoModalProps> = ({ model, provider,
       ],
     },
     {
-      title: 'Pricing (per 1M tokens) in credits',
+      title: 'Pricing (USD per 1M tokens)',
       items: [
         {
           label: 'Prompt Cost',
-          value: (model.promptCost * 100000000).toFixed(2) + ' | ' + model.promptCost.toFixed(8) + ' / token',
+          value: (model.promptCost * 1_000_000).toFixed(2) + ' | ' + model.promptCost.toFixed(8) + ' / token',
         },
         {
           label: 'Completion Cost',
-          value: (model.completionCost * 100000000).toFixed(2) + ' | ' + model.completionCost.toFixed(8) + ' / token',
+          value: (model.completionCost * 1_000_000).toFixed(2) + ' | ' + model.completionCost.toFixed(8) + ' / token',
         },
         {
           label: 'Request Cost',
-          value: model.requestCost * 100000000,
+          value: model.requestCost,
         },
       ],
     },

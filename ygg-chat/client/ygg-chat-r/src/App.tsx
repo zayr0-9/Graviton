@@ -1,9 +1,8 @@
 import { OPEN_HOST_FILE } from './helpers/hostFileNavigation'
-import { Analytics } from '@vercel/analytics/react'
 import { AnimatePresence } from 'framer-motion'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from './components/ThemeManager/themeConfig'
-import { BrowserRouter, HashRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom'
+import { HashRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import './App.css'
 import { HtmlIframeRegistryProvider, useHtmlIframeRegistry } from './components/HtmlIframeRegistry/HtmlIframeRegistry'
 import { GlobalNotifications } from './components/GlobalNotifications/GlobalNotifications'
@@ -15,23 +14,7 @@ import ProtectedRoute from './components/ProtectedRoute'
 import { TitleBar } from './components/TitleBar/TitleBar'
 import { UpdateModal } from './components/UpdateModal/UpdateModal'
 import VideoBackground from './components/VideoBackground'
-import {
-  BlogPage,
-  Chat,
-  ConversationPage,
-  FAQPage,
-  HomepageRedirect,
-  LandingPage,
-  LoggingPage,
-  Login,
-  PaymentPage,
-  PaymentPlans,
-  PrivacyPolicy,
-  RecentLineages,
-  RefundPolicy,
-  Settings,
-  TermsOfService,
-} from './containers'
+import { Chat, ConversationPage, HomepageRedirect, LoggingPage, Login, RecentLineages, Settings } from './containers'
 import RightBar from './containers/rightBar'
 import SideBar from './containers/sideBar'
 import { selectCcCwd, selectCurrentConversationId } from './features/chats'
@@ -44,39 +27,14 @@ import IdeContextBootstrap from './IdeContextBootstrap'
 import { KeyboardProvider } from './keyboard/KeyboardProvider'
 import { NavigationCommands } from './keyboard/NavigationCommands'
 
-// Use HashRouter for Electron (file:// protocol requires hash-based routing)
-// Use BrowserRouter for web (standard HTML5 history API)
 import { isHostClient } from './platform/clientCapabilities'
 
-const Router = isHostClient ? HashRouter : BrowserRouter
+// Hash routing everywhere: Electron loads from file:// and the shared UI is served by the host.
+const Router = HashRouter
 
-const TOOL_VIEWER_HIDDEN_ROUTES = new Set([
-  '/',
-  '/landingpage',
-  '/login',
-  '/faq',
-  '/paymentplan',
-  '/payment',
-  '/terms',
-  '/refund-policy',
-  '/privacy',
-  '/blog',
-])
+const TOOL_VIEWER_HIDDEN_ROUTES = new Set(['/', '/login'])
 
-const RIGHTBAR_HIDDEN_ROUTES = new Set([
-  '/',
-  '/landingpage',
-  '/login',
-  '/faq',
-  '/paymentplan',
-  '/blog',
-  '/settings',
-  '/terms',
-  '/refund-policy',
-  '/privacy',
-  '/infrastructure',
-  '/logging',
-])
+const RIGHTBAR_HIDDEN_ROUTES = new Set(['/', '/login', '/settings', '/infrastructure', '/logging'])
 
 const CHAT_ROUTE_PATTERN = /^\/chat\/[^/]+\/[^/]+(?:\/lineage\/[^/]+)?$/
 const RECENT_LINEAGES_ROUTE_PATTERN = /^\/projects\/[^/]+\/lineages\/recent$/
@@ -224,21 +182,7 @@ function AnimatedRoutes() {
     <AnimatePresence mode='popLayout'>
       <Routes location={location} key={getRouteAnimationKey(location.pathname)}>
         {/* Public route */}
-        <Route path='/landingpage' element={<LandingPage />} />
-        {/* Public route */}
-        <Route path='/faq' element={<FAQPage />} />
-        {/* Public route */}
         <Route path='/login' element={<Login />} />
-        {/* Public route */}
-        <Route path='/paymentplan' element={<PaymentPlans />} />
-        {/* Public route */}
-        <Route path='/terms' element={<TermsOfService />} />
-        {/* Public route */}
-        <Route path='/refund-policy' element={<RefundPolicy />} />
-        {/* Public route */}
-        <Route path='/privacy' element={<PrivacyPolicy />} />
-        {/* Public route */}
-        <Route path='/blog' element={<BlogPage />} />
         {/* Protected routes */}
         <Route
           path='/conversationPage'
@@ -248,7 +192,7 @@ function AnimatedRoutes() {
             </ProtectedRoute>
           }
         />
-        <Route path='/' element={isHostClient ? <Navigate to='/login' replace /> : <LandingPage />} />
+        <Route path='/' element={<Navigate to='/homepage' replace />} />
         <Route
           path='/homepage'
           element={
@@ -290,14 +234,6 @@ function AnimatedRoutes() {
           element={
             <ProtectedRoute>
               <Settings />
-            </ProtectedRoute>
-          }
-        />
-        <Route
-          path='/payment'
-          element={
-            <ProtectedRoute>
-              <PaymentPage />
             </ProtectedRoute>
           }
         />
@@ -398,7 +334,6 @@ function App() {
           </NavigationCommands>
         </KeyboardProvider>
       </Router>
-      {!isHostClient && <Analytics />}
     </>
   )
 }

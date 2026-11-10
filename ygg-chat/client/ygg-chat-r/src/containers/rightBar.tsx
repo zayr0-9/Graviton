@@ -217,7 +217,6 @@ const RightBar: React.FC<RightBarProps> = ({
   const dispatch = useDispatch()
   const queryClient = useQueryClient()
   const { userId } = useAuth()
-  const isWeb = import.meta.env.VITE_ENVIRONMENT === 'web'
   const terminalClient = getTerminalClient()
 
   // File browser state
@@ -355,7 +354,7 @@ const RightBar: React.FC<RightBarProps> = ({
   }, [openFileEditors])
 
   useEffect(() => {
-    if (isWeb || !isLspStatusPanelOpen || !activeFileEditor?.path) {
+    if (!isLspStatusPanelOpen || !activeFileEditor?.path) {
       if (!isLspStatusPanelOpen) {
         setLspStatusLoading(false)
         setLspStatusError(null)
@@ -401,7 +400,7 @@ const RightBar: React.FC<RightBarProps> = ({
       cancelled = true
       window.clearInterval(intervalId)
     }
-  }, [activeFileEditor?.path, isLspStatusPanelOpen, isWeb, lspStatusRefreshNonce])
+  }, [activeFileEditor?.path, isLspStatusPanelOpen, lspStatusRefreshNonce])
 
   useEffect(() => {
     // Subscribe once Monaco is loaded (by the first opened file); never load it just for this.
@@ -657,7 +656,7 @@ const RightBar: React.FC<RightBarProps> = ({
   const [activeTab, setActiveTab] = useState<'git' | 'note' | 'terminal'>('note')
   const [gitRepositoryPath, setGitRepositoryPath] = useState<string | null>(null)
   const gitBasePath = gitRepositoryPath || currentPath || ccCwd || null
-  const isGitTabAvailable = !isWeb
+  const isGitTabAvailable = true
   const [selectedGitDiff, setSelectedGitDiff] = useState<{
     relativePath: string
     staged: boolean
@@ -1023,7 +1022,7 @@ const RightBar: React.FC<RightBarProps> = ({
   }, [])
 
   useEffect(() => {
-    if (isWeb || !terminalClient) return
+    if (!terminalClient) return
 
     const unsubscribeData = terminalClient.onData(payload => {
       if (!payload?.sessionId || typeof payload.data !== 'string') return
@@ -1063,7 +1062,7 @@ const RightBar: React.FC<RightBarProps> = ({
       unsubscribeData()
       unsubscribeExit()
     }
-  }, [appendTerminalHistory, isWeb])
+  }, [appendTerminalHistory])
 
   useEffect(() => {
     const persistedSessions = openTerminalTabs.map(tab => ({
@@ -1175,7 +1174,7 @@ const RightBar: React.FC<RightBarProps> = ({
 
   const openFileEditor = useCallback(
     async (filePath: string, options?: { relativePath?: string | null }) => {
-      if (isWeb || !filePath) return
+      if (!filePath) return
 
       const relativePath = deriveEditorRelativePath(filePath, options?.relativePath)
       const existingEditor = openFileEditors.find(editor => editor.path === filePath)
@@ -1247,7 +1246,7 @@ const RightBar: React.FC<RightBarProps> = ({
         }))
       }
     },
-    [deriveEditorRelativePath, dispatch, isWeb, openFileEditors, updateOpenFileEditor]
+    [deriveEditorRelativePath, dispatch, openFileEditors, updateOpenFileEditor]
   )
 
   const handleFileEditorChange = useCallback(
@@ -1284,7 +1283,6 @@ const RightBar: React.FC<RightBarProps> = ({
 
   useEffect(() => {
     const handleOpenWorkspaceMutationDiffs = (event: CustomEvent<OpenWorkspaceMutationDiffsDetail>) => {
-      if (isWeb) return
 
       const filePaths = Array.isArray(event.detail?.filePaths)
         ? event.detail.filePaths.map(path => String(path || '').trim()).filter(Boolean)
@@ -1313,11 +1311,11 @@ const RightBar: React.FC<RightBarProps> = ({
     return () => {
       window.removeEventListener(OPEN_WORKSPACE_MUTATION_DIFFS_EVENT, handleOpenWorkspaceMutationDiffs as EventListener)
     }
-  }, [dispatch, isWeb])
+  }, [dispatch])
 
   useEffect(() => {
     if (!pendingWorkspaceMutationDiffRequest) return
-    if (isWeb || isCollapsed || activeTab !== 'git') return
+    if (isCollapsed || activeTab !== 'git') return
 
     let cancelled = false
     const request = pendingWorkspaceMutationDiffRequest
@@ -1372,7 +1370,7 @@ const RightBar: React.FC<RightBarProps> = ({
     return () => {
       cancelled = true
     }
-  }, [activeTab, isCollapsed, isWeb, pendingWorkspaceMutationDiffRequest])
+  }, [activeTab, isCollapsed, pendingWorkspaceMutationDiffRequest])
 
   const getTerminalLaunchCwd = useCallback(() => (currentPath || ccCwd || '').trim(), [ccCwd, currentPath])
 
@@ -1406,7 +1404,6 @@ const RightBar: React.FC<RightBarProps> = ({
         if (url.protocol === 'https:' || url.protocol === 'http:') window.open(url.href, '_blank', 'noopener,noreferrer')
         return
       }
-      if (isWeb) return
 
       const browserId = createBrowserStateId()
       const nextTab: BrowserDockState = {
@@ -1424,7 +1421,7 @@ const RightBar: React.FC<RightBarProps> = ({
       dispatch(uiActions.rightBarExpanded())
       setActiveDockTabId(getBrowserDockTabId(browserId))
     },
-    [createBrowserStateId, dispatch, getBrowserDisplayLabel, isWeb]
+    [createBrowserStateId, dispatch, getBrowserDisplayLabel]
   )
 
   const launchTerminalDock = useCallback(
@@ -1437,7 +1434,7 @@ const RightBar: React.FC<RightBarProps> = ({
         title?: string
       }
     ) => {
-      if (isWeb || !terminalClient) return
+      if (!terminalClient) return
 
       const cwd = (targetCwd || currentPath || ccCwd || '').trim()
       const terminalId = options?.terminalId || createTerminalStateId()
@@ -1566,11 +1563,11 @@ const RightBar: React.FC<RightBarProps> = ({
         )
       }
     },
-    [ccCwd, createTerminalStateId, currentPath, dispatch, getFileName, isWeb, openTerminalTabs]
+    [ccCwd, createTerminalStateId, currentPath, dispatch, getFileName, openTerminalTabs]
   )
 
   useEffect(() => {
-    if (isWeb || !terminalPreferences.restoreSessionsOnLaunch || !terminalClient) return
+    if (!terminalPreferences.restoreSessionsOnLaunch || !terminalClient) return
 
     for (const tab of openTerminalTabs) {
       if (!initialTerminalDockState.sessions.some(session => session.id === tab.id)) continue
@@ -1586,7 +1583,6 @@ const RightBar: React.FC<RightBarProps> = ({
   }, [
     activeDockTabId,
     initialTerminalDockState.sessions,
-    isWeb,
     launchTerminalDock,
     openTerminalTabs,
     terminalPreferences,
@@ -1599,24 +1595,24 @@ const RightBar: React.FC<RightBarProps> = ({
 
   const handleTerminalInput = useCallback(
     (data: string) => {
-      if (isWeb || !activeTerminalDock?.sessionId || !terminalClient) return
+      if (!activeTerminalDock?.sessionId || !terminalClient) return
       const sessionId = activeTerminalDock.sessionId
       void terminalClient.write(sessionId, data).then(result => {
         if (!result?.success) reportTerminalDeliveryFailure(sessionId, new Error(result?.error || 'Terminal write failed'))
       }).catch(error => reportTerminalDeliveryFailure(sessionId, error))
     },
-    [activeTerminalDock?.sessionId, isWeb]
+    [activeTerminalDock?.sessionId]
   )
 
   const handleTerminalResize = useCallback(
     (cols: number, rows: number) => {
-      if (isWeb || !activeTerminalDock?.sessionId || !terminalClient) return
+      if (!activeTerminalDock?.sessionId || !terminalClient) return
       const sessionId = activeTerminalDock.sessionId
       void terminalClient.resize(sessionId, cols, rows).then(result => {
         if (!result?.success) reportTerminalDeliveryFailure(sessionId, new Error(result?.error || 'Terminal resize failed'))
       }).catch(error => reportTerminalDeliveryFailure(sessionId, error))
     },
-    [activeTerminalDock?.sessionId, isWeb]
+    [activeTerminalDock?.sessionId]
   )
 
   const clearTerminalDockBuffer = useCallback((terminalId: string) => {
@@ -1785,7 +1781,6 @@ const RightBar: React.FC<RightBarProps> = ({
 
   const saveFileEditor = useCallback(async () => {
     if (
-      isWeb ||
       !activeFileEditor ||
       activeFileEditor.loading ||
       activeFileEditor.saving ||
@@ -1824,14 +1819,14 @@ const RightBar: React.FC<RightBarProps> = ({
         error: error instanceof Error ? error.message : 'Failed to save file',
       }))
     }
-  }, [activeFileEditor, isWeb, updateOpenFileEditor])
+  }, [activeFileEditor, updateOpenFileEditor])
 
   const refreshLspStatusPanel = useCallback(() => {
     setLspStatusRefreshNonce(prev => prev + 1)
   }, [])
 
   const restartActiveLspSession = useCallback(async () => {
-    if (isWeb || !lspResolveState?.serverId || !lspResolveState.workspacePath) return
+    if (!lspResolveState?.serverId || !lspResolveState.workspacePath) return
 
     setLspStatusLoading(true)
     setLspStatusError(null)
@@ -1846,10 +1841,10 @@ const RightBar: React.FC<RightBarProps> = ({
       setLspStatusError(error instanceof Error ? error.message : 'Failed to restart LSP session.')
       setLspStatusLoading(false)
     }
-  }, [isWeb, lspResolveState?.serverId, lspResolveState?.workspacePath, refreshLspStatusPanel])
+  }, [lspResolveState?.serverId, lspResolveState?.workspacePath, refreshLspStatusPanel])
 
   const shutdownActiveLspSession = useCallback(async () => {
-    if (isWeb || !lspResolveState?.serverId || !lspResolveState.workspacePath) return
+    if (!lspResolveState?.serverId || !lspResolveState.workspacePath) return
 
     setLspStatusLoading(true)
     setLspStatusError(null)
@@ -1864,7 +1859,7 @@ const RightBar: React.FC<RightBarProps> = ({
       setLspStatusError(error instanceof Error ? error.message : 'Failed to stop LSP session.')
       setLspStatusLoading(false)
     }
-  }, [isWeb, lspResolveState?.serverId, lspResolveState?.workspacePath, refreshLspStatusPanel])
+  }, [lspResolveState?.serverId, lspResolveState?.workspacePath, refreshLspStatusPanel])
 
   const activeLspStatusTone = !lspResolveState?.available
     ? 'border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-200'
@@ -2237,7 +2232,7 @@ const RightBar: React.FC<RightBarProps> = ({
       <span className='leading-none rounded-[18px] py-2 px-3.5 bg-neutral-50 font-semibold text-[22px] text-neutral-600 dark:text-neutral-200 acrylic-ultra-light-nb-3'>
         Dock
       </span>
-      <Button variant='outline2' size='small' onClick={() => openBrowserDock()} disabled={isWeb}>
+      <Button variant='outline2' size='small' onClick={() => openBrowserDock()}>
         New browser
       </Button>
     </div>
@@ -2246,7 +2241,7 @@ const RightBar: React.FC<RightBarProps> = ({
   return (
     <aside
       ref={asideRef}
-      className={`relative z-10 ${isWeb ? 'h-[100vh]' : 'h-full'} flex flex-col ${isEditorDockOpen ? 'overflow-visible' : 'overflow-hidden'} bg-transparent dark:bg-transparent flex-shrink-0 ${isResizingSidebar ? 'transition-none' : 'transition-[width,flex-basis] duration-[260ms] [transition-timing-function:cubic-bezier(0.22,1,0.36,1)]'} ${className}`}
+      className={`relative z-10 h-full flex flex-col ${isEditorDockOpen ? 'overflow-visible' : 'overflow-hidden'} bg-transparent dark:bg-transparent flex-shrink-0 ${isResizingSidebar ? 'transition-none' : 'transition-[width,flex-basis] duration-[260ms] [transition-timing-function:cubic-bezier(0.22,1,0.36,1)]'} ${className}`}
       style={{
         width: `${asideWidthPx}px`,
         maxWidth: '100%',
@@ -2319,7 +2314,7 @@ const RightBar: React.FC<RightBarProps> = ({
                       Dock
                     </span>
                   ) : null}
-                  <Button variant='outline2' size='small' onClick={() => openBrowserDock()} disabled={isWeb}>
+                  <Button variant='outline2' size='small' onClick={() => openBrowserDock()}>
                     New browser
                   </Button>
                 </div>
@@ -2520,7 +2515,7 @@ const RightBar: React.FC<RightBarProps> = ({
                     <i className='bx bx-folder-plus text-sm leading-none text-neutral-600 dark:text-neutral-100' />
                   </button>
                 )}
-                {!isWeb && (currentPath || ccCwd) && (
+                {(currentPath || ccCwd) && (
                   <button
                     onClick={() => {
                       openNewTerminalDock(currentPath || ccCwd)
@@ -2632,7 +2627,7 @@ const RightBar: React.FC<RightBarProps> = ({
                         )}
                       </div>
                     </div>
-                    {!file.isDirectory && !isWeb && (
+                    {!file.isDirectory && (
                       <button
                         onClick={e => {
                           e.stopPropagation()
@@ -2669,7 +2664,7 @@ const RightBar: React.FC<RightBarProps> = ({
           {/* Tab buttons - only show when expanded */}
           {shouldRenderExpandedContent && (
             <div className='flex min-w-0 gap-2 overflow-hidden px-3 py-2 flex-shrink-0'>
-              {!isWeb && (
+              {(
                 <button
                   onClick={() => setActiveTab('git')}
                   className={`flex-1 px-2 py-2 text-sm font-medium rounded-xl transition-[background-color,color,transform] duration-150 ${
@@ -2691,7 +2686,7 @@ const RightBar: React.FC<RightBarProps> = ({
               >
                 Note
               </button>
-              {!isWeb && (
+              {(
                 <button
                   onClick={() => setActiveTab('terminal')}
                   className={`flex-1 px-2 py-2 text-sm font-medium rounded-xl transition-[background-color,color,transform] duration-150 ${
@@ -2738,7 +2733,7 @@ const RightBar: React.FC<RightBarProps> = ({
                 >
                   <i className='bx bx-note text-lg' aria-hidden='true'></i>
                 </Button>
-                {!isWeb && (currentPath || ccCwd) && (
+                {(currentPath || ccCwd) && (
                   <Button
                     variant='outline2'
                     size='circle'
@@ -3045,7 +3040,7 @@ const RightBar: React.FC<RightBarProps> = ({
                                           >
                                             <i className='bx bx-git-compare text-[12px]' aria-hidden='true' />
                                           </button>
-                                          {!file.isDeleted && !isWeb && (
+                                          {!file.isDeleted && (
                                             <button
                                               type='button'
                                               onClick={() =>
@@ -3140,7 +3135,7 @@ const RightBar: React.FC<RightBarProps> = ({
                           >
                             <i className='bx bx-git-compare text-sm' aria-hidden='true' />
                           </button>
-                          {!selectedGitStatusFile.isDeleted && !isWeb && (
+                          {!selectedGitStatusFile.isDeleted && (
                             <button
                               type='button'
                               onClick={() =>
@@ -3319,7 +3314,7 @@ const RightBar: React.FC<RightBarProps> = ({
                     <button
                       type='button'
                       onClick={() => openNewTerminalDock()}
-                      disabled={isWeb || !(currentPath || ccCwd)}
+                      disabled={!(currentPath || ccCwd)}
                       className='text-[11px] font-medium text-neutral-500 transition-colors hover:text-neutral-800 disabled:opacity-50 dark:text-neutral-400 dark:hover:text-neutral-200'
                     >
                       New
@@ -3330,7 +3325,7 @@ const RightBar: React.FC<RightBarProps> = ({
                     {/* <button
                       type='button'
                       onClick={() => openNewTerminalDock(currentPath || ccCwd)}
-                      disabled={isWeb || !(currentPath || ccCwd)}
+                      disabled={!(currentPath || ccCwd)}
                       className='text-[11px] font-medium text-neutral-500 transition-colors hover:text-neutral-800 disabled:opacity-50 dark:text-neutral-400 dark:hover:text-neutral-200'
                     >
                       Current path

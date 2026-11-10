@@ -36,7 +36,6 @@ import {
 } from '../hooks/useQueries'
 import { localApi } from '../utils/api'
 import { parseId } from '../utils/helpers'
-import { DownloadAppModal } from './downloadApp'
 import EditProject from './EditProject'
 
 const ConversationPage: React.FC = () => {
@@ -187,7 +186,6 @@ const ConversationPage: React.FC = () => {
   const [newConvTitle, setNewConvTitle] = useState('')
   const [storageMode, setStorageMode] = useState<StorageMode>(isCommunityMode ? 'local' : 'cloud')
   // Download app modal state
-  const [showDownloadModal, setShowDownloadModal] = useState(false)
   // Move project modal state
   const [showMoveModal, setShowMoveModal] = useState(false)
   const [conversationToMove, setConversationToMove] = useState<Conversation | null>(null)
@@ -507,7 +505,6 @@ const ConversationPage: React.FC = () => {
                 </Button>
               )} */}
             </div>
-            {/* Download App Button - only visible in Electron when VITE_ENVIRONMENT is 'web' */}
 
             {/* {selectedProject?.context && (
               <p className='text-sm text-gray-600 ygg-line-clamp-6 dark:text-gray-300 ml-12'>
@@ -522,22 +519,6 @@ const ConversationPage: React.FC = () => {
               Chats
             </h2>
             <div className='flex items-center gap-2 my-1 p-0 lg:p-1 '>
-              {import.meta.env.VITE_ENVIRONMENT === 'web' && (
-                <Button
-                  variant='acrylic'
-                  size='medium'
-                  onClick={() => setShowDownloadModal(true)}
-                  rounded='full'
-                  title='Download App'
-                  aria-label='Download App'
-                  className='mr-2'
-                >
-                  <i
-                    className='bx bx-download text-lg sm:text-lg 2xl:text-2xl mx-0.5 my-1.5 transition-all hover:scale-96 duration-200'
-                    aria-hidden='true'
-                  ></i>
-                </Button>
-              )}
               <Button
                 variant='acrylic'
                 size='large'
@@ -1002,7 +983,6 @@ const ConversationPage: React.FC = () => {
       <LowBar conversationId={null} mode='list' notes={researchNotes} isLoadingNotes={notesLoading} />
 
       {/* Download App Modal */}
-      <DownloadAppModal isOpen={showDownloadModal} onClose={() => setShowDownloadModal(false)} />
     </div>
   )
 }

@@ -6,7 +6,6 @@ import { normalizeChatErrorEnvelope } from '../../../../../shared/chatErrors'
 import providersList from '../../../../../shared/providers.json'
 import { ConversationId, MessageId } from '../../../../../shared/types'
 import type { HeadlessBackgroundTask } from '../../../../../shared/headlessApi'
-import { isCommunityMode } from '../../config/runtimeMode'
 import { type ClaudeToolApproval, loadClaudeToolApprovalDefault, loadClaudeUltracode, loadDefaultToolAutoApprove, saveClaudeUltracode } from '../../helpers/toolApprovalSettingsStorage'
 import { parseId } from '../../utils/helpers'
 import { isStreamContinuationTail } from './streamContinuationTail'
@@ -53,8 +52,6 @@ const cloneTools = (tools: ToolDefinition[]): ToolDefinition[] =>
     },
   }))
 
-import { isHostClient } from '../../platform/clientCapabilities'
-const isElectronEnvironment = isHostClient
 
 type ImageDraftsAppendedPayload = ImageDraft[] | { drafts: ImageDraft[]; target?: ImageDraftTarget | null }
 type ImageDraftRemovedPayload = number | { index: number; target?: ImageDraftTarget | null }
@@ -93,8 +90,6 @@ const mergeArtifacts = (existing: string[] | undefined, incoming: string[]): str
   return merged
 }
 
-const webHiddenProviders = new Set(['OpenAI (ChatGPT)', 'LM Studio', 'Z.AI / GLM', 'Amazon Bedrock', 'OpenRouter BYOK', 'Claude Code'])
-const communityAllowedProviders = new Set(['LM Studio', 'OpenAI (ChatGPT)', 'OpenRouter BYOK', 'Z.AI / GLM', 'Amazon Bedrock', 'Claude Code'])
 
 // Unset leaves claudeToolAutoApprove undefined so Claude follows the shared default.
 const claudeToolApprovalState = (value: ClaudeToolApproval | null) => ({
@@ -102,16 +97,8 @@ const claudeToolApprovalState = (value: ClaudeToolApproval | null) => ({
   claudeToolAutoApprove: value === null ? undefined : value === 'allow_all',
 })
 
-const getAvailableProviders = () => {
-  const allProviders = Object.values(providersList.providers)
-  if (isElectronEnvironment) {
-    if (isCommunityMode) {
-      return allProviders.filter(provider => communityAllowedProviders.has(provider.name))
-    }
-    return allProviders
-  }
-  return allProviders.filter(provider => !webHiddenProviders.has(provider.name))
-}
+// Every listed provider is local or the user's own account, so all are selectable (Q6).
+const getAvailableProviders = () => Object.values(providersList.providers)
 
 const getInitialProvider = (providers: Array<{ name: string }>) => {
   const stored = localStorage.getItem('currentProvider')

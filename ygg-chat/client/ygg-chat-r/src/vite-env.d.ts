@@ -3,8 +3,6 @@
 // Build-time constants defined in vite.config.ts
 declare const __BUILD_TARGET__: 'electron' | 'local' | 'standalone' | 'browser-client'
 declare const __IS_ELECTRON__: boolean
-declare const __IS_WEB__: boolean
-declare const __IS_LOCAL__: boolean
 declare const __YGG_CODEX_DEV_LOGS__: boolean
 
 interface ImportMetaEnv {

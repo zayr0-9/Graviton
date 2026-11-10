@@ -28,7 +28,7 @@ if (!process.versions.electron) {
       window.fixture=[];window.addEventListener('message',event=>{if(event.data?.type?.startsWith('fixture'))window.fixture.push(event.data)});
       setHostAppContextProvider(()=>({rootPath:'/fixture',mode:'plan'}));
       attachMessageBridge(()=>document.getElementById('app'),()=>null,()=>({toolName:'fixture'}));`, resolveDir: path.join(__dirname, '..'), loader: 'ts' },
-      bundle: true, write: false, platform: 'browser', format: 'iife', define: { 'import.meta.env': '{}', __IS_ELECTRON__: 'false', __IS_WEB__: 'false', __IS_LOCAL__: 'false' }, plugins: [{ name: 'fixture', setup(builder) {
+      bundle: true, write: false, platform: 'browser', format: 'iife', define: { 'import.meta.env': '{}', __IS_ELECTRON__: 'false' }, plugins: [{ name: 'fixture', setup(builder) {
         builder.onLoad({ filter: /platform[/\\]clientCapabilities\.ts$/ }, () => ({ contents: 'export const isBrowserClient=true;export const isHostClient=true;export const isNativeShell=false' }))
         builder.onLoad({ filter: /utils[/\\]api\.ts$/ }, () => ({ contents: `export const buildLocalApiUrl=async p=>'/api'+p;export const localApi={};export const createStreamingRequest=()=>{throw Error('not expected')}` }))
       } }] })

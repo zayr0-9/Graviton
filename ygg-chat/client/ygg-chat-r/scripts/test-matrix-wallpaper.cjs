@@ -44,7 +44,7 @@ if (!process.versions.electron) {
         render(); window.render=render; window.setMode=persistBackgroundMode;
       `, resolveDir: root, loader: 'tsx' },
       bundle: true, write: false, platform: 'browser', format: 'iife', jsx: 'automatic', loader: { '.css': 'empty' },
-      define: { 'process.env.NODE_ENV': '"development"', 'import.meta.env': JSON.stringify({ BASE_URL: localBase }), __IS_ELECTRON__: 'true', __IS_LOCAL__: 'false', __IS_WEB__: 'false', __BUILD_TARGET__: '"electron"' },
+      define: { 'process.env.NODE_ENV': '"development"', 'import.meta.env': JSON.stringify({ BASE_URL: localBase }), __IS_ELECTRON__: 'true', __BUILD_TARGET__: '"electron"' },
       plugins: [{ name: 'isolated-theme', setup(builder) {
         builder.onLoad({ filter: /[/\\]ThemeManager[/\\]themeConfig\.ts$/ }, () => ({ contents: 'export const useCustomChatTheme=()=>({enabled:false,theme:{colors:{appBackgroundColor:{light:"#fff",dark:"#000"}}}}); export const useHtmlDarkMode=()=>false; export const getThemeModeColor=(p,d)=>p[d?"dark":"light"];' }))
       } }],

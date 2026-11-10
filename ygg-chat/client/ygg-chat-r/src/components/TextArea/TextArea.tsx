@@ -140,7 +140,6 @@ export const TextArea: React.FC<TextAreaProps> = ({
     (typeof chatCwd === 'string' && chatCwd.trim()) ||
     null
   const shouldUseLocalFileFallback =
-    import.meta.env.VITE_ENVIRONMENT !== 'web' &&
     !!effectiveFallbackFileSearchRoot &&
     (!extensionConnected || mentionableFiles.length === 0)
   const { requestFileContent } = useIdeContext()

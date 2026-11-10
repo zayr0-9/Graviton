@@ -60,7 +60,6 @@ export async function fetchLmStudioModels(baseUrl = getLmStudioBaseUrl()): Promi
     defaultTopP: null,
     defaultFrequencyPenalty: null,
     topProviderContextLength: null,
-    isFreeTier: true,
   }))
 }
 

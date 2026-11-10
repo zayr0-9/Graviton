@@ -40,6 +40,6 @@ export function getOpenAIChatGPTModels() {
       inputTokenLimit: contextLength, outputTokenLimit: maxCompletionTokens, promptCost: 0, completionCost: 0, requestCost: 0,
       thinking: true, supportsImages: true, supportsWebSearch: false, supportsStructuredOutputs: true,
       inputModalities: ['text', 'image'], outputModalities: ['text'], defaultTemperature: null, defaultTopP: null,
-      defaultFrequencyPenalty: null, topProviderContextLength: null, isFreeTier: false }
+      defaultFrequencyPenalty: null, topProviderContextLength: null }
   })
 }

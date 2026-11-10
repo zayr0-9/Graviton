@@ -30,7 +30,6 @@ export const ToolsSettings: React.FC = () => {
   const wslDistro = localStorage.getItem('ygg_wsl_distro') || ''
   const sectionThemeColors = useSettingsSectionThemeColors()
 
-  const isWebMode = import.meta.env.VITE_ENVIRONMENT === 'web'
 
   useEffect(() => {
     localStorage.setItem('ygg_wsl_distro', wslDistro)
@@ -39,19 +38,17 @@ export const ToolsSettings: React.FC = () => {
   useEffect(() => {
     // Tools are now initialized at store creation (store.ts)
     // Only fetch the custom tools directory path for the UI
-    if (!isWebMode) {
-      localApi
-        .get<{ success?: boolean; directory?: string }>('/custom-tools/directory')
-        .then(data => {
-          if (data.success && data.directory) {
-            setCustomToolsPath(data.directory)
-          }
-        })
-        .catch(err => {
-          console.error('[ToolsSettings] Failed to fetch custom tools directory:', err)
-        })
-    }
-  }, [isWebMode])
+    localApi
+      .get<{ success?: boolean; directory?: string }>('/custom-tools/directory')
+      .then(data => {
+        if (data.success && data.directory) {
+          setCustomToolsPath(data.directory)
+        }
+      })
+      .catch(err => {
+        console.error('[ToolsSettings] Failed to fetch custom tools directory:', err)
+      })
+  }, [])
 
   const handleToggle = async (toolName: string, currentEnabled: boolean) => {
     setUpdatingTools(prev => new Set(prev).add(toolName))
@@ -142,7 +139,7 @@ export const ToolsSettings: React.FC = () => {
     <div className='space-y-4 pb-6'>
 
       {/* WSL Configuration
-      {!isWebMode && (
+      {(
         <div className='pt-2 px-1'>
           <TextField
             label='WSL Distribution (Optional)'
@@ -155,7 +152,7 @@ export const ToolsSettings: React.FC = () => {
       )} */}
 
       {/* Keep disabled tools visible so they can always be re-enabled. */}
-      {!isWebMode && (
+      {(
         <div>
           <div className='space-y-3'>
             {/* Tool List Header */}

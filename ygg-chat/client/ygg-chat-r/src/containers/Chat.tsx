@@ -256,7 +256,6 @@ import {
   useSelectedModel,
   useSelectModel,
 } from '../hooks/useQueries'
-import { useSubscriptionStatus } from '../hooks/useSubscriptionStatus'
 import { useConversationSnapshotCoordinator } from '../hooks/useConversationSnapshotCoordinator'
 import { CHAT_INSERT_FILE_PATH_EVENT, type ChatInsertFilePathDetail } from '../helpers/chatInputBridge'
 import { dispatchOpenWorkspaceMutationDiffs } from '../helpers/workspaceMutationDiffBridge'
@@ -1057,22 +1056,6 @@ function Chat() {
     }
   }, [focusLocalInput, updateLocalInput])
 
-  // Subscription status for free/paid detection
-  const { isFreeUser } = useSubscriptionStatus(userId)
-
-  const modelSelectFooter = isFreeUser ? (
-    <div className='space-y-2'>
-      {/* <div className='text-sm text-neutral-700 dark:text-neutral-200'>Subscribe now for access to all 400+ models</div> */}
-      <Button
-        variant='outline2'
-        size='small'
-        className='w-full text-[13px]  text-neutral-500 dark:text-neutral-200'
-        onClick={() => navigate('/payment')}
-      >
-        Subscribe now for access to all 400+ models
-      </Button>
-    </div>
-  ) : null
 
 
   // Working directory input for local agent flows
@@ -1559,7 +1542,6 @@ function Chat() {
   // Dynamic input area height for adaptive streaming/message padding
   const [inputAreaHeight, setInputAreaHeight] = useState(170)
   const [containerHeight, setContainerHeight] = useState(1100)
-  // Credits refresh loading state
   // Todo list collapsed state
   const [todoListCollapsed, setTodoListCollapsed] = useState(false)
   const [workspaceMutationsCollapsed, setWorkspaceMutationsCollapsed] = useState(false)
@@ -6479,9 +6461,6 @@ function Chat() {
   // and reducers update currentPath appropriately. This avoids race conditions and
   // incorrect parent linking that could break currentPath after branching.
 
-  // Get current credits from user state (in USD cents)
-  const current_credits = currentUser?.cached_current_credits ?? 0
-
   // Calculate context usage from displayed messages (current branch).
   // Includes project/conversation prompts + message content + nested content_blocks/tool_calls.
   const tokenUsage = useMemo(() => calculateBranchContextUsage({
@@ -6502,42 +6481,12 @@ function Chat() {
     providers.currentProvider,
   ])
 
-  // Calculate total context budget (single combined budget for easier interpretation).
+  // Context budget is the model context window (no Graviton credits: users pay their providers).
   const tokenLimits = useMemo(() => {
-    const usdValue = current_credits / 100 // Convert credits to USD
-
-    // Model context limit.
     const totalContextLimit =
       resolveProviderContextLength(providers.currentProvider, selectedModel?.contextLength, providerSettings) || 128_000
-
-    // Cost is per 1K tokens: cost = (tokens / 1000) * costPer1K
-    // So: tokens = (usd * 1000) / costPer1K
-    const promptCostPer1K = selectedModel?.promptCost ?? 0
-    const completionCostPer1K = selectedModel?.completionCost ?? 0
-
-    // Calculate credit-based limits.
-    let creditInputLimit = Infinity
-    let creditOutputLimit = Infinity
-
-    if (promptCostPer1K > 0) {
-      creditInputLimit = Math.floor((usdValue * 1000) / promptCostPer1K)
-    }
-    if (completionCostPer1K > 0) {
-      creditOutputLimit = Math.floor((usdValue * 1000) / completionCostPer1K)
-    }
-
-    // Single budget: constrained by model context and available credit limits.
-    const totalBudget = Math.max(0, Math.min(totalContextLimit, creditInputLimit, creditOutputLimit))
-
-    return { totalBudget, totalContextLimit }
-  }, [
-    selectedModel?.promptCost,
-    selectedModel?.completionCost,
-    selectedModel?.contextLength,
-    providers.currentProvider,
-    providerSettings.openAiChatGptMaxContextTokens,
-    current_credits,
-  ])
+    return { totalBudget: totalContextLimit, totalContextLimit }
+  }, [selectedModel?.contextLength, providers.currentProvider, providerSettings.openAiChatGptMaxContextTokens])
 
   // Calculate progress percentages.
   const totalContextProgress =
@@ -7657,7 +7606,6 @@ function Chat() {
                       blur='low'
                       className='w-[120px] min-w-[42px] max-w-[170px] shrink transition-[width,transform] duration-150 hover:w-[170px] focus-within:w-[170px] data-[open=true]:w-[170px] active:scale-99 [&>button]:!rounded-full'
                       showFilters={true}
-                      footerContent={modelSelectFooter}
                     />
                   </div>
                   {/*
@@ -7704,10 +7652,6 @@ function Chat() {
                             <div className='mt-1 flex items-center gap-2 text-xs'>
                               <span className='text-neutral-700 dark:text-neutral-300'>Model window:</span>
                               <span>{tokenLimits.totalContextLimit.toLocaleString()}</span>
-                            </div>
-                            <div className='mt-1 flex items-center gap-2 text-xs'>
-                              <span className='text-neutral-900 dark:text-neutral-200'>Credits:</span>
-                              <span>{(current_credits * 100).toFixed(3)}</span>
                             </div>
                           </>
                         )}

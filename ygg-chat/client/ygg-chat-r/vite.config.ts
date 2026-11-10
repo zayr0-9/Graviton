@@ -95,8 +95,6 @@ export default defineConfig(() => {
       ...(isBrowserClient ? { 'import.meta.env.VITE_API_URL': JSON.stringify('/api') } : {}),
       __BUILD_TARGET__: JSON.stringify(buildTarget),
       __IS_ELECTRON__: JSON.stringify(isElectron),
-      __IS_WEB__: JSON.stringify(false),
-      __IS_LOCAL__: JSON.stringify(false),
       __YGG_CODEX_DEV_LOGS__: JSON.stringify(/^(1|true|yes|on)$/i.test(process.env.YGG_CODEX_DEV_LOGS || '')),
     },
 
@@ -117,10 +115,6 @@ export default defineConfig(() => {
         output: {
           // Code-split by feature for tree-shaking
           manualChunks: (id, graph) => {
-            // Separate Stripe code (tree-shaken in electron build)
-            if (id.includes('@stripe/stripe-js') || id.includes('stripe')) {
-              return 'stripe'
-            }
             if (!id.includes('node_modules')) {
               return undefined
             }
@@ -130,9 +124,7 @@ export default defineConfig(() => {
             if (!isStaticallyReachable(id, graph)) {
               return undefined
             }
-            // Don't separate Supabase - it causes circular dependency issues
-            // when loaded via file:// protocol in Electron
-            // Vendor chunk for common deps (includes Supabase)
+            // Vendor chunk for common deps (one chunk avoids circular-import issues under file://)
             return 'vendor'
           },
         },

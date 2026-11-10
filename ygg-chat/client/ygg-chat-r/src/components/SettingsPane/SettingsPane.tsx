@@ -267,7 +267,6 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
     ? getThemeModeColor(customTheme.colors.settingsPaneBodyBg, isDarkMode)
     : undefined
   const savedCustomThemesColors = useSettingsSectionThemeColors()
-  const isWebMode = import.meta.env.VITE_ENVIRONMENT === 'web'
 
   const [attachmentTarget, setAttachmentTarget] = useState<'system' | 'context'>('system')
   const attachmentInputRef = useRef<HTMLInputElement>(null)
@@ -653,10 +652,10 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
   }, [])
 
   useEffect(() => {
-    if (hooksExpanded && !isWebMode) {
+    if (hooksExpanded) {
       fetchManagedHooks()
     }
-  }, [hooksExpanded, fetchManagedHooks, isWebMode])
+  }, [hooksExpanded, fetchManagedHooks])
 
   // An already-open section observes host changes without installation/reload effects.
   useEffect(() => {
@@ -2642,7 +2641,7 @@ ${block}`
               </div>
             </div>
 
-            {!isWebMode && (
+            {(
               <div
                 className='overflow-hidden rounded-2xl bg-neutral-50/70 dark:bg-neutral-900/10'
                 style={settingsSectionCardStyle}

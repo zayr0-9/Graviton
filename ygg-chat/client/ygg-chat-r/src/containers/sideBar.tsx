@@ -15,7 +15,6 @@ import {
   PanelLeftOpen,
   Settings,
   Sun,
-  User,
   X,
 } from 'lucide-react'
 import { createPortal } from 'react-dom'
@@ -786,7 +785,6 @@ const SideBar: React.FC<SideBarProps> = ({
   const location = useLocation()
   const { theme: customTheme, enabled: customThemeEnabled } = useCustomChatTheme()
   const isDarkMode = useHtmlDarkMode()
-  const isWeb = import.meta.env.VITE_ENVIRONMENT === 'web'
   const isElectronMode =
     import.meta.env.VITE_ENVIRONMENT === 'electron' ||
     (typeof process !== 'undefined' && process.env?.VITE_ENVIRONMENT === 'electron')
@@ -823,7 +821,6 @@ const SideBar: React.FC<SideBarProps> = ({
   const projectData = projects.length > 0 ? projects : fetchedProjects
 
   const visibleProjects = useMemo(() => {
-    if (isWeb) return projectData
 
     let localProjectsShown = 0
     return projectData.filter(project => {
@@ -831,7 +828,7 @@ const SideBar: React.FC<SideBarProps> = ({
       localProjectsShown += 1
       return localProjectsShown <= LOCAL_MODE_RECENT_PROJECTS_LIMIT
     })
-  }, [projectData, isWeb])
+  }, [projectData])
 
   // Default expand only the latest visible project. Keep user-expanded projects if still visible.
   useEffect(() => {
@@ -1638,14 +1635,6 @@ const SideBar: React.FC<SideBarProps> = ({
         ariaLabel: 'Open logging',
       },
       {
-        key: 'profile',
-        label: 'Profile',
-        icon: <User className='h-5 w-5' strokeWidth={2.25} aria-hidden='true' />,
-        onClick: () => navigate('/payment'),
-        title: 'Open profile',
-        ariaLabel: 'Open profile',
-      },
-      {
         key: 'settings',
         label: 'Settings',
         icon: <Settings className='h-5 w-5' strokeWidth={2.25} aria-hidden='true' />,
@@ -2010,7 +1999,7 @@ const SideBar: React.FC<SideBarProps> = ({
     <>
       <aside
         ref={sidebarRef}
-        className={`sidebar-rail relative z-10 ${horizontalRail ? 'flex h-14 w-full flex-row items-center overflow-x-auto pr-28' : `${isWeb ? 'h-[100vh]' : 'h-full'} flex w-12 flex-col overflow-hidden`} flex-shrink-0 bg-transparent dark:bg-transparent ${className}`}
+        className={`sidebar-rail relative z-10 ${horizontalRail ? 'flex h-14 w-full flex-row items-center overflow-x-auto pr-28' : `h-full flex w-12 flex-col overflow-hidden`} flex-shrink-0 bg-transparent dark:bg-transparent ${className}`}
         aria-label='Sidebar rail'
       >
         <div className={`flex shrink-0 items-center justify-center ${horizontalRail ? 'px-1' : 'py-3 my-1 md:py-2.5 lg:p-1 xl:p-1 2xl:px-1 2xl:py-2'}`}>

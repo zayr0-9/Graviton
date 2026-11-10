@@ -95,7 +95,7 @@ export function registerOpenAiOAuthRoutes(app: Express): void {
       id, name: id, displayName: id, description: id, contextLength, maxCompletionTokens: 128000,
       version: 'chatgpt', inputTokenLimit: contextLength, outputTokenLimit: 128000,
       promptCost: 0, completionCost: 0, requestCost: 0, thinking: true, supportsImages: true, supportsWebSearch: false,
-      supportsStructuredOutputs: true, inputModalities: ['text', 'image'], outputModalities: ['text'], isFreeTier: false,
+      supportsStructuredOutputs: true, inputModalities: ['text', 'image'], outputModalities: ['text'],
     }))
     res.json({ models })
   })

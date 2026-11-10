@@ -189,7 +189,6 @@ export const InputTextArea: React.FC<TextAreaProps> = ({
     null
   const shouldUseLocalFileFallback =
     enableFileMentions &&
-    import.meta.env.VITE_ENVIRONMENT !== 'web' &&
     !!effectiveFallbackFileSearchRoot &&
     (!extensionConnected || mentionableFiles.length === 0)
   const { requestFileContent } = useIdeContext()

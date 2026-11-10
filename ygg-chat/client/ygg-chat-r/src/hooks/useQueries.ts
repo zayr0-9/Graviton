@@ -690,7 +690,7 @@ export function useModels(provider: string | null) {
       if (isClaudeProvider(provider)) {
         const models = CLAUDE_MODELS.map(name => ({ ...stringToModel(name), contextLength: CLAUDE_CONTEXT_LENGTH,
           inputTokenLimit: CLAUDE_CONTEXT_LENGTH, outputTokenLimit: 32000, thinking: true }))
-        return { models, default: models[0], selected: models.find(model => model.name === getStoredSelectedModel()?.name) ?? models[0], userIsFreeTier: false }
+        return { models, default: models[0], selected: models.find(model => model.name === getStoredSelectedModel()?.name) ?? models[0] }
       }
 
       if (normalizedSlug === 'lmstudio') {
@@ -706,7 +706,6 @@ export function useModels(provider: string | null) {
           models,
           default: defaultModel,
           selected: selectedModel,
-          userIsFreeTier: false,
         }
       }
 
@@ -724,7 +723,6 @@ export function useModels(provider: string | null) {
           models,
           default: defaultModel,
           selected: selectedModel,
-          userIsFreeTier: false,
         }
       }
 
@@ -746,7 +744,6 @@ export function useModels(provider: string | null) {
           models,
           default: defaultModel,
           selected: selectedModel,
-          userIsFreeTier: false,
         }
       }
 
@@ -779,7 +776,6 @@ export function useModels(provider: string | null) {
           models,
           default: defaultModel,
           selected: selectedModel,
-          userIsFreeTier: false,
         }
       }
 
@@ -795,7 +791,6 @@ export function useModels(provider: string | null) {
           models,
           default: defaultModel,
           selected: selectedModel,
-          userIsFreeTier: false,
         }
       }
 

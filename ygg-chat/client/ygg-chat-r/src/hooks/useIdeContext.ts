@@ -128,9 +128,7 @@ export function useIdeContext(): UseIdeContextReturn {
           })
         )
       } else {
-        if (import.meta.env.VITE_ENVIRONMENT !== 'web') {
-          console.warn('⚠️ Cannot request file content: WebSocket not connected')
-        }
+        console.warn('⚠️ Cannot request file content: WebSocket not connected')
         resolve(null)
       }
     })
@@ -151,11 +149,6 @@ export function useIdeContext(): UseIdeContextReturn {
   const connect = async () => {
     // Prevent multiple simultaneous connection attempts
     if (isConnecting || (globalWebSocket && globalWebSocket.readyState === WebSocket.CONNECTING)) {
-      return
-    }
-
-    // Disable IDE context in web environment
-    if (import.meta.env.VITE_ENVIRONMENT === 'web') {
       return
     }
 

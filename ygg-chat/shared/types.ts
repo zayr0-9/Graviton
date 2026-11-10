@@ -151,7 +151,6 @@ export interface BaseModel {
   topProviderContextLength: number | null
 
   // Free tier eligibility (for UI to disable selection for free users)
-  isFreeTier?: boolean
 }
 
 export interface Project {

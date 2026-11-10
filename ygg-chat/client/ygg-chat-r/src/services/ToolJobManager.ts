@@ -541,8 +541,8 @@ class ToolJobManager {
 // Export singleton instance
 export const toolJobManager = ToolJobManager.getInstance()
 
-// Auto-initialize when imported (but don't block) - skip in web mode (electron only)
-if (typeof window !== 'undefined' && import.meta.env.VITE_ENVIRONMENT !== 'web') {
+// Auto-initialize when imported (but don't block).
+if (typeof window !== 'undefined') {
   // Delay initialization slightly to let the app settle
   setTimeout(() => {
     toolJobManager.initialize().catch(console.error)

@@ -538,6 +538,7 @@ Where an answer contradicts a checklist row, the answer wins. Tick the row and a
 - 2026-11-10 · P2c · (this commit) · `/api/gw/*` is now a local-only facade (D3): `gatewayRoutes.ts` rewritten (no Railway/mirror/auth deps, no merge helpers or `toCloud*` normalizers, `?storageMode=` ignored, `/paginated` = real offset paging via `/api/app/conversations?limit&cursor` (Q25), `GET /attachments/:id` 404s when missing, `POST /api/gw/attachments` deleted with the renderer `uploadAttachment` thunk). Deleted `cloudMirrorService.ts`, `CloudMirrorSink` + `providerMessageId`, `shared/runStatisticsMetadata.ts`, `config/gatewayFlags.ts` (`resumableRuns` inlined as `true`) and `server/proxyGateway.ts` (Q22) with their tests. Still mounted by design until P5: `cloudProxyRoutes` (+ `railwayClient`, `appAuthTokenManager`). Not yet done from the P2 list: `/api/sync/*` (P5 with `localMirror`), Q7 unknown-provider rejection. Gate: tsc + 3 typechecks, build:server; renderer 1399, server 282, headless 1026.
 - 2026-11-10 · P2 · (this commit) · Q7 done: `resolveProviderRoute` (strict) + `UnknownProviderError`; the headless request guard returns `400 unknown provider "x"` (code `unknown_provider`) for chat/subagent/ephemeral/openai routes, and `ProviderRouter.generate` throws for unknown names; `normalizeProviderRoute` stays lenient for classification. Saved provider values are display names that all resolve (legacy `OpenRouter` via the D7 alias), so no load-time migration was needed. P2 checklist ticked except the rows kept for P5: `cloudProxyRoutes` (+test), `railwayClient`, `appAuthTokenManager`, `syncStorageRoutes`, `api.ts` `API_BASE`/`createStreamingRequest` (now caller-less), `chatActions` `getRemoteApiBase`. Headless 1027.
 - 2026-11-10 · P7 · (this commit) · App store decoupled (D15): first-party catalog fetched by plain URL from constant `APP_STORE_PUBLIC_BASE` (no supabase-js, no env; `TODO(app-store-catalog)` for Q10), community browse always via `localApi /app-store/community` for host clients (Railway `REMOTE_API_BASE` untouched), install/uninstall/restart/validate gated on `isNativeShell`. Upload hidden (`COMMUNITY_UPLOAD_ENABLED = false`) and `POST /api/app-store/community/upload` returns 501 without touching the `app` slot (`TODO(app-store-upload)`); `validate-upload` kept (Q11). `/login?required=cloud` link and `isCommunityMode` removed from the store; `publicApiCall`/`PUBLIC_API_ENDPOINT_PREFIXES` deleted. Renderer 1399, server 282.
+- 2026-11-10 · P6 · (this commit) · Web product deleted: Landing/FAQ/Blog/Terms/Privacy/Refund/PaymentPlans/PaymentPage/downloadApp pages, `components/landing/*`, `public/blogs/*`, `public/landingtest.html`, `lib/payments/*`, `pricingData.ts`, `useSubscriptionStatus`, `vercel.json`, Stripe helpers in `api.ts`, `@vercel/analytics` usage, stripe manualChunk, `__IS_WEB__`/`__IS_LOCAL__` defines (vite, vitest, smoke scripts, typings). App: HashRouter everywhere, `/` → `/homepage` (D11; `/login` stays until P3), `/payment` and marketing routes gone. Every `'web'` branch collapsed (rightBar, sideBar, SettingsPane, ToolsSettings, useToolJobs, ToolJobManager, useIdeContext, TextArea, InputTextArea, useQueries). Subscribe footer, credits budget/Credits line, sidebar Profile item (Q29), free-tier model gating and `Model.isFreeTier` removed; pricing shown as USD per 1M tokens; disabled-option tooltip is 'Unavailable'. All providers selectable (`getAvailableProviders`). Deferred to P5: `userSystemPrompts` slice. Gate: tsc, renderer 1399, server 282, build:electron:parallel, selection + browser-client smokes pass.
 <!-- Per-location checklist follows (grouped by phase). -->
 
 ## Location checklist
@@ -1323,163 +1324,163 @@ _858 locations across 347 files. Generated from scout + verify + gap passes; tic
 
 ### P6 — Web target, marketing pages, payments, analytics (92)
 
-- [ ] `ygg-chat/client/ygg-chat-r/public/blogs/000-seed-planted.html`
-  - [ ] `blog post` — **delete-file** _(low)_: Only BlogPage loads it; delete it.
-- [ ] `ygg-chat/client/ygg-chat-r/public/blogs/001-recursive-loop.html`
-  - [ ] `blog post` — **delete-file** _(low)_: Only BlogPage loads it; delete it.
-- [ ] `ygg-chat/client/ygg-chat-r/public/blogs/index.json`
-  - [ ] `marketing blog index` — **delete-file** _(low)_: Delete public/blogs/ (index.json, 000-seed-planted.html, 001-recursive-loop.html) with BlogPage.tsx; Vite copies public/ into dist-electron so they currently ship in the app.
-- [ ] `ygg-chat/client/ygg-chat-r/public/landingtest.html`
-  - [ ] `landing prototype` — **delete-file** _(low)_: Unreferenced marketing prototype (Tailwind CDN plus Google Fonts) shipped in public/; delete it.
-- [ ] `ygg-chat/client/ygg-chat-r/server/routes/managedOAuthRoutes.ts`
-  - [ ] L98 `isFreeTier: false (Codex model list)` — **delete-code** _(low)_: Remove isFreeTier from the Codex model descriptor. Codex OAuth routes are otherwise kept unchanged (codex slot only).
-- [ ] `ygg-chat/client/ygg-chat-r/src/App.tsx`
-  - [ ] L2,401 `Analytics (@vercel/analytics/react)` — **delete-code** _(low)_: Delete `import { Analytics } from '@vercel/analytics/react'` and the `{!isHostClient && <Analytics />}` render. Nothing else in src uses Vercel analytics.
-  - [ ] L18-34,53-79 `containers import; TOOL_VIEWER_HIDDEN_ROUTES; RIGHTBAR_HIDDEN_ROUTES` — **delete-code** _(low)_: Drop BlogPage, FAQPage, LandingPage, PaymentPage, PaymentPlans, PrivacyPolicy, RefundPolicy, TermsOfService from the import. Remove '/landingpage','/faq','/paymentplan','/payment','/terms','/refund-policy','/privacy','/blog' from both hidden-route Sets ('/login' goes with P3).
-  - [ ] L51,53-79 `Router/TOOL_VIEWER_HIDDEN_ROUTES/RIGHTBAR_HIDDEN_ROUTES` — **delete-code** _(low)_: Remove '/login', '/landingpage', '/faq', '/paymentplan', '/payment', '/terms', '/refund-policy', '/privacy' and '/blog' from the hidden-route sets. Once the web target is gone isHostClient is always true, so use HashRouter only.
-  - [ ] L226-241,296-303 `AnimatedRoutes public marketing routes + /payment route` — **delete-code** _(medium)_: Delete the Route elements for /landingpage, /faq, /paymentplan, /terms, /refund-policy, /privacy, /blog and the ProtectedRoute /payment. The '*' fallback already sends stale links to '/'. — ⚠ sideBar/Homepage 'Profile', Chat/QuickInput 'Subscribe' buttons, the 'upgrade' error actions and FreeGenerationsModal navigate here. Remove them in the same change, or they fall through to '/'.
-  - [ ] L251 `Route path='/'` — **rewrite** _(medium)_: Replace `isHostClient ? <Navigate to='/login'/> : <LandingPage/>` with `<Navigate to='/homepage' replace />` for every target. Coordinate with P3, which removes /login. — ⚠ Non-host builds (BUILD_TARGET=local without VITE_ENVIRONMENT) render LandingPage today. scripts/test-browser-client.cjs expects the #/login route.
-- [ ] `ygg-chat/client/ygg-chat-r/src/components/ExpandedModelView/ExpandedModelView.tsx`
-  - [ ] L124-140,284,318-320 `BASE_PROMPT_COST / formatPricing credits multipliers; lock icon` — **rewrite** _(low)_: Pricing shown as multipliers of a credits base cost (1.25 credits/1M). Replace with USD per 1M tokens (promptCost*1e6) or drop the column; lock icon only fires via free-tier disabledOptions which becomes always empty.
-- [ ] `ygg-chat/client/ygg-chat-r/src/components/FreeGenerationsModal/FreeGenerationsModal.tsx`
-  - [ ] `FreeGenerationsModal` — **delete-file** _(low)_: Delete the unused free-generations modal (its upgrade button navigates to /payment) and its export at src/components/index.ts:10.
-- [ ] `ygg-chat/client/ygg-chat-r/src/components/FreeGenerationsModal/index.ts`
-  - [ ] `FreeGenerationsModal barrel` — **delete-file** _(low)_: Delete with FreeGenerationsModal.tsx (no consumers).
-- [ ] `ygg-chat/client/ygg-chat-r/src/components/GlobalNotifications/GlobalNotifications.tsx`
-  - [ ] L48,98-100 `isActionable 'upgrade' + navigate('/paymentplan')` — **rewrite** _(low)_: Remove the 'upgrade' kind from the actionable set and its case (navigate('/paymentplan')), in step with removing the 'upgrade' kind from shared/chatErrors.ts.
-- [ ] `ygg-chat/client/ygg-chat-r/src/components/InputTextArea/InputTextArea.tsx`
-  - [ ] L190-194 `shouldUseLocalFileFallback` — **collapse-to-local** _(low)_: Drop the `import.meta.env.VITE_ENVIRONMENT !== 'web' &&` term.
-  - [ ] L192 `shouldUseLocalFileFallback VITE_ENVIRONMENT !== 'web'` — **collapse-to-local** _(low)_: Drop the `import.meta.env.VITE_ENVIRONMENT !== 'web' &&` term.
-- [ ] `ygg-chat/client/ygg-chat-r/src/components/ModelInfoModal/ModelInfoModal.tsx`
-  - [ ] L79-90 `'Pricing (per 1M tokens) in credits'` — **rewrite** _(low)_: Retitle to 'Pricing (USD per 1M tokens)' and compute promptCost/completionCost * 1e6 instead of * 1e8 (credit scaling).
-- [ ] `ygg-chat/client/ygg-chat-r/src/components/ModelSelectControl/ModelSelectControl.tsx`
-  - [ ] L40-54 `userIsFreeTier / disabledModelOptions / free-first sorting` — **delete-code** _(low)_: Remove the userIsFreeTier logic. disabledModelOptions becomes [] and sortedFilteredModels becomes filteredModels.
-- [ ] `ygg-chat/client/ygg-chat-r/src/components/QuickInput/QuickInput.tsx`
-  - [ ] L13,24-31,45-73,167-173,369 `useSubscriptionStatus/isFreeUser/hasCredits/showSecretMode; Secret Mode (ZDR) footer; Subscribe button` — **rewrite** _(medium)_: Remove useSubscriptionStatus, the cached_current_credits gate and the 'Subscribe now' navigate('/payment') branch. Secret Mode calls cloudApi /models/openrouter/zdr (useToggleSecretMode), so delete it too. footerContent becomes undefined. — ⚠ QuickInput renders in LowBar on the local homepage. Keep model select and send working. Coupled with the cloud-openrouter area removing useToggleSecretMode.
-  - [ ] L24-31,54 `isFreeUser/cached_current_credits/showSecretMode` — **collapse-to-local** _(low)_: Remove useSubscriptionStatus and the credits check. Set showSecretMode=true. Also review currentProvider default 'OpenRouter' (line 37).
-- [ ] `ygg-chat/client/ygg-chat-r/src/components/Select/Select.tsx`
-  - [ ] L404-407 `title 'Upgrade to access this model' + LockKeyhole` — **rewrite** _(low)_: Disabled-option tooltip hardcodes free-tier upsell. Replace with a caller-supplied disabledReason prop (or generic 'Unavailable'). Chat.tsx L7685 disables 'Claude Code' with this same wrong tooltip.
-- [ ] `ygg-chat/client/ygg-chat-r/src/components/SettingsPane/SettingsPane.tsx`
-  - [ ] L270,655-659,2645 `isWebMode (managed hooks fetch + Hooks section)` — **collapse-to-local** _(medium)_: Delete `const isWebMode`. The effect becomes `if (hooksExpanded) fetchManagedHooks()`, with isWebMode dropped from deps. Unwrap the `{!isWebMode && (...)}` at 2645 so the Hooks section always renders. — ⚠ The Hooks settings section is a kept local feature. Unwrap it carefully.
-  - [ ] L270,656,659,2645 `isWebMode` — **collapse-to-local** _(low)_: Delete `const isWebMode`. Drop `&& !isWebMode` at 656 and the dep at 659. Unwrap `{!isWebMode && (...)}` at 2645 (managed hooks section always shown).
-- [ ] `ygg-chat/client/ygg-chat-r/src/components/SettingsPane/ToolsSettings.test.tsx`
-  - [ ] L30 `vi.stubEnv('VITE_ENVIRONMENT','electron')` — **update-test** _(low)_: Remove the VITE_ENVIRONMENT stub (and unstubAllEnvs if unused) once ToolsSettings no longer reads it. Keep the source-group assertions.
-- [ ] `ygg-chat/client/ygg-chat-r/src/components/SettingsPane/ToolsSettings.tsx`
-  - [ ] L33,39-54,145-155,158 `isWebMode` — **collapse-to-local** _(medium)_: Delete `const isWebMode`. Fetch /custom-tools/directory unconditionally (deps []). Unwrap `{!isWebMode && (` at 158 and delete the commented WSL block at 145-155. — ⚠ The custom tools list is a kept feature. If unwrapping goes wrong, the tool list disappears.
-  - [ ] L33,42,54,145,158 `isWebMode` — **collapse-to-local** _(low)_: Delete `const isWebMode`. Fetch /custom-tools/directory unconditionally (42). Empty the deps (54). Unwrap the `!isWebMode &&` blocks at 145 and 158.
-- [ ] `ygg-chat/client/ygg-chat-r/src/components/TextArea/TextArea.tsx`
-  - [ ] L142-145 `shouldUseLocalFileFallback` — **collapse-to-local** _(low)_: Drop the `import.meta.env.VITE_ENVIRONMENT !== 'web' &&` term.
-  - [ ] L143 `shouldUseLocalFileFallback VITE_ENVIRONMENT !== 'web'` — **collapse-to-local** _(low)_: Drop the `import.meta.env.VITE_ENVIRONMENT !== 'web' &&` term.
-- [ ] `ygg-chat/client/ygg-chat-r/src/components/index.ts`
-  - [ ] L10 `export { FreeGenerationsModal }` — **delete-code** _(low)_: Remove the FreeGenerationsModal re-export.
-- [ ] `ygg-chat/client/ygg-chat-r/src/components/landing/AsciiBackground.tsx`
-  - [ ] `AsciiBackground` — **delete-file** _(low)_: Landing-only component; delete it with LandingPage.
-- [ ] `ygg-chat/client/ygg-chat-r/src/components/landing/ChatDemo.tsx`
-  - [ ] `ChatDemo` — **delete-file** _(low)_: Landing-only component; delete it.
-- [ ] `ygg-chat/client/ygg-chat-r/src/components/landing/Comparison.tsx`
-  - [ ] `Comparison` — **delete-file** _(low)_: Landing-only component; delete it.
-- [ ] `ygg-chat/client/ygg-chat-r/src/components/landing/Economics.tsx`
-  - [ ] `Economics` — **delete-file** _(low)_: Landing-only pricing/economics section; delete it.
-- [ ] `ygg-chat/client/ygg-chat-r/src/components/landing/Features.tsx`
-  - [ ] `Features` — **delete-file** _(low)_: Landing-only component; delete it.
-- [ ] `ygg-chat/client/ygg-chat-r/src/components/landing/Footer.tsx`
-  - [ ] `Footer` — **delete-file** _(low)_: Landing footer (links /terms, /refund-policy, /privacy, x.com and a Discord invite); delete it.
-- [ ] `ygg-chat/client/ygg-chat-r/src/components/landing/Hero.tsx`
-  - [ ] `Hero` — **delete-file** _(low)_: Landing-only component; delete it.
-- [ ] `ygg-chat/client/ygg-chat-r/src/components/landing/Logo.tsx`
-  - [ ] `Logo` — **delete-file** _(low)_: Landing-only inline SVG logo (used by Navbar and Footer); delete it.
-- [ ] `ygg-chat/client/ygg-chat-r/src/components/landing/Navbar.tsx`
-  - [ ] `Navbar` — **delete-file** _(low)_: Landing navbar (links /faq, /paymentplan, /blog); delete it.
-- [ ] `ygg-chat/client/ygg-chat-r/src/components/landing/ScrollReveal.tsx`
-  - [ ] `ScrollReveal` — **delete-file** _(low)_: Landing-only helper; delete it.
-- [ ] `ygg-chat/client/ygg-chat-r/src/constants/pricingData.ts`
-  - [ ] `PLANS/PRICING_FEATURES/TIER_INFOS/getFeaturesForPlan` — **delete-file** _(low)_: Delete the pricing constants. Consumers: PaymentPage, PaymentPlans, payments/none and stripe, all deleted.
-- [ ] `ygg-chat/client/ygg-chat-r/src/containers/BlogPage.tsx`
-  - [ ] `BlogPage` — **delete-file** _(low)_: Delete the blog page that fetches /blogs/index.json and /blogs/<slug>.html.
-- [ ] `ygg-chat/client/ygg-chat-r/src/containers/Chat.tsx`
-  - [ ] L259,1060-1075 `useSubscriptionStatus/modelSelectFooter` — **delete-code** _(low)_: Remove the useSubscriptionStatus import and call, plus the 'Subscribe now for access to all 400+ models' footer that navigates to /payment. Set footerContent at 7701 to undefined.
-  - [ ] L259,1060-1074,7701 `useSubscriptionStatus import; modelSelectFooter 'Subscribe now for access to all 400+ models'` — **delete-code** _(medium)_: Remove the import, the isFreeUser hook call and the modelSelectFooter JSX (navigate('/payment')). Drop the footerContent={modelSelectFooter} prop at 7701, or pass undefined. — ⚠ Chat.tsx is the core local chat container. Change only the footer and leave the model selector intact.
-  - [ ] L5607-5612 `handleChatErrorAction case 'upgrade'` — **rewrite** _(medium)_: Remove the 'upgrade' case that does navigate('/payment'), or map it to navigate('/settings'), together with removal of the 'upgrade' kind in shared/chatErrors.ts. — ⚠ A 402 from a user's own provider (e.g. openrouterbyok) currently classifies as subscription_inactive and gets the 'upgrade' action. That action must still lead somewhere useful.
-- [ ] `ygg-chat/client/ygg-chat-r/src/containers/ConversationPage.tsx`
-  - [ ] L39,190,510,524-539,1005 `DownloadAppModal import/state/web-only Download button` — **delete-code** _(low)_: Delete the DownloadAppModal import, the showDownloadModal state, the stale comment at 510, the `VITE_ENVIRONMENT==='web'` Download button block and the <DownloadAppModal/> render.
-  - [ ] L39,190,510,525-540,1005 `Download App button + DownloadAppModal` — **delete-code** _(low)_: Delete the DownloadAppModal import, the showDownloadModal state, the stale comment at 510, the `{VITE_ENVIRONMENT === 'web' && <Button ...download>}` block 525-540, and the modal render at 1005.
-  - [ ] L39,190,525-540,1005 `DownloadAppModal (VITE_ENVIRONMENT==='web' button)` — **delete-code** _(low)_: Remove import, showDownloadModal state, the VITE_ENVIRONMENT==='web' Download App button and modal render.
-  - [ ] L510,525-540 `web Download App button` — **delete-code** _(low)_: Delete the `VITE_ENVIRONMENT === 'web'` Download App button, its comment, showDownloadModal state and DownloadApp modal usage.
-- [ ] `ygg-chat/client/ygg-chat-r/src/containers/FAQPage.tsx`
-  - [ ] `FAQPage` — **delete-file** _(low)_: Delete the marketing FAQ page (/faq).
-- [ ] `ygg-chat/client/ygg-chat-r/src/containers/Homepage.tsx`
-  - [ ] `Homepage (unrouted)` — **delete-file** _(low)_: Dead code: /homepage renders HomepageRedirect, and nothing routes Homepage. It holds web download button (247-268), /payment Profile item (546-556), DownloadAppModal, cloud/local storage filter, and VITE_ENVIRONMENT electron check (53-55). Delete the file.
-  - [ ] L20,69,231,247-265,567 `Download App button/tooltip + DownloadAppModal` — **delete-code** _(low)_: Delete the DownloadAppModal import, the showDownloadModal state, the stale comment at 231, the `{VITE_ENVIRONMENT === 'web' && (...)}` download block from 247, and the modal render at 567 (downloadApp.tsx is being deleted).
-  - [ ] L20,69,250-262,567 `DownloadAppModal / showDownloadModal / 'Download our desktop app!' button` — **delete-code** _(low)_: Remove the web-only download-the-app button/tooltip, state and modal (fetches from auth.yggchat.com updates bucket via downloadApp.tsx).
-  - [ ] L231,247-270 `web 'Download our desktop app!' block` — **delete-code** _(low)_: Delete the `VITE_ENVIRONMENT === 'web'` download CTA, comment and download modal wiring.
-- [ ] `ygg-chat/client/ygg-chat-r/src/containers/LandingPage.tsx`
-  - [ ] `LandingPage (incl. Supabase updates-bucket MANIFEST_URLS download popup)` — **delete-file** _(low)_: Delete the marketing landing page. It also fetches latest*.yml from the auth.yggchat.com Supabase updates bucket (lines 20-25, 112-170) for its download popup.
-  - [ ] L20,113,307 `web-only download popup / BASE_URL Supabase updates` — **delete-file** _(low)_: Delete landing page (VITE_ENVIRONMENT==='web' checks and Supabase updates BASE_URL).
-- [ ] `ygg-chat/client/ygg-chat-r/src/containers/PaymentPage.tsx`
-  - [ ] `PaymentPage (subscription/credits/account delete; opens https://yggchat.com/payment)` — **delete-file** _(medium)_: Delete it: getPaymentProvider, Stripe checkout, cancelSubscription, the cloud DELETE /user/account, and the external yggchat.com/payment link. There is no local functionality to keep. — ⚠ Doubles as the 'Profile' page: sideBar profile item and the Homepage mobile menu navigate('/payment'). Repoint or remove those first.
-  - [ ] L44-47 `isLocalOrElectron (__IS_ELECTRON__/__IS_LOCAL__/VITE_ENVIRONMENT)` — **delete-file** _(low)_: Delete page (also hardcodes https://yggchat.com/payment at 127).
-- [ ] `ygg-chat/client/ygg-chat-r/src/containers/PaymentPlans.tsx`
-  - [ ] `PaymentPlans` — **delete-file** _(low)_: Delete the public pricing page (uses PLANS/PRICING_FEATURES from pricingData).
-- [ ] `ygg-chat/client/ygg-chat-r/src/containers/PrivacyPolicy.tsx`
-  - [ ] `PrivacyPolicy` — **delete-file** _(low)_: Delete the hosted-service privacy policy page (Stripe/analytics processors).
-- [ ] `ygg-chat/client/ygg-chat-r/src/containers/RefundPolicy.tsx`
-  - [ ] `RefundPolicy` — **delete-file** _(low)_: Delete the Stripe refund policy page.
-- [ ] `ygg-chat/client/ygg-chat-r/src/containers/TermsOfService.tsx`
-  - [ ] `TermsOfService` — **delete-file** _(low)_: Delete the hosted-service ToS page (Stripe/subscription terms; links /refund-policy and /privacy).
-- [ ] `ygg-chat/client/ygg-chat-r/src/containers/downloadApp.tsx`
-  - [ ] `DownloadAppModal` — **delete-file** _(low)_: Delete the web-only 'download desktop app' modal. It reads latest*.yml from the Supabase updates bucket (BASE_URL line 4) and renders only when VITE_ENVIRONMENT==='web'.
-  - [ ] L4,45-50,94 `DownloadApp isWebMode / Supabase BASE_URL` — **delete-file** _(low)_: Delete component and its usages in Homepage/ConversationPage.
-- [ ] `ygg-chat/client/ygg-chat-r/src/containers/index.ts`
-  - [ ] L1,4,6,9,10,11,13,16,17,19 `barrel exports BlogPage/Homepage/LandingPage/PaymentPage/PaymentPlans/PrivacyPolicy/RefundPolicy/TermsOfService/DownloadAppModal/FAQPage` — **delete-code** _(low)_: Remove re-exports of deleted containers. Keep AppStoreModal (line 18). The Login export (line 7) belongs to P3.
-  - [ ] L17 `export { DownloadAppModal }` — **delete-code** _(low)_: Remove barrel export when downloadApp.tsx is deleted.
-- [ ] `ygg-chat/client/ygg-chat-r/src/containers/rightBar.tsx`
-  - [ ] L220,358,404,660,1026,1066,1178,1250,1287,1316,1320,1375,1409,1427,1440,1569,1573,1589,1602,1608,1613,1619,1788,1827,1834,1849,1852,1867,2240,2249,2322,2523,2635,2672,2694,2741,3048,3143,3322,3333 `isWeb` — **collapse-to-local** _(high)_: Delete `const isWeb` and treat it as false: drop the `isWeb ||` guards, the `!isWeb &&` wrappers, `disabled={isWeb}` and isWeb in dep arrays. Use 'h-full' at 2249. Git tab is always available (660). — ⚠ Shared with the kept local workspace (terminal, LSP, git, file editor, browser dock). Invert each guard carefully, or local tabs will break. [verified]
-- [ ] `ygg-chat/client/ygg-chat-r/src/containers/sideBar.tsx`
-  - [ ] L789,825-834,2013 `isWeb / visibleProjects web bypass / h-[100vh] rail` — **collapse-to-local** _(medium)_: Delete `const isWeb`. visibleProjects always applies the LOCAL_MODE_RECENT_PROJECTS_LIMIT filter (drop the isWeb dep). Use 'h-full' unconditionally at 2013. — ⚠ visibleProjects also branches on storage_mode !== 'local'. Simplify it together with the P5 storage-mode cleanup so the local project cap stays correct.
-  - [ ] L789,826,834,2013 `isWeb` — **collapse-to-local** _(low)_: Delete `const isWeb`. Remove `if (isWeb) return projectData` (826) and isWeb from the deps (834). Use 'h-full' at 2013.
-  - [ ] L1640-1647 `sidebar action 'profile' -> navigate('/payment')` — **delete-code** _(low)_: Remove the 'Profile' rail item (User icon), since its target is the deleted PaymentPage. Alternatively repoint it to /settings (open question). Drop the User import if it becomes unused.
-- [ ] `ygg-chat/client/ygg-chat-r/src/features/chats/LMStudio.ts`
-  - [ ] L63 `isFreeTier: true` — **delete-code** _(low)_: Drop isFreeTier when Model.isFreeTier (shared/types.ts L154) is removed; ModelSelectControl free/paid sorting only applies when userIsFreeTier which becomes always false.
-- [ ] `ygg-chat/client/ygg-chat-r/src/features/chats/chatSelectionBoundary.test.ts`
-  - [ ] L8 `callers list 'containers/Homepage.tsx'` — **update-test** _(low)_: Remove 'containers/Homepage.tsx' from the callers array once Homepage.tsx is deleted. Otherwise readFileSync throws ENOENT.
+- [x] `ygg-chat/client/ygg-chat-r/public/blogs/000-seed-planted.html`
+  - [x] `blog post` — **delete-file** _(low)_: Only BlogPage loads it; delete it.
+- [x] `ygg-chat/client/ygg-chat-r/public/blogs/001-recursive-loop.html`
+  - [x] `blog post` — **delete-file** _(low)_: Only BlogPage loads it; delete it.
+- [x] `ygg-chat/client/ygg-chat-r/public/blogs/index.json`
+  - [x] `marketing blog index` — **delete-file** _(low)_: Delete public/blogs/ (index.json, 000-seed-planted.html, 001-recursive-loop.html) with BlogPage.tsx; Vite copies public/ into dist-electron so they currently ship in the app.
+- [x] `ygg-chat/client/ygg-chat-r/public/landingtest.html`
+  - [x] `landing prototype` — **delete-file** _(low)_: Unreferenced marketing prototype (Tailwind CDN plus Google Fonts) shipped in public/; delete it.
+- [x] `ygg-chat/client/ygg-chat-r/server/routes/managedOAuthRoutes.ts`
+  - [x] L98 `isFreeTier: false (Codex model list)` — **delete-code** _(low)_: Remove isFreeTier from the Codex model descriptor. Codex OAuth routes are otherwise kept unchanged (codex slot only).
+- [x] `ygg-chat/client/ygg-chat-r/src/App.tsx`
+  - [x] L2,401 `Analytics (@vercel/analytics/react)` — **delete-code** _(low)_: Delete `import { Analytics } from '@vercel/analytics/react'` and the `{!isHostClient && <Analytics />}` render. Nothing else in src uses Vercel analytics.
+  - [x] L18-34,53-79 `containers import; TOOL_VIEWER_HIDDEN_ROUTES; RIGHTBAR_HIDDEN_ROUTES` — **delete-code** _(low)_: Drop BlogPage, FAQPage, LandingPage, PaymentPage, PaymentPlans, PrivacyPolicy, RefundPolicy, TermsOfService from the import. Remove '/landingpage','/faq','/paymentplan','/payment','/terms','/refund-policy','/privacy','/blog' from both hidden-route Sets ('/login' goes with P3).
+  - [x] L51,53-79 `Router/TOOL_VIEWER_HIDDEN_ROUTES/RIGHTBAR_HIDDEN_ROUTES` — **delete-code** _(low)_: Remove '/login', '/landingpage', '/faq', '/paymentplan', '/payment', '/terms', '/refund-policy', '/privacy' and '/blog' from the hidden-route sets. Once the web target is gone isHostClient is always true, so use HashRouter only.
+  - [x] L226-241,296-303 `AnimatedRoutes public marketing routes + /payment route` — **delete-code** _(medium)_: Delete the Route elements for /landingpage, /faq, /paymentplan, /terms, /refund-policy, /privacy, /blog and the ProtectedRoute /payment. The '*' fallback already sends stale links to '/'. — ⚠ sideBar/Homepage 'Profile', Chat/QuickInput 'Subscribe' buttons, the 'upgrade' error actions and FreeGenerationsModal navigate here. Remove them in the same change, or they fall through to '/'.
+  - [x] L251 `Route path='/'` — **rewrite** _(medium)_: Replace `isHostClient ? <Navigate to='/login'/> : <LandingPage/>` with `<Navigate to='/homepage' replace />` for every target. Coordinate with P3, which removes /login. — ⚠ Non-host builds (BUILD_TARGET=local without VITE_ENVIRONMENT) render LandingPage today. scripts/test-browser-client.cjs expects the #/login route. (done; /login removed in P3)
+- [x] `ygg-chat/client/ygg-chat-r/src/components/ExpandedModelView/ExpandedModelView.tsx`
+  - [x] L124-140,284,318-320 `BASE_PROMPT_COST / formatPricing credits multipliers; lock icon` — **rewrite** _(low)_: Pricing shown as multipliers of a credits base cost (1.25 credits/1M). Replace with USD per 1M tokens (promptCost*1e6) or drop the column; lock icon only fires via free-tier disabledOptions which becomes always empty.
+- [x] `ygg-chat/client/ygg-chat-r/src/components/FreeGenerationsModal/FreeGenerationsModal.tsx`
+  - [x] `FreeGenerationsModal` — **delete-file** _(low)_: Delete the unused free-generations modal (its upgrade button navigates to /payment) and its export at src/components/index.ts:10.
+- [x] `ygg-chat/client/ygg-chat-r/src/components/FreeGenerationsModal/index.ts`
+  - [x] `FreeGenerationsModal barrel` — **delete-file** _(low)_: Delete with FreeGenerationsModal.tsx (no consumers).
+- [x] `ygg-chat/client/ygg-chat-r/src/components/GlobalNotifications/GlobalNotifications.tsx`
+  - [x] L48,98-100 `isActionable 'upgrade' + navigate('/paymentplan')` — **rewrite** _(low)_: Remove the 'upgrade' kind from the actionable set and its case (navigate('/paymentplan')), in step with removing the 'upgrade' kind from shared/chatErrors.ts.
+- [x] `ygg-chat/client/ygg-chat-r/src/components/InputTextArea/InputTextArea.tsx`
+  - [x] L190-194 `shouldUseLocalFileFallback` — **collapse-to-local** _(low)_: Drop the `import.meta.env.VITE_ENVIRONMENT !== 'web' &&` term.
+  - [x] L192 `shouldUseLocalFileFallback VITE_ENVIRONMENT !== 'web'` — **collapse-to-local** _(low)_: Drop the `import.meta.env.VITE_ENVIRONMENT !== 'web' &&` term.
+- [x] `ygg-chat/client/ygg-chat-r/src/components/ModelInfoModal/ModelInfoModal.tsx`
+  - [x] L79-90 `'Pricing (per 1M tokens) in credits'` — **rewrite** _(low)_: Retitle to 'Pricing (USD per 1M tokens)' and compute promptCost/completionCost * 1e6 instead of * 1e8 (credit scaling).
+- [x] `ygg-chat/client/ygg-chat-r/src/components/ModelSelectControl/ModelSelectControl.tsx`
+  - [x] L40-54 `userIsFreeTier / disabledModelOptions / free-first sorting` — **delete-code** _(low)_: Remove the userIsFreeTier logic. disabledModelOptions becomes [] and sortedFilteredModels becomes filteredModels.
+- [x] `ygg-chat/client/ygg-chat-r/src/components/QuickInput/QuickInput.tsx`
+  - [x] L13,24-31,45-73,167-173,369 `useSubscriptionStatus/isFreeUser/hasCredits/showSecretMode; Secret Mode (ZDR) footer; Subscribe button` — **rewrite** _(medium)_: Remove useSubscriptionStatus, the cached_current_credits gate and the 'Subscribe now' navigate('/payment') branch. Secret Mode calls cloudApi /models/openrouter/zdr (useToggleSecretMode), so delete it too. footerContent becomes undefined. — ⚠ QuickInput renders in LowBar on the local homepage. Keep model select and send working. Coupled with the cloud-openrouter area removing useToggleSecretMode. (resolved by Q23: QuickInput deleted)
+  - [x] L24-31,54 `isFreeUser/cached_current_credits/showSecretMode` — **collapse-to-local** _(low)_: Remove useSubscriptionStatus and the credits check. Set showSecretMode=true. Also review currentProvider default 'OpenRouter' (line 37). (resolved by Q23: QuickInput deleted)
+- [x] `ygg-chat/client/ygg-chat-r/src/components/Select/Select.tsx`
+  - [x] L404-407 `title 'Upgrade to access this model' + LockKeyhole` — **rewrite** _(low)_: Disabled-option tooltip hardcodes free-tier upsell. Replace with a caller-supplied disabledReason prop (or generic 'Unavailable'). Chat.tsx L7685 disables 'Claude Code' with this same wrong tooltip.
+- [x] `ygg-chat/client/ygg-chat-r/src/components/SettingsPane/SettingsPane.tsx`
+  - [x] L270,655-659,2645 `isWebMode (managed hooks fetch + Hooks section)` — **collapse-to-local** _(medium)_: Delete `const isWebMode`. The effect becomes `if (hooksExpanded) fetchManagedHooks()`, with isWebMode dropped from deps. Unwrap the `{!isWebMode && (...)}` at 2645 so the Hooks section always renders. — ⚠ The Hooks settings section is a kept local feature. Unwrap it carefully.
+  - [x] L270,656,659,2645 `isWebMode` — **collapse-to-local** _(low)_: Delete `const isWebMode`. Drop `&& !isWebMode` at 656 and the dep at 659. Unwrap `{!isWebMode && (...)}` at 2645 (managed hooks section always shown).
+- [x] `ygg-chat/client/ygg-chat-r/src/components/SettingsPane/ToolsSettings.test.tsx`
+  - [x] L30 `vi.stubEnv('VITE_ENVIRONMENT','electron')` — **update-test** _(low)_: Remove the VITE_ENVIRONMENT stub (and unstubAllEnvs if unused) once ToolsSettings no longer reads it. Keep the source-group assertions.
+- [x] `ygg-chat/client/ygg-chat-r/src/components/SettingsPane/ToolsSettings.tsx`
+  - [x] L33,39-54,145-155,158 `isWebMode` — **collapse-to-local** _(medium)_: Delete `const isWebMode`. Fetch /custom-tools/directory unconditionally (deps []). Unwrap `{!isWebMode && (` at 158 and delete the commented WSL block at 145-155. — ⚠ The custom tools list is a kept feature. If unwrapping goes wrong, the tool list disappears.
+  - [x] L33,42,54,145,158 `isWebMode` — **collapse-to-local** _(low)_: Delete `const isWebMode`. Fetch /custom-tools/directory unconditionally (42). Empty the deps (54). Unwrap the `!isWebMode &&` blocks at 145 and 158.
+- [x] `ygg-chat/client/ygg-chat-r/src/components/TextArea/TextArea.tsx`
+  - [x] L142-145 `shouldUseLocalFileFallback` — **collapse-to-local** _(low)_: Drop the `import.meta.env.VITE_ENVIRONMENT !== 'web' &&` term.
+  - [x] L143 `shouldUseLocalFileFallback VITE_ENVIRONMENT !== 'web'` — **collapse-to-local** _(low)_: Drop the `import.meta.env.VITE_ENVIRONMENT !== 'web' &&` term.
+- [x] `ygg-chat/client/ygg-chat-r/src/components/index.ts`
+  - [x] L10 `export { FreeGenerationsModal }` — **delete-code** _(low)_: Remove the FreeGenerationsModal re-export.
+- [x] `ygg-chat/client/ygg-chat-r/src/components/landing/AsciiBackground.tsx`
+  - [x] `AsciiBackground` — **delete-file** _(low)_: Landing-only component; delete it with LandingPage.
+- [x] `ygg-chat/client/ygg-chat-r/src/components/landing/ChatDemo.tsx`
+  - [x] `ChatDemo` — **delete-file** _(low)_: Landing-only component; delete it.
+- [x] `ygg-chat/client/ygg-chat-r/src/components/landing/Comparison.tsx`
+  - [x] `Comparison` — **delete-file** _(low)_: Landing-only component; delete it.
+- [x] `ygg-chat/client/ygg-chat-r/src/components/landing/Economics.tsx`
+  - [x] `Economics` — **delete-file** _(low)_: Landing-only pricing/economics section; delete it.
+- [x] `ygg-chat/client/ygg-chat-r/src/components/landing/Features.tsx`
+  - [x] `Features` — **delete-file** _(low)_: Landing-only component; delete it.
+- [x] `ygg-chat/client/ygg-chat-r/src/components/landing/Footer.tsx`
+  - [x] `Footer` — **delete-file** _(low)_: Landing footer (links /terms, /refund-policy, /privacy, x.com and a Discord invite); delete it.
+- [x] `ygg-chat/client/ygg-chat-r/src/components/landing/Hero.tsx`
+  - [x] `Hero` — **delete-file** _(low)_: Landing-only component; delete it.
+- [x] `ygg-chat/client/ygg-chat-r/src/components/landing/Logo.tsx`
+  - [x] `Logo` — **delete-file** _(low)_: Landing-only inline SVG logo (used by Navbar and Footer); delete it.
+- [x] `ygg-chat/client/ygg-chat-r/src/components/landing/Navbar.tsx`
+  - [x] `Navbar` — **delete-file** _(low)_: Landing navbar (links /faq, /paymentplan, /blog); delete it.
+- [x] `ygg-chat/client/ygg-chat-r/src/components/landing/ScrollReveal.tsx`
+  - [x] `ScrollReveal` — **delete-file** _(low)_: Landing-only helper; delete it.
+- [x] `ygg-chat/client/ygg-chat-r/src/constants/pricingData.ts`
+  - [x] `PLANS/PRICING_FEATURES/TIER_INFOS/getFeaturesForPlan` — **delete-file** _(low)_: Delete the pricing constants. Consumers: PaymentPage, PaymentPlans, payments/none and stripe, all deleted.
+- [x] `ygg-chat/client/ygg-chat-r/src/containers/BlogPage.tsx`
+  - [x] `BlogPage` — **delete-file** _(low)_: Delete the blog page that fetches /blogs/index.json and /blogs/<slug>.html.
+- [x] `ygg-chat/client/ygg-chat-r/src/containers/Chat.tsx`
+  - [x] L259,1060-1075 `useSubscriptionStatus/modelSelectFooter` — **delete-code** _(low)_: Remove the useSubscriptionStatus import and call, plus the 'Subscribe now for access to all 400+ models' footer that navigates to /payment. Set footerContent at 7701 to undefined.
+  - [x] L259,1060-1074,7701 `useSubscriptionStatus import; modelSelectFooter 'Subscribe now for access to all 400+ models'` — **delete-code** _(medium)_: Remove the import, the isFreeUser hook call and the modelSelectFooter JSX (navigate('/payment')). Drop the footerContent={modelSelectFooter} prop at 7701, or pass undefined. — ⚠ Chat.tsx is the core local chat container. Change only the footer and leave the model selector intact.
+  - [x] L5607-5612 `handleChatErrorAction case 'upgrade'` — **rewrite** _(medium)_: Remove the 'upgrade' case that does navigate('/payment'), or map it to navigate('/settings'), together with removal of the 'upgrade' kind in shared/chatErrors.ts. — ⚠ A 402 from a user's own provider (e.g. openrouterbyok) currently classifies as subscription_inactive and gets the 'upgrade' action. That action must still lead somewhere useful.
+- [x] `ygg-chat/client/ygg-chat-r/src/containers/ConversationPage.tsx`
+  - [x] L39,190,510,524-539,1005 `DownloadAppModal import/state/web-only Download button` — **delete-code** _(low)_: Delete the DownloadAppModal import, the showDownloadModal state, the stale comment at 510, the `VITE_ENVIRONMENT==='web'` Download button block and the <DownloadAppModal/> render.
+  - [x] L39,190,510,525-540,1005 `Download App button + DownloadAppModal` — **delete-code** _(low)_: Delete the DownloadAppModal import, the showDownloadModal state, the stale comment at 510, the `{VITE_ENVIRONMENT === 'web' && <Button ...download>}` block 525-540, and the modal render at 1005.
+  - [x] L39,190,525-540,1005 `DownloadAppModal (VITE_ENVIRONMENT==='web' button)` — **delete-code** _(low)_: Remove import, showDownloadModal state, the VITE_ENVIRONMENT==='web' Download App button and modal render.
+  - [x] L510,525-540 `web Download App button` — **delete-code** _(low)_: Delete the `VITE_ENVIRONMENT === 'web'` Download App button, its comment, showDownloadModal state and DownloadApp modal usage.
+- [x] `ygg-chat/client/ygg-chat-r/src/containers/FAQPage.tsx`
+  - [x] `FAQPage` — **delete-file** _(low)_: Delete the marketing FAQ page (/faq).
+- [x] `ygg-chat/client/ygg-chat-r/src/containers/Homepage.tsx`
+  - [x] `Homepage (unrouted)` — **delete-file** _(low)_: Dead code: /homepage renders HomepageRedirect, and nothing routes Homepage. It holds web download button (247-268), /payment Profile item (546-556), DownloadAppModal, cloud/local storage filter, and VITE_ENVIRONMENT electron check (53-55). Delete the file.
+  - [x] L20,69,231,247-265,567 `Download App button/tooltip + DownloadAppModal` — **delete-code** _(low)_: Delete the DownloadAppModal import, the showDownloadModal state, the stale comment at 231, the `{VITE_ENVIRONMENT === 'web' && (...)}` download block from 247, and the modal render at 567 (downloadApp.tsx is being deleted).
+  - [x] L20,69,250-262,567 `DownloadAppModal / showDownloadModal / 'Download our desktop app!' button` — **delete-code** _(low)_: Remove the web-only download-the-app button/tooltip, state and modal (fetches from auth.yggchat.com updates bucket via downloadApp.tsx).
+  - [x] L231,247-270 `web 'Download our desktop app!' block` — **delete-code** _(low)_: Delete the `VITE_ENVIRONMENT === 'web'` download CTA, comment and download modal wiring.
+- [x] `ygg-chat/client/ygg-chat-r/src/containers/LandingPage.tsx`
+  - [x] `LandingPage (incl. Supabase updates-bucket MANIFEST_URLS download popup)` — **delete-file** _(low)_: Delete the marketing landing page. It also fetches latest*.yml from the auth.yggchat.com Supabase updates bucket (lines 20-25, 112-170) for its download popup.
+  - [x] L20,113,307 `web-only download popup / BASE_URL Supabase updates` — **delete-file** _(low)_: Delete landing page (VITE_ENVIRONMENT==='web' checks and Supabase updates BASE_URL).
+- [x] `ygg-chat/client/ygg-chat-r/src/containers/PaymentPage.tsx`
+  - [x] `PaymentPage (subscription/credits/account delete; opens https://yggchat.com/payment)` — **delete-file** _(medium)_: Delete it: getPaymentProvider, Stripe checkout, cancelSubscription, the cloud DELETE /user/account, and the external yggchat.com/payment link. There is no local functionality to keep. — ⚠ Doubles as the 'Profile' page: sideBar profile item and the Homepage mobile menu navigate('/payment'). Repoint or remove those first.
+  - [x] L44-47 `isLocalOrElectron (__IS_ELECTRON__/__IS_LOCAL__/VITE_ENVIRONMENT)` — **delete-file** _(low)_: Delete page (also hardcodes https://yggchat.com/payment at 127).
+- [x] `ygg-chat/client/ygg-chat-r/src/containers/PaymentPlans.tsx`
+  - [x] `PaymentPlans` — **delete-file** _(low)_: Delete the public pricing page (uses PLANS/PRICING_FEATURES from pricingData).
+- [x] `ygg-chat/client/ygg-chat-r/src/containers/PrivacyPolicy.tsx`
+  - [x] `PrivacyPolicy` — **delete-file** _(low)_: Delete the hosted-service privacy policy page (Stripe/analytics processors).
+- [x] `ygg-chat/client/ygg-chat-r/src/containers/RefundPolicy.tsx`
+  - [x] `RefundPolicy` — **delete-file** _(low)_: Delete the Stripe refund policy page.
+- [x] `ygg-chat/client/ygg-chat-r/src/containers/TermsOfService.tsx`
+  - [x] `TermsOfService` — **delete-file** _(low)_: Delete the hosted-service ToS page (Stripe/subscription terms; links /refund-policy and /privacy).
+- [x] `ygg-chat/client/ygg-chat-r/src/containers/downloadApp.tsx`
+  - [x] `DownloadAppModal` — **delete-file** _(low)_: Delete the web-only 'download desktop app' modal. It reads latest*.yml from the Supabase updates bucket (BASE_URL line 4) and renders only when VITE_ENVIRONMENT==='web'.
+  - [x] L4,45-50,94 `DownloadApp isWebMode / Supabase BASE_URL` — **delete-file** _(low)_: Delete component and its usages in Homepage/ConversationPage.
+- [x] `ygg-chat/client/ygg-chat-r/src/containers/index.ts`
+  - [x] L1,4,6,9,10,11,13,16,17,19 `barrel exports BlogPage/Homepage/LandingPage/PaymentPage/PaymentPlans/PrivacyPolicy/RefundPolicy/TermsOfService/DownloadAppModal/FAQPage` — **delete-code** _(low)_: Remove re-exports of deleted containers. Keep AppStoreModal (line 18). The Login export (line 7) belongs to P3.
+  - [x] L17 `export { DownloadAppModal }` — **delete-code** _(low)_: Remove barrel export when downloadApp.tsx is deleted.
+- [x] `ygg-chat/client/ygg-chat-r/src/containers/rightBar.tsx`
+  - [x] L220,358,404,660,1026,1066,1178,1250,1287,1316,1320,1375,1409,1427,1440,1569,1573,1589,1602,1608,1613,1619,1788,1827,1834,1849,1852,1867,2240,2249,2322,2523,2635,2672,2694,2741,3048,3143,3322,3333 `isWeb` — **collapse-to-local** _(high)_: Delete `const isWeb` and treat it as false: drop the `isWeb ||` guards, the `!isWeb &&` wrappers, `disabled={isWeb}` and isWeb in dep arrays. Use 'h-full' at 2249. Git tab is always available (660). — ⚠ Shared with the kept local workspace (terminal, LSP, git, file editor, browser dock). Invert each guard carefully, or local tabs will break. [verified]
+- [x] `ygg-chat/client/ygg-chat-r/src/containers/sideBar.tsx`
+  - [x] L789,825-834,2013 `isWeb / visibleProjects web bypass / h-[100vh] rail` — **collapse-to-local** _(medium)_: Delete `const isWeb`. visibleProjects always applies the LOCAL_MODE_RECENT_PROJECTS_LIMIT filter (drop the isWeb dep). Use 'h-full' unconditionally at 2013. — ⚠ visibleProjects also branches on storage_mode !== 'local'. Simplify it together with the P5 storage-mode cleanup so the local project cap stays correct.
+  - [x] L789,826,834,2013 `isWeb` — **collapse-to-local** _(low)_: Delete `const isWeb`. Remove `if (isWeb) return projectData` (826) and isWeb from the deps (834). Use 'h-full' at 2013.
+  - [x] L1640-1647 `sidebar action 'profile' -> navigate('/payment')` — **delete-code** _(low)_: Remove the 'Profile' rail item (User icon), since its target is the deleted PaymentPage. Alternatively repoint it to /settings (open question). Drop the User import if it becomes unused.
+- [x] `ygg-chat/client/ygg-chat-r/src/features/chats/LMStudio.ts`
+  - [x] L63 `isFreeTier: true` — **delete-code** _(low)_: Drop isFreeTier when Model.isFreeTier (shared/types.ts L154) is removed; ModelSelectControl free/paid sorting only applies when userIsFreeTier which becomes always false.
+- [x] `ygg-chat/client/ygg-chat-r/src/features/chats/chatSelectionBoundary.test.ts`
+  - [x] L8 `callers list 'containers/Homepage.tsx'` — **update-test** _(low)_: Remove 'containers/Homepage.tsx' from the callers array once Homepage.tsx is deleted. Otherwise readFileSync throws ENOENT.
 - [ ] `ygg-chat/client/ygg-chat-r/src/features/chats/chatSlice.ts`
   - [ ] L298-302,2023-2032,310-314,2105-2129 `freeTier state + freeGenerationsUpdated/freeTierLimitModal*; userSystemPrompts slice` — **delete-code** _(low)_: Delete freeTier state and reducers (Chat.tsx notes flag is dead). Delete userSystemPrompts Redux slice + reducers (only producer was fetchUserSystemPrompts; UI reads React Query).
-- [ ] `ygg-chat/client/ygg-chat-r/src/features/chats/chatTypes.ts`
-  - [ ] L171,559-565,737-755 `'free_generations_update' event type, freeTier, UserSystemPrompt(s)State` — **delete-code** _(low)_: Remove free_generations_update from event union, freeTier field and userSystemPrompts state types matching slice removal.
-- [ ] `ygg-chat/client/ygg-chat-r/src/features/chats/chatgptAccount.ts`
-  - [ ] L43 `isFreeTier: false (ChatGPT model descriptor)` — **delete-code** _(low)_: Remove isFreeTier field from the descriptor with the Model type change. Rest of file (Codex account) kept.
-- [ ] `ygg-chat/client/ygg-chat-r/src/features/chats/sseProjection.ts`
-  - [ ] L538-547 `projectServerEvent free_generations_update / generation_limit_reached` — **delete-code** _(low)_: Delete both cases (Railway free-tier relay). Remove 'free_tier_exhausted' envelope use if chatErrors owner removes the code.
-- [ ] `ygg-chat/client/ygg-chat-r/src/hooks/useIdeContext.ts`
-  - [ ] L131-133,157-160 `VITE_ENVIRONMENT web checks in requestFileContent/connect` — **collapse-to-local** _(low)_: Always console.warn when the WebSocket is not connected, and delete the `if (VITE_ENVIRONMENT==='web') return` early exit in connect().
-  - [ ] L131,158-160 `VITE_ENVIRONMENT web checks` — **collapse-to-local** _(low)_: Make the console.warn at 131 unconditional and delete the `if (VITE_ENVIRONMENT === 'web') return` at 158-160 in connect().
-- [ ] `ygg-chat/client/ygg-chat-r/src/hooks/useQueries.ts`
-  - [ ] L2051,2092 `local file listing/search enabled: environment !== 'web'` — **collapse-to-local** _(low)_: Remove `&& environment !== 'web'` from both `enabled` expressions.
-- [ ] `ygg-chat/client/ygg-chat-r/src/hooks/useSubscriptionStatus.ts`
-  - [ ] `useSubscriptionStatus/isFreeUser` — **delete-file** _(medium)_: Delete it. With NoOp provider it always reports isFreeUser=true, so Electron shows 'Subscribe now' footers. Remove its call sites in Chat.tsx and QuickInput.tsx. — ⚠ Two live UI consumers must be edited in the same change.
-- [ ] `ygg-chat/client/ygg-chat-r/src/hooks/useToolJobs.ts`
-  - [ ] L24-25,105-108,249-258 `isWebMode` — **collapse-to-local** _(medium)_: Delete the isWebMode const and its three `if (isWebMode) return` guards. Initial refresh and onJobsChange subscription run unconditionally. Update the comments. — ⚠ Tool job monitoring is a kept local feature; behavior is unchanged in Electron today.
-  - [ ] L25,107,251,257 `isWebMode` — **collapse-to-local** _(low)_: Delete the module-level isWebMode and the three `if (isWebMode) return` early exits.
-- [ ] `ygg-chat/client/ygg-chat-r/src/lib/payments/index.ts`
-  - [ ] `getPaymentProvider/resetPaymentProvider (__IS_WEB__ branch)` — **delete-file** _(low)_: Delete the payment provider factory. Its only consumers are PaymentPage and useSubscriptionStatus, both deleted.
-  - [ ] L19-26,37-39,45-63 `payment provider factory (__IS_WEB__/__IS_LOCAL__/__BUILD_TARGET__/VITE_ENVIRONMENT)` — **delete-file** _(low)_: Delete src/lib/payments/* (index, stripe, none, types); last consumers of __IS_WEB__.
-- [ ] `ygg-chat/client/ygg-chat-r/src/lib/payments/none.ts`
-  - [ ] `NoOpPaymentProvider` — **delete-file** _(low)_: Delete it. Its tier:null result is what makes isFreeUser=true in Electron, which shows the 'Subscribe' buttons.
-- [ ] `ygg-chat/client/ygg-chat-r/src/lib/payments/stripe.ts`
-  - [ ] `StripePaymentProvider` — **delete-file** _(low)_: Delete it. It only used isCommunityMode to throw, plus /cloud/stripe/* via the local proxy. Delete lib/payments/* along with PaymentPage and useSubscriptionStatus.
-- [ ] `ygg-chat/client/ygg-chat-r/src/lib/payments/types.ts`
-  - [ ] `SubscriptionStatus/TierInfo/CreditHistoryEntry/PaymentProvider` — **delete-file** _(low)_: Delete payment types. pricingData.ts imports TierInfo from here and is deleted too.
-- [ ] `ygg-chat/client/ygg-chat-r/src/services/ToolJobManager.ts`
-  - [ ] L544-545 `auto-initialize guard VITE_ENVIRONMENT !== 'web'` — **collapse-to-local** _(low)_: Change the condition to `typeof window !== 'undefined'` only, and update the comment.
-- [ ] `ygg-chat/client/ygg-chat-r/src/utils/api.ts`
-  - [ ] L1058-1147 `SubscriptionStatus, TierInfo, PricingInfo, CreditTransaction, createCheckoutSession, getSubscriptionStatus, cancelSubscription, getCreditHistory, getPricingInfo` — **delete-code** _(low)_: Stripe helpers via /api/cloud/stripe/*; grep shows no importers (PaymentPage uses lib/payments provider). Delete block.
-- [ ] `ygg-chat/client/ygg-chat-r/vite.config.ts`
-  - [ ] L116-133 `manualChunks (stripe chunk, Supabase comment)` — **delete-code** _(low)_: Delete the `stripe` manualChunk branch (it also catches any id containing 'stripe', e.g. strip-markdown? no, but stripe substring) and the Supabase comments; keep vendor/static-reach logic.
-- [ ] `ygg-chat/shared/chatErrors.ts`
-  - [ ] L29,33,36,169-173,185-203 `session_expired (sign_in), free_tier_exhausted / subscription_inactive (upgrade)` — **keep-but-decouple** _(medium)_: Once providerErrorFormatter stops emitting them, either remove these codes and the 'sign_in'/'upgrade' action kinds, or repoint their actions to open_settings. Keep the union members if persisted error rows reference them. — ⚠ Renderer consumers (localChatErrors 144/183, sseProjection 547/555, mainChatClient 409, api.ts 728) also map 401 to session_expired. The P3/P6 owners must change them together.
-  - [ ] L76,184-189,200-204 `ChatErrorActionKind 'upgrade'; free_tier_exhausted / subscription_inactive defaults` — **rewrite** _(medium)_: Remove the 'upgrade' kind. subscription_inactive (HTTP 402 from the user's own provider) becomes action open_settings with a provider-billing message. free_tier_exhausted is removed by the free-tier area. — ⚠ Shared by the server providerErrorFormatter and renderer sseProjection. Update providerErrorFormatter.test.ts and sseProjection.test.ts:489 expectations.
-- [ ] `ygg-chat/vercel.json`
-  - [ ] `Vercel deployment config` — **delete-file** _(low)_: Delete the Vercel config. It deploys client/ygg-chat-r/dist via build:client with SPA rewrites for the web product.
+- [x] `ygg-chat/client/ygg-chat-r/src/features/chats/chatTypes.ts`
+  - [x] L171,559-565,737-755 `'free_generations_update' event type, freeTier, UserSystemPrompt(s)State` — **delete-code** _(low)_: Remove free_generations_update from event union, freeTier field and userSystemPrompts state types matching slice removal.
+- [x] `ygg-chat/client/ygg-chat-r/src/features/chats/chatgptAccount.ts`
+  - [x] L43 `isFreeTier: false (ChatGPT model descriptor)` — **delete-code** _(low)_: Remove isFreeTier field from the descriptor with the Model type change. Rest of file (Codex account) kept.
+- [x] `ygg-chat/client/ygg-chat-r/src/features/chats/sseProjection.ts`
+  - [x] L538-547 `projectServerEvent free_generations_update / generation_limit_reached` — **delete-code** _(low)_: Delete both cases (Railway free-tier relay). Remove 'free_tier_exhausted' envelope use if chatErrors owner removes the code.
+- [x] `ygg-chat/client/ygg-chat-r/src/hooks/useIdeContext.ts`
+  - [x] L131-133,157-160 `VITE_ENVIRONMENT web checks in requestFileContent/connect` — **collapse-to-local** _(low)_: Always console.warn when the WebSocket is not connected, and delete the `if (VITE_ENVIRONMENT==='web') return` early exit in connect().
+  - [x] L131,158-160 `VITE_ENVIRONMENT web checks` — **collapse-to-local** _(low)_: Make the console.warn at 131 unconditional and delete the `if (VITE_ENVIRONMENT === 'web') return` at 158-160 in connect().
+- [x] `ygg-chat/client/ygg-chat-r/src/hooks/useQueries.ts`
+  - [x] L2051,2092 `local file listing/search enabled: environment !== 'web'` — **collapse-to-local** _(low)_: Remove `&& environment !== 'web'` from both `enabled` expressions.
+- [x] `ygg-chat/client/ygg-chat-r/src/hooks/useSubscriptionStatus.ts`
+  - [x] `useSubscriptionStatus/isFreeUser` — **delete-file** _(medium)_: Delete it. With NoOp provider it always reports isFreeUser=true, so Electron shows 'Subscribe now' footers. Remove its call sites in Chat.tsx and QuickInput.tsx. — ⚠ Two live UI consumers must be edited in the same change.
+- [x] `ygg-chat/client/ygg-chat-r/src/hooks/useToolJobs.ts`
+  - [x] L24-25,105-108,249-258 `isWebMode` — **collapse-to-local** _(medium)_: Delete the isWebMode const and its three `if (isWebMode) return` guards. Initial refresh and onJobsChange subscription run unconditionally. Update the comments. — ⚠ Tool job monitoring is a kept local feature; behavior is unchanged in Electron today.
+  - [x] L25,107,251,257 `isWebMode` — **collapse-to-local** _(low)_: Delete the module-level isWebMode and the three `if (isWebMode) return` early exits.
+- [x] `ygg-chat/client/ygg-chat-r/src/lib/payments/index.ts`
+  - [x] `getPaymentProvider/resetPaymentProvider (__IS_WEB__ branch)` — **delete-file** _(low)_: Delete the payment provider factory. Its only consumers are PaymentPage and useSubscriptionStatus, both deleted.
+  - [x] L19-26,37-39,45-63 `payment provider factory (__IS_WEB__/__IS_LOCAL__/__BUILD_TARGET__/VITE_ENVIRONMENT)` — **delete-file** _(low)_: Delete src/lib/payments/* (index, stripe, none, types); last consumers of __IS_WEB__.
+- [x] `ygg-chat/client/ygg-chat-r/src/lib/payments/none.ts`
+  - [x] `NoOpPaymentProvider` — **delete-file** _(low)_: Delete it. Its tier:null result is what makes isFreeUser=true in Electron, which shows the 'Subscribe' buttons.
+- [x] `ygg-chat/client/ygg-chat-r/src/lib/payments/stripe.ts`
+  - [x] `StripePaymentProvider` — **delete-file** _(low)_: Delete it. It only used isCommunityMode to throw, plus /cloud/stripe/* via the local proxy. Delete lib/payments/* along with PaymentPage and useSubscriptionStatus.
+- [x] `ygg-chat/client/ygg-chat-r/src/lib/payments/types.ts`
+  - [x] `SubscriptionStatus/TierInfo/CreditHistoryEntry/PaymentProvider` — **delete-file** _(low)_: Delete payment types. pricingData.ts imports TierInfo from here and is deleted too.
+- [x] `ygg-chat/client/ygg-chat-r/src/services/ToolJobManager.ts`
+  - [x] L544-545 `auto-initialize guard VITE_ENVIRONMENT !== 'web'` — **collapse-to-local** _(low)_: Change the condition to `typeof window !== 'undefined'` only, and update the comment.
+- [x] `ygg-chat/client/ygg-chat-r/src/utils/api.ts`
+  - [x] L1058-1147 `SubscriptionStatus, TierInfo, PricingInfo, CreditTransaction, createCheckoutSession, getSubscriptionStatus, cancelSubscription, getCreditHistory, getPricingInfo` — **delete-code** _(low)_: Stripe helpers via /api/cloud/stripe/*; grep shows no importers (PaymentPage uses lib/payments provider). Delete block.
+- [x] `ygg-chat/client/ygg-chat-r/vite.config.ts`
+  - [x] L116-133 `manualChunks (stripe chunk, Supabase comment)` — **delete-code** _(low)_: Delete the `stripe` manualChunk branch (it also catches any id containing 'stripe', e.g. strip-markdown? no, but stripe substring) and the Supabase comments; keep vendor/static-reach logic.
+- [x] `ygg-chat/shared/chatErrors.ts`
+  - [x] L29,33,36,169-173,185-203 `session_expired (sign_in), free_tier_exhausted / subscription_inactive (upgrade)` — **keep-but-decouple** _(medium)_: Once providerErrorFormatter stops emitting them, either remove these codes and the 'sign_in'/'upgrade' action kinds, or repoint their actions to open_settings. Keep the union members if persisted error rows reference them. — ⚠ Renderer consumers (localChatErrors 144/183, sseProjection 547/555, mainChatClient 409, api.ts 728) also map 401 to session_expired. The P3/P6 owners must change them together.
+  - [x] L76,184-189,200-204 `ChatErrorActionKind 'upgrade'; free_tier_exhausted / subscription_inactive defaults` — **rewrite** _(medium)_: Remove the 'upgrade' kind. subscription_inactive (HTTP 402 from the user's own provider) becomes action open_settings with a provider-billing message. free_tier_exhausted is removed by the free-tier area. — ⚠ Shared by the server providerErrorFormatter and renderer sseProjection. Update providerErrorFormatter.test.ts and sseProjection.test.ts:489 expectations.
+- [x] `ygg-chat/vercel.json`
+  - [x] `Vercel deployment config` — **delete-file** _(low)_: Delete the Vercel config. It deploys client/ygg-chat-r/dist via build:client with SPA rewrites for the web product.
 
 ### P7 — Community app store (keep; decouple from auth/env) (32)
 
