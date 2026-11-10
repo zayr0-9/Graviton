@@ -1647,3 +1647,66 @@ describe('Ultracode and background tasks', () => {
     }
   }, 300_000)
 })
+
+describe('Claude Code MCP servers (native, v1)', () => {
+  const init = (mcp_servers: any[]) => ({ type: 'system', subtype: 'init', session_id: 's', permissionMode: 'default', mcp_servers })
+  const withMcp = (f: ReturnType<typeof fixture>, preferences: any) => { (f.service as any).deps.nativeMcp = () => preferences }
+
+  it('keeps MCP strict and empty when the host setting is absent or off', async () => {
+    for (const preferences of [undefined, { enabled: false, claudeAiConnectors: true, disabledServers: ['x'] }]) {
+      const f = fixture([assistant(), success])
+      if (preferences) withMcp(f, preferences)
+      await f.service.run(f.input)
+      const options = f.sdk.query.mock.calls[0][0].options
+      expect(options).toMatchObject({ strictMcpConfig: true, mcpServers: {} })
+      expect(options).not.toHaveProperty('disallowedTools')
+      expect(options.settings).not.toHaveProperty('disableClaudeAiConnectors')
+    }
+  })
+
+  it('loads Claude\'s own MCP configuration, hides disabled servers by rule and can drop claude.ai connectors', async () => {
+    const f = fixture([assistant(), success])
+    withMcp(f, { enabled: true, claudeAiConnectors: false, disabledServers: ['claude.ai Vega GP (UAT env)', 'plugin:slack:slack'] })
+    f.input.request.claudeUltracode = true
+    await f.service.run(f.input)
+    const options = f.sdk.query.mock.calls[0][0].options
+    expect(options.strictMcpConfig).toBe(false)
+    expect(options).not.toHaveProperty('mcpServers')
+    expect(options.disallowedTools).toEqual(['mcp__claude_ai_Vega_GP_UAT_env', 'mcp__plugin_slack_slack'])
+    expect(options.settings).toMatchObject({ ultracode: true, disableClaudeAiConnectors: true, plansDirectory: expect.any(String) })
+  })
+
+  it('keeps MCP off for the run when the setting cannot be read', async () => {
+    const f = fixture([assistant(), success])
+    ;(f.service as any).deps.nativeMcp = () => { throw new Error('corrupt') }
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try { await f.service.run(f.input) } finally { warn.mockRestore() }
+    expect(f.sdk.query.mock.calls[0][0].options).toMatchObject({ strictMcpConfig: true, mcpServers: {} })
+  })
+
+  it('warns when a resumed run starts without the MCP servers earlier runs had (CLI #78820)', async () => {
+    const f = fixture()
+    withMcp(f, { enabled: true, claudeAiConnectors: true, disabledServers: [] })
+    const run = (events: any[]) => {
+      f.sdk.query.mockImplementationOnce(() => Object.assign((async function* () { for (const event of events) yield event })(), { close: vi.fn() }))
+      return f.service.run(f.input)
+    }
+    await run([init([{ name: 'linear', status: 'connected' }]), assistant(), success])
+    expect(f.emit.mock.calls.some(([event]) => event.code === 'claude_mcp_unavailable')).toBe(false)
+    f.state.checkpoint = { session_id: 's', message_uuid: 'checkpoint', cwd: '/workspace', resumable: 1 }
+    f.input.sourceMessageId = 'tail'
+    await run([init([]), assistant('b'), success])
+    expect(f.sdk.query.mock.calls[1][0].options.resume).toBe('s')
+    expect(f.emit).toHaveBeenCalledWith(expect.objectContaining({ type: 'notice', code: 'claude_mcp_unavailable' }))
+  })
+
+  it('does not warn about an empty server list nobody configured', async () => {
+    const f = fixture([init([]), assistant(), success])
+    withMcp(f, { enabled: true, claudeAiConnectors: true, disabledServers: [] })
+    f.state.branch = { session_id: 's', state: 'ready' }
+    f.state.checkpoint = { session_id: 's', message_uuid: 'checkpoint', cwd: '/workspace', resumable: 1 }
+    f.input.sourceMessageId = 'tail'
+    await f.service.run(f.input)
+    expect(f.emit.mock.calls.some(([event]) => event.code === 'claude_mcp_unavailable')).toBe(false)
+  })
+})

@@ -1,0 +1,109 @@
+/* Claude Code MCP servers panel. Fallback palette when no custom theme is enabled; with one,
+   ClaudeMcpSettings sets every variable from theme tokens (agent_design.md). */
+.claude-mcp {
+  --cmcp-text: #29262c;
+  --cmcp-muted: #706a77;
+  --cmcp-surface: rgb(255 255 255 / .6);
+  --cmcp-button-bg: rgb(255 255 255 / .75);
+  --cmcp-button-text: #29262c;
+  --cmcp-badge-bg: rgb(0 0 0 / .05);
+  --cmcp-badge-text: #514b57;
+  --cmcp-accent: #275fa7;
+  --cmcp-switch-off: #b4aeb9;
+  --cmcp-thumb: white;
+  --cmcp-thumb-on: #eaf1ff;
+  --cmcp-error: #b42318;
+  --cmcp-ok-bg: rgb(22 163 74 / .12);
+  --cmcp-ok-text: #15803d;
+  --cmcp-failed-bg: rgb(220 38 38 / .12);
+  --cmcp-failed-text: #b42318;
+  --cmcp-auth-bg: rgb(217 119 6 / .14);
+  --cmcp-auth-text: #92400e;
+  --cmcp-pending-bg: rgb(37 99 235 / .1);
+  --cmcp-pending-text: #1d4ed8;
+  --cmcp-off-bg: rgb(0 0 0 / .05);
+  --cmcp-off-text: #706a77;
+  color: var(--cmcp-text);
+}
+.dark .claude-mcp {
+  --cmcp-text: #eeeaf1;
+  --cmcp-muted: #aaa5b3;
+  --cmcp-surface: rgb(255 255 255 / .055);
+  --cmcp-button-bg: rgb(255 255 255 / .1);
+  --cmcp-button-text: #eeeaf1;
+  --cmcp-badge-bg: rgb(255 255 255 / .07);
+  --cmcp-badge-text: #d6d1dc;
+  --cmcp-accent: #ffc49b;
+  --cmcp-switch-off: #66616c;
+  --cmcp-thumb: #eeeaf1;
+  --cmcp-thumb-on: #231b16;
+  --cmcp-error: #fca5a5;
+  --cmcp-ok-bg: rgb(74 222 128 / .14);
+  --cmcp-ok-text: #86efac;
+  --cmcp-failed-bg: rgb(248 113 113 / .14);
+  --cmcp-failed-text: #fca5a5;
+  --cmcp-auth-bg: rgb(251 191 36 / .14);
+  --cmcp-auth-text: #fcd34d;
+  --cmcp-pending-bg: rgb(147 197 253 / .14);
+  --cmcp-pending-text: #bfdbfe;
+  --cmcp-off-bg: rgb(255 255 255 / .06);
+  --cmcp-off-text: #aaa5b3;
+}
+
+.claude-mcp-muted { color: var(--cmcp-muted); }
+.claude-mcp-error { color: var(--cmcp-error); }
+.claude-mcp code { font-size: .95em; }
+
+.claude-mcp-surface { border-radius: 16px; background: var(--cmcp-surface); }
+
+.claude-mcp-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  background: var(--cmcp-button-bg);
+  color: var(--cmcp-button-text);
+  transition: background-color var(--ygg-motion-duration-fast, 150ms) ease, transform var(--ygg-motion-duration-fast, 150ms) ease;
+}
+.claude-mcp-button:hover:not(:disabled) { background: color-mix(in srgb, var(--cmcp-button-bg) 82%, var(--cmcp-button-text)); }
+.claude-mcp-button:active:not(:disabled) { transform: scale(.97); }
+.claude-mcp-button:disabled { cursor: not-allowed; opacity: .5; }
+.claude-mcp-button:focus-visible, .claude-mcp-switch:focus-visible, .claude-mcp-input:focus-visible { outline: 2px solid var(--cmcp-accent); outline-offset: 2px; }
+
+.claude-mcp-pill { border-radius: 999px; padding: 2px 8px; font-size: 11px; font-weight: 500; white-space: nowrap; }
+.claude-mcp-pill[data-tone='badge'] { background: var(--cmcp-badge-bg); color: var(--cmcp-badge-text); }
+.claude-mcp-pill[data-tone='connected'] { background: var(--cmcp-ok-bg); color: var(--cmcp-ok-text); }
+.claude-mcp-pill[data-tone='failed'] { background: var(--cmcp-failed-bg); color: var(--cmcp-failed-text); }
+.claude-mcp-pill[data-tone='needs-auth'] { background: var(--cmcp-auth-bg); color: var(--cmcp-auth-text); }
+.claude-mcp-pill[data-tone='pending'] { background: var(--cmcp-pending-bg); color: var(--cmcp-pending-text); }
+.claude-mcp-pill[data-tone='disabled'] { background: var(--cmcp-off-bg); color: var(--cmcp-off-text); }
+
+.claude-mcp-notice { border-radius: 16px; background: var(--cmcp-auth-bg); }
+
+.claude-mcp-input {
+  min-width: 0;
+  flex: 1;
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 12px;
+  background: var(--cmcp-surface);
+  color: var(--cmcp-text);
+  outline: none;
+}
+.claude-mcp-input::placeholder { color: var(--cmcp-muted); }
+
+/* Same switch as the tool rows: themed track and thumb, thumb position as a second cue. */
+.claude-mcp-switch { display: grid; place-items: center; width: 36px; height: 36px; flex-shrink: 0; border-radius: 50%; transition: background-color var(--ygg-motion-duration-fast, 150ms); }
+.claude-mcp-switch:hover:not(:disabled) { background: var(--cmcp-surface); }
+.claude-mcp-switch:disabled { cursor: not-allowed; opacity: .5; }
+.claude-mcp-switch-track { width: 28px; height: 16px; border-radius: 999px; padding: 3px; background: var(--cmcp-switch-off); transition: background-color var(--ygg-motion-duration-fast, 150ms) ease-in-out; }
+.claude-mcp-switch-track > span { display: block; width: 10px; height: 10px; border-radius: 50%; background: var(--cmcp-thumb); transition: transform 250ms var(--ygg-motion-ease-emphasized, ease), background-color var(--ygg-motion-duration-fast, 150ms) ease-in-out; }
+.claude-mcp-switch[aria-checked='true'] .claude-mcp-switch-track { background: var(--cmcp-accent); }
+.claude-mcp-switch[aria-checked='true'] .claude-mcp-switch-track > span { transform: translateX(12px); background: var(--cmcp-thumb-on); }
+
+@media (prefers-reduced-motion: reduce) {
+  .claude-mcp-button, .claude-mcp-switch, .claude-mcp-switch-track, .claude-mcp-switch-track > span { transition: none; }
+}

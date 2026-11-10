@@ -68,6 +68,7 @@ import { FastModeAnimationSettings } from './FastModeAnimationSettings'
 import { useSettingsSectionThemeColors } from './settingsSectionTheme'
 import { ToolsSettings } from './ToolsSettings'
 import { HookGenerationSettings } from './HookGenerationSettings'
+import { ClaudeMcpSettings } from './ClaudeMcpSettings'
 import { KeyboardShortcutsModal } from './KeyboardShortcutsModal'
 
 type SettingsPaneProps = {
@@ -3654,6 +3655,7 @@ ${block}`
                       </div>
                     )}
                   </div>
+                  {mcpExpanded && <ClaudeMcpSettings />}
                   </div>
                 </div>
               </div>

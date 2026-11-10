@@ -2,6 +2,9 @@
 paths:
   - "shared/claudeProvider.ts"
   - "shared/claudeTransfer.ts"
+  - "shared/claudeNativeMcp.ts"
+  - "client/ygg-chat-r/server/headlessServer/routes/claudeMcpRoutes.ts"
+  - "client/ygg-chat-r/src/components/SettingsPane/ClaudeMcpSettings.tsx"
   - "client/ygg-chat-r/server/headlessServer/services/claude*.ts"
   - "client/ygg-chat-r/server/headlessServer/persistence/claudeSessionRepo.ts"
 ---
@@ -28,7 +31,7 @@ The composer reasoning slider applies on each new turn, including continuation a
 
 Claude uses its native tools, not Graviton's tool registry or subagent engine. SDK permission requests are routed through DecisionBroker and the existing stream-specific approval UI. Claude permission mode is `default`, or `auto` when the composer approval control is set to Auto (Claude only: Ask → Auto → Allow all; Auto is sent only while Allow all is off, so calls the classifier cannot decide still prompt, and a `claude_auto_unavailable` notice is emitted if the CLI falls back). Chat mode is not native plan mode: Claude can converse and use read/shell tools under the normal approval gate, while an SDK `PreToolUse` hook denies Edit/Write/MultiEdit/NotebookEdit/EnterPlanMode. Both modes send the same tool list. `disallowedTools` (or a bare deny rule) would remove tools from the request, and since tools lead the cached prefix, every mode switch would re-bill the whole transcript. The hook decision outranks Claude's own allow rules, `acceptEdits` and the auto classifier, and applies to child agents. Chat-mode messages end with a one-line note (`CHAT_MODE_NOTE`) that file edits, including through Bash, are disabled; it sits in the new user message, after the cached prefix, and is left off native commands. Bash writes are discouraged by that note, not blocked. A Claude run never persists a mode-notification row after its final response (one would displace the resumable checkpoint): the turn's mode is `meta.operationMode` on its user row and on each response row, and `Chat.tsx` derives the usual Chat/Agent notice below the first Claude user row of a branch and wherever the mode changes (`claudeModeNotices.ts`). The mode can also change during a run; see Live mode switches below. No SDK permission-bypass mode is enabled. Graviton's Ask / Allow all setting is captured at run start: `toolAutoApprove: false` prompts for native permission requests; otherwise the broker auto-approves them. Allow all on a pending permission persists the originating branch's approval policy before releasing current/future permission waits. Later messages on that branch retain it, including after reload/restart; other branches are not promoted. The composer Ask / Allow all control is branch-scoped. Historical forks inherit only at their cut; fresh summary/clean-start execution handoffs use the host default unless explicitly selected. Admission honors this policy instead of forcing Claude back to Ask on each run. Tools Claude considers safe may execute without prompting. AskUserQuestion is denied before approval handling, with instructions to ask in prose. In Chat mode, ExitPlanMode asks the user to switch to Agent mode; accepting switches the run's shared mode control, so the edit block lifts for the rest of the run and a queued successor run also starts in Agent mode. The host permission callback also denies the file-edit tools in Chat mode as a backstop, even with Allow all; everything else follows the approval gate.
 
-Claude Code's own settings layers load as in the CLI (`settingSources: ['user', 'project', 'local']`): its skills, hooks, plugins, CLAUDE.md and permission rules apply, so a tool its `permissions.allow` covers runs without a Graviton prompt. MCP configuration stays empty/strict. Admin-managed policy/hooks remain Claude-owned. Native tools get a filtered environment, not Graviton's unrelated app credentials. This is not OS sandbox isolation.
+Claude Code's own settings layers load as in the CLI (`settingSources: ['user', 'project', 'local']`): its skills, hooks, plugins, CLAUDE.md and permission rules apply, so a tool its `permissions.allow` covers runs without a Graviton prompt. MCP is off unless Settings turns on Claude Code's own servers (see Claude Code MCP servers below). Admin-managed policy/hooks remain Claude-owned. Native tools get a filtered environment, not Graviton's unrelated app credentials. This is not OS sandbox isolation.
 
 Native hooks stream as `hook_started` / `hook_progress` / `hook_response` (`includeHookEvents`) and are stored as hook runs with `sourceFile: 'Claude Code'`: tool events on the row of the latest call to that tool, the rest on the current head (the user row for SessionStart/UserPromptSubmit). Exit 2 is recorded as a successful `blocked` outcome. A Skill call's instructions, which Claude adds as a synthetic user message, are kept as a `context_injection` block (`origin: 'claude'`) beside the call; Graviton never re-sends such blocks to Claude. Instruction files Claude loads itself (CLAUDE.md chain, `.claude/rules` including `paths:` matches, `@` imports) arrive through an SDK `InstructionsLoaded` callback and render through the same `ContextInjectionCard`: a load with a `trigger_file_path` sits beside the result of the Read/Edit/Write call on that path ("After step N"), other loads on the next assistant row, unclaimed loads on the final row. The text is read from disk without frontmatter or HTML comments, so it shows the current file, not a byte copy of the model's input. Each file shows once per run. Resumed/forked sessions skip untriggered startup loads, which the session showed when it started. Child-agent loads stay in Claude's transcript. Only the `Read`/`Edit` tools trigger path rules; Bash file access does not.
 
@@ -37,11 +40,94 @@ Native hooks stream as `hook_started` / `hook_progress` / `hook_response` (`incl
 - Text and selected-file context only; pasted image attachments are rejected.
 - Queued user input and live Chat/Agent switches are supported (see Queued input and Live mode switches below). A manual `/compact` run refuses queued input but accepts a mode switch.
 - `/compact` while idle resumes the selected native Claude session and invokes Claude’s own `/compact`. Graviton’s summarizer provider/model/prompt settings are not applied. Active-run manual compaction remains refused; native auto-compaction continues normally. A `/name` Graviton cannot expand is looked up in Claude's command list (a hook-less CLI that gets no prompt): user, project and plugin skills and custom commands lead the prompt for Claude to expand, and the user row records the command and its description (Claude does not stream the expanded body). Claude's built-ins are rejected. As in the CLI, input is a command only when the first word after `/` is a command name (`^[a-zA-Z0-9_][a-zA-Z0-9:_-]*$`, `parseClaudeSlashCommand`); a message that starts with a path such as `/Users/me/plan.md` is an ordinary prompt.
-- No Graviton custom tools, REPL or subagent controls. Graviton Stop side-effect hooks run after a successful persisted response (sync/async commands and local API callbacks supported); other Graviton hook lifecycles and Stop-driven model continuation/context injection are not bridged. Failed/aborted runs and manual compaction skip Stop. Host-owned SDK compaction callbacks run beside Claude's own native hooks. Graviton runs recorded before their row exists (UserPromptSubmit, SessionStart, PreCompact) are attached to the user row or compaction summary once it is persisted.
+- No Graviton custom tools, MCP servers, REPL or subagent controls (Claude Code's own MCP servers can be enabled; see above). Graviton Stop side-effect hooks run after a successful persisted response (sync/async commands and local API callbacks supported); other Graviton hook lifecycles and Stop-driven model continuation/context injection are not bridged. Failed/aborted runs and manual compaction skip Stop. Host-owned SDK compaction callbacks run beside Claude's own native hooks. Graviton runs recorded before their row exists (UserPromptSubmit, SessionStart, PreCompact) are attached to the user row or compaction summary once it is persisted.
 - Native child details remain in Claude's own transcript; parent tool activity/results are projected.
 - Direct content edits are rejected; use an edit branch. Notes remain editable. Deletion works like Claude Code's rewind: it cascades, so it cuts the branch back, and `planMessageDeletion` (`persistence/claudeMessageDeletion.ts`) allows the cut only where Claude can continue — at a resumable response checkpoint, at the conversation root, or beside a surviving sibling (for example a regenerated response). Launch scaffolding owned only by a deleted first prompt goes with it. Other cuts (a mid-turn queued message, the only response of a turn, the first prompt after a compaction summary) return 409 `claude_delete_refused`. The next send forks the native session at the checkpoint; an emptied branch loses its `claude_branch_sessions` row and starts fresh. Chat shows Delete on Claude user messages; Heimdall accepts any selection and the server validates it. Claude's native session files are never deleted, and workspace files are not restored.
 - The displayed model list is a configured catalog, not verified account entitlement.
 - Uses installed CLI plus version-pinned SDK `0.3.309`; no bundled CLI resolution relative to esbuild output.
+- A branch's CLI stays open between sends at its head (see Warm sessions); every other run starts its own.
+
+## Claude Code MCP servers
+
+Settings → MCP Servers → **Claude Code MCP servers** lets Claude chats use the MCP servers set up in Claude Code itself: `claude mcp add` (user/local scope), a workspace's `.mcp.json`, plugins and the account's claude.ai connectors. Graviton's own MCP servers (the list above it) are not passed to Claude; that is v2. The setting is the host execution-preference domain `claudeMcp` (`shared/claudeNativeMcp.ts`): `enabled` (default off), `claudeAiConnectors` (default on) and `disabledServers`. `ClaudeSessionService` reads it at each run start through the `nativeMcp` dep (`index.ts` → `ChatOrchestrator` → service). Tests and other callers get no reader, so MCP stays off for them.
+
+- **Off:** `strictMcpConfig: true, mcpServers: {}`, as before.
+- **On:** `strictMcpConfig: false` and no `mcpServers`, so Claude loads its own configuration. Connectors off adds the flag setting `disableClaudeAiConnectors: true`. A server unchecked in Settings becomes a `disallowedTools` rule `mcp__<server>`, with the server name normalized like the CLI does (`claudeMcpToolServerName`: invalid characters become `_`; for `claude.ai …` names, repeats collapse and edge `_` drop). The CLI still connects a hidden server; only its tools are removed. Changing the list changes the tool prefix, so the next turn re-reads the cached transcript once. Mode switches are unaffected.
+- **Calls** to MCP tools reach `canUseTool` like any native tool, so Graviton's Ask / Auto / Allow all and the approval UI apply.
+- **Resume guard (CLI #78820):** a resume that first delivers a pending background-task notification can boot without any MCP servers. When a resumed run's fresh `init` lists no servers but an earlier run in this host process listed some, the run emits a `claude_mcp_unavailable` notice. `init` lists only servers known when it is sent: claude.ai connectors are fetched later, so a connector-only setup never trips the guard.
+
+The panel's status, sign-in, reconnect and sign-out go through `ClaudeMcpControlService` (`services/claudeMcpControl.ts`) and `routes/claudeMcpRoutes.ts`:
+
+| Route | Does |
+|---|---|
+| `GET /api/headless/claude/mcp/status?cwd=` | `mcpServerStatus()` once no server is `pending` (12 s cap). Returns name, status, source, transport, error and tool names. Never returns config (headers, env). |
+| `POST /api/headless/claude/mcp/sign-in` `{ name, cwd? }` | `mcpAuthenticate(name)`; returns `{ authUrl, callbackExpected }` for the renderer to open. |
+| `POST /api/headless/claude/mcp/sign-in/callback` `{ name, callbackUrl }` | `mcpSubmitOAuthCallbackUrl`, for a redirect that could not reach Claude's listener. |
+| `POST /api/headless/claude/mcp/reconnect` `{ name, cwd? }` | `reconnectMcpServer`, then that server's status. |
+| `POST /api/headless/claude/mcp/sign-out` `{ name, cwd? }` | `mcpClearAuth` (as `claude mcp logout`). |
+
+Each call starts a short-lived CLI that never gets a prompt (hooks off, nothing persisted), like `nativeCommand()`. `cwd` defaults to the home folder, so the panel shows user, home-local, plugin and claude.ai servers; a project's servers appear in its own chats. `mcpAuthenticate`, `mcpSubmitOAuthCallbackUrl` and `mcpClearAuth` exist in the 0.3.309 runtime (CLI 2.1.318) but not in its `.d.ts`. The service checks for them, and without them the panel shows `claude mcp login "<name>"`. A sign-in keeps its CLI, which holds the OAuth flow and callback listener, until the server reports `connected` or 5 minutes pass. For claude.ai connectors (`callbackExpected: false`), authorization happens on claude.ai, so the service calls `reconnectMcpServer` on each poll. Credentials stay in Claude Code's store and Graviton never sees a token. Host shutdown closes waiting sign-ins (`stopHeadlessSessions`). Only `http(s)` sign-in and callback addresses are accepted.
+
+Limits:
+- **Toggling:** Graviton never calls `toggleMcpServer`. In CLI 2.1.318 it writes `disabledMcpServers` / `enabledMcpServers` to Claude's config, which would also change the terminal CLI. A server disabled in Claude Code shows as `disabled` and must be enabled with `/mcp`.
+- **Project servers:** a project `.mcp.json` server needs approval in Claude Code first.
+- **Environment:** stdio servers get the filtered `claudeProcessEnvironment()`, so a server relying on other inherited variables fails. Put them in its `env` config.
+- **Reconnects:** servers connect when a CLI starts: once per warm session (see Warm sessions), or each turn when it relaunches. A failed HTTP server is not retried inside a CLI (CLI #105752), so a reused CLI with a failed visible server is relaunched; Reconnect, sign-in and sign-out in Settings also make the next send relaunch.
+
+Observed on CLI 2.1.318 / SDK 0.3.309:
+- Status listed 47 servers (4 connected) without config.
+- A Haiku turn with one connector hidden found tools from the other connectors through ToolSearch and none from the hidden one.
+- `disableClaudeAiConnectors` left only a plugin server.
+- `mcpAuthenticate` on a claude.ai connector returned a `claude.ai/api/organizations/…/mcp/start-auth/…` address.
+
+No completed sign-in and no non-connector OAuth sign-in were exercised.
+
+## Warm sessions
+
+A branch's Claude CLI stays open between runs, so the next send at the head of that branch is pushed into the same process instead of launching a new one: no CLI boot, no MCP reconnects, no reload of skills, plugins and CLAUDE.md. Observed on CLI 2.1.318 with Haiku: first token about 0.8 s on a reused CLI against about 1.8 s on a new one.
+
+`claudeWarmProcess.ts` holds the process (`ClaudeWarmProcess`) and the parked set (`ClaudeWarmRegistry`). `claudeWarmChannel.ts` holds its prompt channel and the shared event reader. `index.ts` passes `claudeWarmConfigFromEnv()` to the orchestrator: `GRAVITON_CLAUDE_WARM_IDLE_MS` (default 10 min, `0` turns warm sessions off), `GRAVITON_CLAUDE_WARM_MAX` (parked CLIs, default 3, longest-unused closed first) and `GRAVITON_CLAUDE_WARM_MAX_AGE_MS` (default 60 min; an older CLI is not parked again, so it relaunches with fresh configuration). Without a config (tests, direct callers) every run starts its own CLI, as before.
+
+**Reuse** needs every one of these:
+- The send continues at the row the CLI parked at (`sourceMessageId === headMessageId`): not a fork, edit, retry, summary branch or deletion cut.
+- The branch is `ready` with the same native session.
+- The launch key is equal. That covers cwd, extra directories, the thinking mode (adaptive or not), MCP options, the plans directory, the executable (realpath and mtime), the hook shape (with or without Graviton hooks), a config epoch, and the mtime and size of `settings.json` / `settings.local.json` under the Claude config dir and the workspace, and of the workspace `.mcp.json`. The epoch is bumped by sign-in, reconnect and sign-out in the Claude MCP panel.
+
+Anything else closes the kept CLI and takes the cold path. The cold path first waits (8 s at most) until the old process has exited, so two CLIs never write one session.
+
+**Per-turn settings** go to the live CLI before the prompt:
+- `setPermissionMode` always, since an accepted ExitPlanMode moves the session to `default`.
+- `setModel` when the model changed.
+- `applyFlagSettings({ effortLevel, ultracode })`, always with both keys: `null` returns effort to the model default, and `false` turns ultracode off.
+
+With Claude Code MCP on, a CLI with a failed server that is not hidden is relaunched. A setter failure, timeout or exit, or work the CLI starts meanwhile, closes the CLI and takes the cold path. A Stop during the setters fails the send.
+
+**Ownership.** The CLI's `canUseTool` and SDK hooks forward to the run that owns it. While parked, `canUseTool` denies and PreToolUse denies, so the Chat-mode guard never fails open. A reused run treats events as its own only after the CLI reports `command_lifecycle: started` for its prompt. A turn, or another message's start, before that fails the send: "Claude started work this send did not ask for". The branch is then `uncertain`, so the next send forks at the checkpoint.
+
+**Parking.** After a run returns a completed response, its CLI is parked only when all of these hold:
+- The run was not stopped.
+- No queued message or mode notice is still offered.
+- No message was given up on: the 30 s start timeout, or the 10 s wait for a background task's answer turn.
+- The CLI's last task list, ambient tasks included, is empty.
+
+A manual `/compact` never parks. While parked, a drainer reads the CLI's events. Idle chatter is dropped: the previous prompt's `completed` lifecycle, rate limits, late hook frames, an empty task list, idle states and status. Anything else means the CLI started work by itself. Graviton then closes it and marks the branch `interrupted`, so the next send forks at the checkpoint instead of appending to a transcript it never saw.
+
+**Stop** kills the CLI at once, ending its turn and background tasks, as before. A stop never reads as a settled run, and a stopped run always throws, even when an earlier turn of the same run already reached `result`.
+
+**Host shutdown** (`stopHeadlessSessions` → `ChatOrchestrator.disposeClaudeSessions`) closes every kept CLI.
+
+**Differences from a CLI per turn**, which are the terminal CLI's own behaviour:
+- Native SessionStart(`resume`) hooks run once per process, and SessionEnd only when it closes.
+- Startup instruction files load when the CLI starts, so an edit to CLAUDE.md or rules between sends of one warm session reaches Claude as the terminal CLI would handle it. A settings or `.mcp.json` edit relaunches, through the launch key.
+- A native hook still open at the end of a run is recorded as `no_response`. Its late frame goes to the drainer.
+
+`claudeWarmSessions.test.ts` drives a fake CLI that behaves as CLI 2.1.318 does in streaming-input mode. Observed live on CLI 2.1.318 with Haiku:
+- Recall across a reused turn.
+- A new CLI when the thinking mode changed.
+- A Stop mid-turn on a reused CLI ended as `uncertain`, with nothing kept.
+- The next send forked and recalled.
+- The CLI after it was reused again.
+- Shutdown closed it.
 
 ## Queued input
 
