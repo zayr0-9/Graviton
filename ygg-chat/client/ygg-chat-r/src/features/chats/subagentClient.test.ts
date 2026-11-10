@@ -113,7 +113,7 @@ describe('executeSubagentCall request building', () => {
   it.each([
     ['OpenAI (ChatGPT)', 'priority', 'priority'],
     ['OpenAI (ChatGPT)', undefined, undefined],
-    ['OpenRouter', 'priority', 'priority'],
+    ['OpenRouter BYOK', 'priority', undefined],
     ['LM Studio', 'priority', undefined],
   ] as const)('forwards service tier only to resolved Codex children (%s, %s)', async (callerProvider, serviceTier, expected) => {
     let capturedBody: any
@@ -196,7 +196,7 @@ describe('executeSubagentCall request building', () => {
     expect(capturedBody.tools).toEqual([])
   })
 
-  it('falls back to the local default provider when the caller uses openrouter', async () => {
+  it('maps a legacy OpenRouter caller to the BYOK provider', async () => {
     let capturedBody: any = null
     vi.stubGlobal(
       'fetch',
@@ -207,8 +207,7 @@ describe('executeSubagentCall request building', () => {
     )
 
     await executeSubagentCall({ id: 'c', arguments: { prompt: 'x' } }, { ...baseContext(), callerProvider: 'OpenRouter' })
-    expect(capturedBody.provider).toBe('openaichatgpt')
-    expect(capturedBody.modelName).toBe('gpt-5.6-sol')
+    expect(capturedBody.provider).toBe('openrouterbyok')
   })
 
   it('captures autoApprove from live parent state', async () => {

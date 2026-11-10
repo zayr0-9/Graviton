@@ -399,10 +399,6 @@ export type HeadlessStreamEvent =
       toolName: string
       toolInput: any
     }
-  // Relayed from Railway (cloud/free-tier inference) by the gateway proxy (Phase 4).
-  | { type: 'free_generations_update'; remaining: number; isFreeTier?: boolean }
-  | { type: 'generation_limit_reached'; message?: string }
-  | { type: 'reauth_required'; message?: string; envelope?: ChatErrorEnvelope }
   // Non-terminal, user-facing status. A run keeps going after one of these; they
   // exist so a multi-second silence (a provider retry, a resubscribe, an in-loop
   // compaction) has a visible cause instead of looking like a stall. Never

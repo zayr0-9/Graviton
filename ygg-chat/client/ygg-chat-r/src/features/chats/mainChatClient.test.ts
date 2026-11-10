@@ -300,42 +300,6 @@ describe('runServerChatLoop resubscribe', () => {
 })
 
 
-describe('runServerChatLoop reauthentication', () => {
-  // Deliberate behaviour change: an expired session used to yank the user out of the app
-  // mid-generation (force-logout event -> ProtectedRoute -> /login). It now classifies as
-  // `session_expired` and lets the chat render a bubble with a Sign in button, so the user
-  // keeps their place and their partial reply, and chooses when to leave.
-  it('classifies reauthentication as session_expired WITHOUT forcing navigation', async () => {
-    const dispatchEvent = vi.fn()
-    ;(globalThis as any).window = { dispatchEvent, location: { hash: '' } }
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValue(sseResponse([{ type: 'reauth_required', message: 'Sign in again.' }, { type: 'error', error: 'raw 401' }]))
-    )
-
-    const error = await runServerChatLoop(
-      {
-        streamId: 's-auth',
-        conversationId: 'c1',
-        operation: 'send',
-        path: '/api/conversations/c1/messages',
-        request: {},
-        signal: new AbortController().signal,
-      },
-      collectDispatch()
-    ).catch(e => e)
-
-    const envelope = getChatStreamErrorEnvelope(error)
-    expect(envelope?.code).toBe('session_expired')
-    expect(envelope?.action?.kind).toBe('sign_in')
-    expect(envelope?.recoverability).toBe('user_action')
-
-    // The whole point of the change: no side effect yanks the user anywhere.
-    expect(dispatchEvent).not.toHaveBeenCalled()
-    expect((globalThis as any).window.location.hash).toBe('')
-  })
-})
-
 describe('deferred Full access acknowledgement', () => {
   it('acknowledges only the notice and leaves image consumption/optimistic clearing to the real user row', async () => {
     setFullAccessEnabled(true, 'c1')

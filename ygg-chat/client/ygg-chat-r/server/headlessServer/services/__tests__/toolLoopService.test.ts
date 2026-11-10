@@ -1486,7 +1486,7 @@ describe('ChatGPT model request measurements', () => {
     await service.run({ ...baseRunInput, onModelRequest }, () => {})
     expect(onModelRequest).toHaveBeenCalledTimes(1)
     expect(onModelRequest).toHaveBeenCalledWith({ durationMs: 1000, outputTokens: 0 })
-    await service.run({ ...baseRunInput, provider: 'openrouter', onModelRequest }, () => {})
+    await service.run({ ...baseRunInput, provider: 'openrouterbyok', onModelRequest }, () => {})
     expect(onModelRequest).toHaveBeenCalledTimes(1)
   })
 

@@ -80,7 +80,7 @@ describe('ordinary persisted compaction turns', () => {
     expect(events.some(event => event.type === 'complete')).toBe(false)
   })
 
-  it.each(['lmstudio', 'zai', 'bedrock', 'openrouter'])('triggers for %s with the configured percentage', async provider => {
+  it.each(['lmstudio', 'zai', 'bedrock', 'openrouterbyok'])('triggers for %s with the configured percentage', async provider => {
     const h = harness([{ content: 'Short summary' }, { content: 'Done' }])
     await h.service.run({ ...base, provider, compactionThresholdPercent: 40,
       history: [{ id: 'root', role: 'user', content: 'x'.repeat(20000) }] }, () => {})

@@ -71,9 +71,7 @@ export type ChatNoticeCode = 'retrying' | 'reconnecting' | 'compacting' | 'quota
  */
 export type ChatErrorActionKind =
   | 'retry'
-  | 'sign_in'
   | 'reconnect_provider'
-  | 'upgrade'
   | 'switch_mode'
   | 'open_settings'
   | 'reload_conversation'
@@ -166,10 +164,11 @@ export const CHAT_ERROR_DEFAULTS: Record<ChatErrorCode, ChatErrorDefault> = {
     action: { kind: 'retry', label: 'Try again' },
   },
   // ── Auth and identity ──
+  // Legacy (Graviton cloud account). No longer emitted; kept so old rows still render.
   session_expired: {
-    userMessage: 'Your session expired, so I stopped here. Sign in again to keep going.',
+    userMessage: 'Your session expired, so I stopped here. Check your provider connection in Settings.',
     recoverability: 'user_action',
-    action: { kind: 'sign_in', label: 'Sign in' },
+    action: { kind: 'open_settings', label: 'Open settings' },
   },
   provider_signin_required: {
     userMessage: "This provider needs you to sign in again before I can use it.",
@@ -182,13 +181,14 @@ export const CHAT_ERROR_DEFAULTS: Record<ChatErrorCode, ChatErrorDefault> = {
     action: { kind: 'open_settings', label: 'Open settings' },
   },
   // ── Usage, quota, billing ──
+  // Legacy (Graviton free tier). No longer emitted; kept so old rows still render.
   free_tier_exhausted: {
-    userMessage: "You've used all of your free generations.",
+    userMessage: "You've used all of your free generations. Choose another provider in Settings.",
     recoverability: 'user_action',
-    action: { kind: 'upgrade', label: 'See plans' },
+    action: { kind: 'open_settings', label: 'Open settings' },
   },
   provider_quota_exceeded: {
-    userMessage: "This provider reports that you're out of credit or quota.",
+    userMessage: 'Your provider account needs billing or credits.',
     recoverability: 'user_action',
     action: { kind: 'open_settings', label: 'Open settings' },
   },
@@ -197,10 +197,11 @@ export const CHAT_ERROR_DEFAULTS: Record<ChatErrorCode, ChatErrorDefault> = {
     recoverability: 'retryable',
     action: { kind: 'retry', label: 'Try again' },
   },
+  // Legacy (Graviton subscription). No longer emitted; kept so old rows still render.
   subscription_inactive: {
-    userMessage: 'Your subscription is not active, so this model is unavailable.',
+    userMessage: 'Your subscription is not active, so this model is unavailable. Check your provider account.',
     recoverability: 'user_action',
-    action: { kind: 'upgrade', label: 'See plans' },
+    action: { kind: 'open_settings', label: 'Open settings' },
   },
   // ── Provider ──
   provider_unavailable: {

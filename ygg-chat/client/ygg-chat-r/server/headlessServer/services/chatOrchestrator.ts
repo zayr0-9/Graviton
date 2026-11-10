@@ -18,13 +18,12 @@ import { StreamingRunRepo } from '../persistence/streamingRunRepo.js'
 import { parseMessageMeta } from '../../../../../shared/contextInjection.js'
 import { LineageRepo, type LineageRow } from '../persistence/lineageRepo.js'
 import { ToolInvocationRepo } from '../persistence/toolInvocationRepo.js'
-import { TreeMessageSink, CloudMirrorSink, type MessageSink } from './messageSink.js'
+import { TreeMessageSink, type MessageSink } from './messageSink.js'
 import type { ProviderTokenStore } from '../providers/tokenStore.js'
 import { BranchOrchestrator, type ResolvedExecution } from './branchOrchestrator.js'
 import { buildHeadlessSystemPrompt } from './headlessSystemPrompt.js'
 import { ProviderRouter, normalizeProviderRoute } from './providerRouter.js'
 import { attachChatErrorCode, classifyChatError } from '../providers/providerErrorFormatter.js'
-import { RailwayAppAuthError } from '../providers/openRouterProvider.js'
 import {
   ProviderErrorAssistantResponse,
   ToolLoopService,
@@ -81,10 +80,6 @@ interface ChatOrchestratorDeps {
    *  AND a decisionBroker is wired, the run fires the 5 lifecycle chat hooks
    *  (parity with the renderer). Absent for subagents/tests => NO hooks. */
   hookRunner?: (req: HookRunRequest) => Promise<HookRunResult>
-  /** Phase 4 gateway.chat flag. When true, the openrouter (cloud) route relays
-   *  free-tier SSE events and adopts Railway message ids (CloudMirrorSink). Default
-   *  false => the cloud route behaves exactly as before (drop frames, mint ids). */
-  cloudChatEnabled?: boolean
   claudeSessions?: ClaudeSessionService
 }
 
@@ -774,8 +769,8 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       })
     }
     if (submission.attachmentsBase64?.length && !isClaudeProvider(run.request.provider) &&
-      !['openaichatgpt', 'openrouter'].includes(normalizeProviderRoute(run.request.provider))) {
-      throw new Error('Queued image attachments are supported for ChatGPT, OpenRouter and Claude; send text or wait for this run to finish')
+      normalizeProviderRoute(run.request.provider) !== 'openaichatgpt') {
+      throw new Error('Queued image attachments are supported for ChatGPT and Claude; send text or wait for this run to finish')
     }
     if (!run.queue.closed) {
       run.queue.enqueue(submission, run.control.revision)
@@ -851,7 +846,6 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
   private readonly compactBranch?: ToolLoopCompactor
   private readonly decisionBroker?: DecisionBroker
   private readonly hookRunner?: (req: HookRunRequest) => Promise<HookRunResult>
-  private readonly cloudChatEnabled: boolean
   private readonly claudeSessionRepo: ClaudeSessionRepo
   private readonly claudeSessions: ClaudeSessionService
 
@@ -870,7 +864,6 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     this.compactBranch = deps.compactBranch
     this.decisionBroker = deps.decisionBroker
     this.hookRunner = deps.hookRunner
-    this.cloudChatEnabled = deps.cloudChatEnabled ?? false
     this.claudeSessionRepo = new ClaudeSessionRepo(deps.db)
     this.claudeSessions = deps.claudeSessions ?? new ClaudeSessionService({ sessions: this.claudeSessionRepo, messages: this.messageRepo, broker: deps.decisionBroker })
     this.toolLoopService =
@@ -1695,12 +1688,8 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     })
     startedEmitted = true
 
-    // Phase 4: the cloud (openrouter) route relays free-tier events and adopts Railway
-    // message ids, but ONLY when gateway.chat is on. Every other provider/flag-off run
-    // stays on TreeMessageSink with drop-frame parity. Resolved here (not at the loop)
-    // so the sink exists for the outer catch's D1 error row even if the run dies before
-    // the loop starts.
-    const isCloudRoute = this.cloudChatEnabled && normalizeProviderRoute(request.provider) === 'openrouter'
+    // Resolved here (not at the loop) so the sink exists for the outer catch's D1 error
+    // row even if the run dies before the loop starts.
     const sinkDeps = {
       messageRepo: this.messageRepo,
       lineageRepo: this.lineageRepo,
@@ -1714,7 +1703,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     }
     // ONE sink instance for the run: the loop's turns and any terminal error row share
     // its pending-fork state, so whichever writes first materializes the fork.
-    const sink: MessageSink = isCloudRoute ? new CloudMirrorSink(sinkDeps) : new TreeMessageSink(sinkDeps)
+    const sink: MessageSink = new TreeMessageSink(sinkDeps)
     runSink = sink
 
     trackedStreamId = this.streamingRunRepo.upsert({
@@ -2115,9 +2104,6 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
         persistContextInjection: contextLoader
           ? ({ parentId, text, files, reason }) => this.persistContextInjectionMessage(request, parentId, { text, files, reason })
           : undefined,
-        // Phase 4: relay Railway free-tier frames only on the cloud (openrouter) route
-        // under gateway.chat. False everywhere else => drop-frame parity.
-        relayFreeTierEvents: isCloudRoute,
       },
         emitWithLineage
       )
@@ -2273,24 +2259,11 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
         return
       }
 
-      // D2: an expired Yggdrasil session is `session_expired` with a "Sign in" action,
-      // and nothing else — no forced navigation, no modal. D3 (free-tier exhaustion)
-      // needs no special case at all: the provider attaches `free_tier_exhausted`, the
-      // classifier honours it, and it flows down this same path into a bubble.
-      const requiresReauthentication = error instanceof RailwayAppAuthError
-      let envelope = this.classifyRunError(error, {
+      const envelope = this.classifyRunError(error, {
         provider: request.provider,
         modelName: request.modelName,
         phase,
       })
-      if (requiresReauthentication && envelope.code !== 'session_expired') {
-        envelope = buildChatErrorEnvelope('session_expired', {
-          detail: envelope.detail ?? errorMessage,
-          provider: envelope.provider ?? request.provider,
-          status: envelope.status ?? 401,
-          action: { kind: 'sign_in', label: 'Sign in' },
-        })
-      }
 
       ensureStarted()
 
@@ -2327,11 +2300,6 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
         },
       })
       safeAssign(error, 'lineageId', lineageId)
-      if (requiresReauthentication) {
-        // Non-terminal by itself; it exists so a client can react to the auth state.
-        // `envelope` is what it shows — `message` stays raw for logs/back-compat.
-        safeEmit({ type: 'reauth_required', message: errorMessage, envelope })
-      }
       // R2 — ONE BUBBLE PER FAILURE. `persistedErrorMessageId` is the tier-1/tier-2
       // discriminator: PRESENT means this failure is already durable message content
       // (the row above), so the renderer must NOT also create a `ChatErrorRecord`;

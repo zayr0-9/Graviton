@@ -94,7 +94,7 @@ const mergeArtifacts = (existing: string[] | undefined, incoming: string[]): str
 }
 
 const webHiddenProviders = new Set(['OpenAI (ChatGPT)', 'LM Studio', 'Z.AI / GLM', 'Amazon Bedrock', 'OpenRouter BYOK', 'Claude Code'])
-const communityAllowedProviders = new Set(['LM Studio', 'OpenAI (ChatGPT)', 'OpenRouter', 'OpenRouter BYOK', 'Z.AI / GLM', 'Claude Code'])
+const communityAllowedProviders = new Set(['LM Studio', 'OpenAI (ChatGPT)', 'OpenRouter BYOK', 'Z.AI / GLM', 'Amazon Bedrock', 'Claude Code'])
 
 // Unset leaves claudeToolAutoApprove undefined so Claude follows the shared default.
 const claudeToolApprovalState = (value: ClaudeToolApproval | null) => ({
@@ -295,11 +295,6 @@ const makeInitialState = (): ChatState => {
     branchFastModeDrafts: loadBranchFastModeDrafts(),
     branchToolApprovalDrafts: loadBranchToolApprovalDrafts(),
     messageQueues: {},
-    freeTier: {
-      freeGenerationsRemaining: null,
-      showLimitModal: false,
-      isFreeTierUser: false,
-    },
     // Tier-2 failures that have no persisted assistant message to live on. Deliberately
     // NOT inside `streaming.byId`: that slot is pruned 30s after a run ends, and
     // `selectCurrentViewStreamFor` filters on `active` first, so an errored stream slot
@@ -2017,18 +2012,6 @@ export const chatSlice = createSlice({
 
     operationModeToggled: state => {
       state.operationMode = state.operationMode === 'plan' ? 'execute' : 'plan'
-    },
-
-    /* Free tier reducers */
-    freeGenerationsUpdated: (state, action: PayloadAction<{ remaining: number; isFreeTier: boolean }>) => {
-      state.freeTier.freeGenerationsRemaining = action.payload.remaining
-      state.freeTier.isFreeTierUser = action.payload.isFreeTier
-    },
-    freeTierLimitModalShown: state => {
-      state.freeTier.showLimitModal = true
-    },
-    freeTierLimitModalHidden: state => {
-      state.freeTier.showLimitModal = false
     },
 
     /* Chat error notice reducers (tier 2: failures with no persisted message to live on) */

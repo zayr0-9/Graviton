@@ -1359,9 +1359,6 @@ function Chat() {
   const claudeUltracode = useAppSelector(state => state.chat.claudeUltracode === true)
   // Claude cycles Ask -> Auto -> Allow all; Auto is the CLI classifier and only replaces Ask.
   const claudeApproval = toolAutoApprove ? 'allow_all' : claudeAutoMode ? 'auto' : 'ask'
-  // D3: free-tier exhaustion is a chat bubble, not a blocking modal. `sseProjection` records the
-  // `free_tier_exhausted` bubble directly on `generation_limit_reached` and never raises
-  // `freeTier.showLimitModal`, so the flag is dead and the modal is not rendered from here.
 
   // React Query for message fetching - MOVED BELOW after projectConversations is available
   // to enable passing storage_mode from cached conversations
@@ -1572,7 +1569,6 @@ function Chat() {
   const [jobsModalOpen, setJobsModalOpen] = useState(false)
   const fullAccessEnabled = useSyncExternalStore(subscribeFullAccess, isFullAccessEnabled)
   // OpenRouter cloud-sign-in required modal state
-  const [openRouterLoginRequiredModalOpen, setOpenRouterLoginRequiredModalOpen] = useState(false)
   // OpenAI ChatGPT login modal state
   const [openaiLoginModalOpen, setOpenaiLoginModalOpen] = useState(false)
   const [openaiAuthFlow, setOpenaiAuthFlow] = useState<{ url: string; verifier: string; state: string } | null>(null)
@@ -4977,17 +4973,14 @@ function Chat() {
     const allowedProviders = providers.providers.map(p => p.name)
 
     if (isCommunityMode) {
-      const preferredCommunityDefault = allowedProviders.includes('LM Studio')
-        ? 'LM Studio'
+      // Fresh installs default to OpenAI (ChatGPT) (fully-local plan Q6).
+      const preferredCommunityDefault = allowedProviders.includes('OpenAI (ChatGPT)')
+        ? 'OpenAI (ChatGPT)'
         : allowedProviders[0] || null
 
       if (!preferredCommunityDefault) return
 
-      if (
-        !providers.currentProvider ||
-        !allowedProviders.includes(providers.currentProvider) ||
-        providers.currentProvider === 'OpenRouter'
-      ) {
+      if (!providers.currentProvider || !allowedProviders.includes(providers.currentProvider)) {
         dispatch(chatSliceActions.providerSelected(preferredCommunityDefault))
       }
       return
@@ -4997,8 +4990,8 @@ function Chat() {
       // If provider selector is hidden and a default is configured, use it
       if (!providerSettings.showProviderSelector && providerSettings.defaultProvider) {
         dispatch(chatSliceActions.providerSelected(providerSettings.defaultProvider))
-      } else if (allowedProviders.includes('OpenRouter')) {
-        dispatch(chatSliceActions.providerSelected('OpenRouter'))
+      } else if (allowedProviders.includes('OpenAI (ChatGPT)')) {
+        dispatch(chatSliceActions.providerSelected('OpenAI (ChatGPT)'))
       } else if (allowedProviders.length > 0) {
         dispatch(chatSliceActions.providerSelected(allowedProviders[0]))
       }
@@ -5087,10 +5080,6 @@ function Chat() {
   const handleProviderSelect = useCallback(
     async (providerName: string) => {
       if (providerName === providers.currentProvider || claudeBranchLock || (hasSelectedHistory && isClaudeProvider(providerName))) return
-      if (providerName === 'OpenRouter' && isCommunityMode) {
-        setOpenRouterLoginRequiredModalOpen(true)
-        return
-      }
 
       // Check if OpenAI ChatGPT provider is selected and user is not authenticated
       if (providerName === 'OpenAI (ChatGPT)' && !isOpenAIAuthenticated()) {
@@ -5152,11 +5141,6 @@ function Chat() {
         return
       }
 
-      if (assignment.provider === 'OpenRouter' && isCommunityMode) {
-        event.preventDefault()
-        setOpenRouterLoginRequiredModalOpen(true)
-        return
-      }
 
       if (assignment.provider === 'OpenAI (ChatGPT)' && !isOpenAIAuthenticated()) {
         event.preventDefault()
@@ -5592,17 +5576,6 @@ function Chat() {
           // Only clear the bubble once a new attempt is actually under way; otherwise the
           // explanation would vanish and leave the failure invisible again.
           if (started) dismissChatError(record)
-          return
-        }
-        case 'sign_in': {
-          // D2: an expired session never force-redirects. The user chose to go here.
-          dismissChatError(record)
-          navigate('/login?required=cloud')
-          return
-        }
-        case 'upgrade': {
-          dismissChatError(record)
-          navigate('/payment')
           return
         }
         case 'switch_mode': {
@@ -6091,15 +6064,6 @@ function Chat() {
     if (dontAskAgain) setconfirmDel(false)
     if (pendingDeleteId) void performDelete(pendingDeleteId)
     closeDeleteModal()
-  }
-
-  const closeOpenRouterLoginRequiredModal = () => {
-    setOpenRouterLoginRequiredModalOpen(false)
-  }
-
-  const confirmOpenRouterLoginRequired = () => {
-    setOpenRouterLoginRequiredModalOpen(false)
-    navigate('/login?required=cloud')
   }
 
   // OpenAI ChatGPT login modal handlers
@@ -8350,39 +8314,6 @@ function Chat() {
         toolCallId={subagentTranscriptToolCallId}
         onClose={() => setSubagentTranscriptToolCallId(null)}
       />
-
-      {/* OpenRouter login required modal */}
-      {openRouterLoginRequiredModalOpen && (
-        <div
-          className='fixed inset-0 z-[100] flex items-center justify-center'
-          onClick={closeOpenRouterLoginRequiredModal}
-          style={{ backgroundColor: authModalBackdropColor }}
-        >
-          <div
-            className='rounded-lg shadow-xl p-6 w-[90%] max-w-md'
-            onClick={e => e.stopPropagation()}
-            style={{ backgroundColor: authModalSurfaceBackgroundColor }}
-          >
-            <h3 className='text-[20px] font-semibold mb-3' style={{ color: authModalTitleTextColor }}>
-              Sign in required for Yggdrasil models
-            </h3>
-            <p className='text-[14px] mb-6' style={{ color: authModalBodyTextColor }}>
-              you need to sign in with github or google account to access Yggdrasil models, logging in will merge your
-              local and yggdrasil account, you wont lose any info
-            </p>
-            <div className='flex justify-end'>
-              <Button
-                variant='outline2'
-                className='bg-emerald-600 hover:bg-emerald-700 border-emerald-700 text-white active:scale-90'
-                onClick={confirmOpenRouterLoginRequired}
-                style={authModalPrimaryButtonStyle}
-              >
-                Ok
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* OpenAI ChatGPT Login Modal */}
       {openaiLoginModalOpen && (

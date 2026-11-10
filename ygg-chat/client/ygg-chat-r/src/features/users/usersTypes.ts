@@ -12,7 +12,6 @@ export interface User {
   reset_period: 'none' | 'daily' | 'monthly' | 'yearly'
   stripe_customer_id?: string | null
   active_subscription_id?: string | null
-  quick_chat_project_id?: string | null
   free_generations_remaining: number
   favorite_conversation_ids?: string[]
 }

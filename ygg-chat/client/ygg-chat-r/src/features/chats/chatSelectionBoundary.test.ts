@@ -5,8 +5,8 @@ import { describe, expect, it } from 'vitest'
 // live in reducers/actions and are intentionally not prohibited by this UI-only boundary test.
 const callers = [
   'containers/Chat.tsx', 'containers/sideBar.tsx', 'containers/RecentLineages.tsx',
-  'containers/ConversationPage.tsx', 'containers/HomepageRedirect.tsx', 'containers/Homepage.tsx',
-  'components/Heimdall/Heimdall.tsx', 'components/QuickInput/QuickInput.tsx',
+  'containers/ConversationPage.tsx', 'containers/HomepageRedirect.tsx',
+  'components/Heimdall/Heimdall.tsx',
   'components/LowBar/ResearchNotesList.tsx', 'components/RunningAgentsFloatingButton/RunningAgentsFloatingButton.tsx',
   'components/MarkdownLink/MarkdownLink.tsx', 'components/ChatMessage/ChatMessage.tsx',
   'components/GlobalNotifications/GlobalNotifications.tsx',

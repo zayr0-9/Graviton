@@ -21,15 +21,15 @@ const SUBAGENT_STREAM_IDLE_TIMEOUT_MS = 60_000
 const normalizeProviderSlug = (providerName: string | null | undefined): string =>
   (providerName || '').toLowerCase().replace(/\s+/g, '')
 
-export type SubagentInheritedProvider = 'openaichatgpt' | 'openrouter' | 'openrouterbyok' | 'lmstudio' | 'zai' | 'bedrock'
+export type SubagentInheritedProvider = 'openaichatgpt' | 'openrouterbyok' | 'lmstudio' | 'zai' | 'bedrock'
 
 const resolveInheritedSubagentProvider = (
   callerProviderName: string | null | undefined
 ): SubagentInheritedProvider | undefined => {
   const slug = normalizeProviderSlug(callerProviderName)
   if (slug === 'openaichatgpt' || slug === 'openai(chatgpt)') return 'openaichatgpt'
-  if (slug === 'openrouter') return 'openrouter'
-  if (slug === 'openrouterbyok') return 'openrouterbyok'
+  // 'openrouter' (the retired hosted route) now means the user's own OpenRouter key.
+  if (slug === 'openrouterbyok' || slug === 'openrouter') return 'openrouterbyok'
   if (slug === 'lmstudio') return 'lmstudio'
   if (slug === 'z.ai/glm' || slug === 'zai/glm' || slug === 'zai' || slug === 'z.ai' || slug === 'glm') return 'zai'
   if (
@@ -61,8 +61,8 @@ const resolveModelFromCache = (
 }
 
 /**
- * Resolve the provider + model a subagent should use. Subagents run locally, so
- * an inherited OpenRouter selection is redirected to the default local provider.
+ * Resolve the provider + model a subagent should use. An unresolved provider falls
+ * back to the default ChatGPT provider.
  */
 const resolveSubagentDefaults = (
   callerProviderName?: string | null,
@@ -78,11 +78,7 @@ const resolveSubagentDefaults = (
     configuredModel || resolveModelFromCache(queryClient, providerNameForResolution) || DEFAULT_SUBAGENT_MODEL
   const model = normalizeSubagentModelName(rawModel, providerNameForResolution) || rawModel
 
-  // Local-only: OpenRouter (and any unresolved provider) fall back to the
-  // default local ChatGPT provider + model.
-  if (!resolvedProvider || resolvedProvider === 'openrouter') {
-    return { provider: 'openaichatgpt', model: resolvedProvider === 'openrouter' ? DEFAULT_SUBAGENT_MODEL : model }
-  }
+  if (!resolvedProvider) return { provider: 'openaichatgpt', model }
 
   return { provider: resolvedProvider, model }
 }

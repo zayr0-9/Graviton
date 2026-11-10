@@ -535,34 +535,6 @@ export function projectServerEvent(event: ServerStreamEvent, ctx: ProjectionCont
       ]
     }
 
-    case 'free_generations_update': {
-      return [
-        chatSliceActions.freeGenerationsUpdated({ remaining: event.remaining, isFreeTier: event.isFreeTier ?? true }),
-      ]
-    }
-
-    case 'generation_limit_reached': {
-      // D3: exhaustion is a chat bubble, not a blocking modal. The modal stole the
-      // whole window for a message that belongs next to the send that hit the limit.
-      return [recordAction(buildChatErrorEnvelope('free_tier_exhausted', { detail: event.message }), ctx)]
-    }
-
-    case 'reauth_required': {
-      // D2: a bubble with "Sign in", never a forced redirect. The code and action are
-      // asserted here rather than taken from the wire, so no server can turn an
-      // expired session into an unrecognised envelope with no affordance.
-      const supplied = event.envelope
-      const envelope = buildChatErrorEnvelope('session_expired', {
-        userMessage: supplied?.userMessage,
-        detail: supplied?.detail ?? event.message,
-        // Honour a server-supplied label, but only on the sign_in action itself.
-        action: supplied?.action?.kind === 'sign_in' ? supplied.action : undefined,
-        provider: supplied?.provider,
-        status: supplied?.status,
-      })
-      return [recordAction(envelope, ctx)]
-    }
-
     case 'context_compaction': {
       // Compaction is a multi-second, model-driven pause in the middle of a reply.
       // Silence there reads as a hang, so every status says something — but the

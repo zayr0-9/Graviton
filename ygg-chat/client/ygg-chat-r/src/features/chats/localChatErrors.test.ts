@@ -120,7 +120,7 @@ describe('classifyLocalChatError — discriminators', () => {
   it('maps POST non-2xx by status', () => {
     setOnline(true)
     expect(classifyLocalChatError(new Error('nope'), { phase: 'open', status: 400 }).code).toBe('server_rejected_request')
-    expect(classifyLocalChatError(new Error('nope'), { phase: 'open', status: 401 }).code).toBe('session_expired')
+    expect(classifyLocalChatError(new Error('nope'), { phase: 'open', status: 401 }).code).toBe('server_rejected_request')
     expect(classifyLocalChatError(new Error('nope'), { phase: 'open', status: 500 }).code).toBe('server_rejected_request')
     expect(classifyLocalChatError(new Error('nope'), { phase: 'open', status: 503 }).status).toBe(503)
   })
@@ -130,7 +130,7 @@ describe('classifyLocalChatError — discriminators', () => {
     const envelope = classifyLocalChatError(new Error('Headless chat request failed (HTTP 401): expired'), {
       phase: 'open',
     })
-    expect(envelope.code).toBe('session_expired')
+    expect(envelope.code).toBe('server_rejected_request')
     expect(envelope.status).toBe(401)
   })
 
@@ -162,7 +162,7 @@ describe('classifyLocalChatError — discriminators', () => {
   it('lets a definite status still win over the resume/abort phase', () => {
     setOnline(true)
     expect(classifyLocalChatError(new Error('gone'), { phase: 'resume', status: 410 }).code).toBe('run_expired')
-    expect(classifyLocalChatError(new Error('nope'), { phase: 'abort', status: 401 }).code).toBe('session_expired')
+    expect(classifyLocalChatError(new Error('nope'), { phase: 'abort', status: 401 }).code).toBe('server_rejected_request')
   })
 
   it('honours a code the caller passes directly (idle watchdog)', () => {
@@ -249,8 +249,7 @@ describe('buildChatErrorRecord / reportLocalChatError', () => {
       { conversationId: 'conv-1', streamId: 'stream-3', phase: 'open', id: 'fixed-id' },
       emit
     )
-    expect(envelope.code).toBe('session_expired')
-    expect(envelope.action).toEqual({ kind: 'sign_in', label: 'Sign in' })
+    expect(envelope.code).toBe('server_rejected_request')
     expect(record.streamId).toBe('stream-3')
     expect(emit).toHaveBeenCalledWith(record)
     expect(emitted).toBe('fixed-id')
@@ -272,7 +271,6 @@ describe('every code this classifier can emit has prose', () => {
       'offline',
       'local_server_unreachable',
       'server_rejected_request',
-      'session_expired',
       'stream_interrupted',
       'run_expired',
       'decision_not_delivered',

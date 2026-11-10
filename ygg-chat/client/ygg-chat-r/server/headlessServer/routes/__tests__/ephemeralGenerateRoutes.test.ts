@@ -164,125 +164,27 @@ describe('registerEphemeralGenerateRoutes', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
-  it('ephemeral chat routes explicit openrouter requests through openrouter handling', async () => {
+  it.each([
+    ['explicit legacy openrouter', { provider: 'openrouter', modelName: 'openai/gpt-4o-mini' }],
+    ['explicit openrouterbyok', { provider: 'openrouterbyok', modelName: 'openai/gpt-4o-mini' }],
+    ['an unprefixed vendor/model slug', { modelName: 'anthropic/claude-3.5-sonnet' }],
+  ])('ephemeral chat sends %s to the local OpenRouter BYOK provider, never a hosted backend', async (_label, request) => {
+    vi.stubEnv('OPENROUTER_API_KEY', '')
+    // Spy without a mock implementation: calls pass through, and every outbound URL is recorded.
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
     const res = await fetch(`${baseUrl}/api/headless/ephemeral/chat`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        provider: 'openrouter',
-        content: 'hello',
-        modelName: 'openai/gpt-4o-mini',
-        history: [],
-      }),
+      body: JSON.stringify({ content: 'hello', history: [], ...request }),
     })
 
     expect(res.status).toBe(500)
     const payload = (await res.json()) as any
     expect(payload.success).toBe(false)
-    expect(payload.error).toContain('Sign in again to continue.')
-  })
-
-  it('ephemeral chat infers openrouter from non-openai prefixed model names', async () => {
-    const res = await fetch(`${baseUrl}/api/headless/ephemeral/chat`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        content: 'hello',
-        modelName: 'anthropic/claude-3.5-sonnet',
-        history: [],
-      }),
-    })
-
-    expect(res.status).toBe(500)
-    const payload = (await res.json()) as any
-    expect(payload.success).toBe(false)
-    expect(payload.error).toContain('Sign in again to continue.')
-  })
-
-  it('awaits the electron-session sync before reading the token store', async () => {
-    // resolveRemoteAppAccessToken runs syncOpenRouterTokenFromElectronSession to
-    // refresh an expiring session INTO the token store, then reads that store on the
-    // next line. The call used to be un-awaited, so the read always won the race and
-    // the refreshed token could never be used. Asserting on the Authorization header
-    // is what pins the ordering: a token that only exists after the sync resolves can
-    // only appear here if the sync was awaited.
-    let seenAuthorization: string | null = null
-    authMocks.syncOpenRouterTokenFromElectronSession.mockImplementationOnce(async () => {
-      await new Promise(resolve => setTimeout(resolve, 5))
-      authMocks.token = 'synced-token'
-    })
-
-    const nativeFetch = globalThis.fetch.bind(globalThis)
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: any, init: any) => {
-      const url = String(typeof input === 'string' ? input : (input?.url ?? input))
-      if (url.includes('/generate/ephemeral')) {
-        seenAuthorization = String(init?.headers?.Authorization ?? '')
-        return new Response('data: {"text":"hi"}\n\ndata: [DONE]\n\n', {
-          status: 200,
-          headers: { 'content-type': 'text/event-stream' },
-        }) as any
-      }
-      return new Response('{}', { status: 401, headers: { 'content-type': 'application/json' } }) as any
-    })
-
-    const res = await nativeFetch(`${baseUrl}/api/headless/ephemeral/chat`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        provider: 'openrouter',
-        content: 'hello',
-        modelName: 'anthropic/claude-3.5-sonnet',
-        history: [],
-      }),
-    })
-
-    expect(res.status).toBe(200)
-    expect(authMocks.syncOpenRouterTokenFromElectronSession).toHaveBeenCalledTimes(1)
-    expect(seenAuthorization).toBe('Bearer synced-token')
-  })
-
-  it('ephemeral openrouter requests use the managed account without caller token fields', async () => {
-    authMocks.token = 'app-token'
-    tokenStore.upsert({
-      provider: 'openrouter',
-      userId: 'u-openrouter',
-      accessToken: 'app-token',
-    })
-
-    const nativeFetch = globalThis.fetch.bind(globalThis)
-    // Return a FRESH Response per call, dispatched by URL, rather than
-    // `mockResolvedValue` — that hands back ONE Response instance whose body can only
-    // be read once, so any second outbound call on this path fails with
-    // "Invalid state: ReadableStream is locked" and the route 500s.
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: any) => {
-      const url = String(typeof input === 'string' ? input : (input?.url ?? input))
-      if (url.includes('/generate/ephemeral')) {
-        return new Response('data: {"text":"hi"}\n\ndata: [DONE]\n\n', {
-          status: 200,
-          headers: { 'content-type': 'text/event-stream' },
-        }) as any
-      }
-      // Anything else (the session refresh) fails closed, which is what this test
-      // wants: the route must fall back to the token preloaded into the store above.
-      return new Response('{}', { status: 401, headers: { 'content-type': 'application/json' } }) as any
-    })
-
-    const res = await nativeFetch(`${baseUrl}/api/headless/ephemeral/chat`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        provider: 'openrouter',
-        content: 'hello',
-        modelName: 'anthropic/claude-3.5-sonnet',
-        history: [],
-      }),
-    })
-
-    expect(res.status).toBe(200)
-    const payload = (await res.json()) as any
-    expect(payload.success).toBe(true)
-    expect(payload.provider).toBe('openrouter')
-    expect(payload.message?.content).toBe('hi')
+    expect(payload.error).toContain('OpenRouter API key missing')
+    const outbound = fetchSpy.mock.calls.map(call => String(call[0]))
+    expect(outbound.some(url => url.includes('railway.app') || url.includes('/generate/ephemeral'))).toBe(false)
+    vi.unstubAllEnvs()
   })
 
   it('ephemeral chat routes explicit bedrock requests through local bedrock handling', async () => {

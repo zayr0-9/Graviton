@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { LmStudioProvider } from '../lmStudioProvider.js'
-import { OpenRouterProvider } from '../openRouterProvider.js'
 import { toHyperMessages } from '../hyperRouterAdapter.js'
 import { toCodexMessages, toCodexRequestParts } from '../codex/codexRequestItems.js'
 
@@ -31,16 +30,6 @@ describe('provider image history projection', () => {
     const body = JSON.parse(fetch.mock.calls[0][1].body)
     expect(body.messages[0]).toEqual({ role: 'user', content: [{ type: 'image_url', image_url: { url } }] })
     expect(body.messages[1].content).toBe(input.history[1].content)
-  })
-
-  it('relays per-row artifacts to OpenRouter without a latest-user attachment side channel', async () => {
-    const fetch = vi.fn().mockResolvedValue(new Response('data: [DONE]\n\n'))
-    vi.stubGlobal('fetch', fetch)
-    await new OpenRouterProvider().generate(input)
-    const body = JSON.parse(fetch.mock.calls[0][1].body)
-    expect(body.messages.find((row: any) => row.id === 'image-owner').artifacts).toEqual([url])
-    expect(body.messages.find((row: any) => row.id === 'mode').artifacts).toEqual([])
-    expect(body.attachmentsBase64).toBeUndefined()
   })
 
   it('rejects images explicitly in text-only adapters rather than pretending they were delivered', () => {

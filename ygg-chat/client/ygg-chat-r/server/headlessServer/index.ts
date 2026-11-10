@@ -266,7 +266,7 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
   // OAuth credential overrides are not a supported local API authentication mode.
   app.use(['/api/conversations', '/api/headless/subagent', '/api/headless/ephemeral', '/api/headless/provider/openai'], (req, res, next) => {
     const provider = normalizeProviderRoute(String(req.body?.provider || 'openaichatgpt'))
-    if ((provider === 'openaichatgpt' || provider === 'openrouter') &&
+    if (provider === 'openaichatgpt' &&
         (req.body?.accessToken || req.body?.access_token || req.body?.refreshToken || req.body?.refresh_token || req.headers['chatgpt-account-id'])) {
       res.status(400).json({ error: 'OAuth credentials are server-owned. Connect the account in Settings instead of supplying tokens.' })
       return
@@ -280,11 +280,10 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
 
   // Gateway flags are resolved once at startup. Chat and route-independent runs default on.
   const gatewayFlags = resolveGatewayFlags()
-  // One process-wide app-session owner for every Railway-backed path, including
-  // OpenRouter streaming (which previously bypassed this shared refresh policy).
+  // App-session owner for the remaining Railway-backed gateway/cloud-proxy legs (removed in P2c/P5).
   const appAuth = createAppAuthTokenManager()
   const railway = createRailwayClient({ auth: appAuth })
-  const providerRouter = new ProviderRouter({ tokenStore, appAuth })
+  const providerRouter = new ProviderRouter({ tokenStore })
 
   // One shared pause/resume registry across the chat orchestrator (which pauses the
   // loop) and the POST /api/resume route (which resolves the paused decision).
@@ -442,8 +441,6 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
     decisionBroker,
     // Phase 3: in-process chat hooks (fires only when a request sets hooksEnabled).
     hookRunner: runHookRequest,
-    // Phase 4: cloud (openrouter) free-tier relay + Railway id adoption. Default OFF.
-    cloudChatEnabled: gatewayFlags.chat,
   })
   // Synchronously releases stale 'running' Claude branches, then checkpoints their heads.
   void chatOrchestrator.recoverInterruptedClaudeBranches().catch(error =>

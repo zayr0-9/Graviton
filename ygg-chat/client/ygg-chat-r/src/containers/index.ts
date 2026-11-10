@@ -1,7 +1,6 @@
 export { default as BlogPage } from './BlogPage'
 export { default as Chat } from './Chat'
 export { default as ConversationPage } from './ConversationPage'
-export { default as Homepage } from './Homepage'
 export { default as HomepageRedirect } from './HomepageRedirect'
 export { default as LandingPage } from './LandingPage'
 export { default as Login } from './ManagedLogin'

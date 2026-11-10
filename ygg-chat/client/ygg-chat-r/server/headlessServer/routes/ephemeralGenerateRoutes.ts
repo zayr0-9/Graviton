@@ -1,6 +1,5 @@
 import type { Express } from 'express'
 import { HookGenerationService, HookGenerationError } from '../services/hookGenerationService.js'
-import { getAuthManager } from '../../auth/runtime.js'
 import { LmStudioProvider } from '../providers/lmStudioProvider.js'
 import { HyperRouterBedrockProvider } from '../providers/hyperRouterBedrockProvider.js'
 import { HyperRouterZaiProvider } from '../providers/hyperRouterZaiProvider.js'
@@ -90,14 +89,15 @@ function inferEphemeralProvider(body: any): ProviderRoute {
     if (prefix === 'lmstudio') return 'lmstudio'
     if (prefix === 'zai' || prefix === 'glm' || prefix === 'z.ai') return 'zai'
     if (prefix === 'bedrock' || prefix === 'aws' || prefix === 'aws-bedrock' || prefix === 'amazon-bedrock') return 'bedrock'
-    return 'openrouter'
+    // Any other vendor/model slug is an OpenRouter model, served with the user's own key.
+    return 'openrouterbyok'
   }
 
   return 'openaichatgpt'
 }
 
 function normalizeModelName(rawModelName: any, provider: ProviderRoute): string {
-  const fallback = provider === 'lmstudio' ? 'local-model' : provider === 'openrouter' ? 'openai/gpt-4o-mini' : provider === 'openrouterbyok' ? DEFAULT_OPENROUTER_BYOK_MODEL : provider === 'zai' ? 'glm-5.1' : provider === 'bedrock' ? process.env.AWS_BEDROCK_MODEL || 'anthropic.claude-3-5-sonnet-20241022-v2:0' : 'gpt-5.6-sol'
+  const fallback = provider === 'lmstudio' ? 'local-model' : provider === 'openrouterbyok' ? DEFAULT_OPENROUTER_BYOK_MODEL : provider === 'zai' ? 'glm-5.1' : provider === 'bedrock' ? process.env.AWS_BEDROCK_MODEL || 'anthropic.claude-3-5-sonnet-20241022-v2:0' : 'gpt-5.6-sol'
   const raw = typeof rawModelName === 'string' && rawModelName.trim() ? rawModelName.trim() : fallback
 
   if (provider === 'openaichatgpt') {
@@ -204,130 +204,6 @@ async function runLocalProviderGenerate(
   }
 }
 
-function getRemoteApiBase(): string {
-  return (process.env.YGG_API_URL || process.env.VITE_API_URL || 'https://webdrasil-production.up.railway.app/api').replace(/\/+$/, '')
-}
-
-async function resolveRemoteAppAccessToken(
-  tokenStore: ProviderTokenStore,
-  userId?: string | null,
-  accessToken?: string | null
-): Promise<string> {
-  return (await getAuthManager().resolve('app')).accessToken
-}
-
-function normalizeHistoryMessage(message: any): { role: string; content: string } | null {
-  if (!message || typeof message !== 'object') return null
-  const role = typeof message.role === 'string' ? message.role.trim().toLowerCase() : ''
-  if (!role) return null
-  const content = asText(message.content).trim()
-  if (!content) return null
-  if (!['system', 'user', 'assistant', 'tool'].includes(role)) return null
-  return { role, content }
-}
-
-function buildRemoteEphemeralMessages(input: EphemeralGenerateInput): Array<{ role: string; content: string }> {
-  const messages = (input.history || []).map(normalizeHistoryMessage).filter((message): message is { role: string; content: string } => Boolean(message))
-
-  if (input.systemPrompt?.trim() && !messages.some(message => message.role === 'system')) {
-    messages.unshift({ role: 'system', content: input.systemPrompt.trim() })
-  }
-
-  if (input.content.trim()) {
-    messages.push({ role: 'user', content: input.content.trim() })
-  }
-
-  return messages
-}
-
-async function runRemoteOpenRouterEphemeralGenerate(tokenStore: ProviderTokenStore, body: any) {
-  const parsed = buildEphemeralGenerateInput(body)
-  const messages = buildRemoteEphemeralMessages(parsed)
-
-  if (messages.length === 0) {
-    return { error: 'content is required', status: 400 as const }
-  }
-
-  const accessToken = await resolveRemoteAppAccessToken(tokenStore, parsed.userId, parsed.accessToken)
-  const res = await fetch(`${getRemoteApiBase()}/generate/ephemeral`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Accept: 'text/event-stream',
-      Authorization: `Bearer ${accessToken}`,
-    },
-    body: JSON.stringify({
-      provider: 'openrouter',
-      model: parsed.modelName,
-      messages,
-      maxTokens: parsed.maxTokens,
-      temperature: parsed.temperature,
-      response_format: parsed.responseFormat,
-    }),
-  })
-
-  if (!res.ok) {
-    const text = await res.text().catch(() => '')
-    throw new Error(`Remote OpenRouter ephemeral request failed (${res.status}): ${text}`)
-  }
-
-  const reader = res.body?.getReader()
-  if (!reader) {
-    const text = await res.text().catch(() => '')
-    return {
-      status: 200 as const,
-      payload: buildSuccessPayload('openrouter', parsed.modelName, 'remote_ephemeral', {
-        content: text,
-        raw: text,
-      }),
-    }
-  }
-
-  const decoder = new TextDecoder()
-  let buffer = ''
-  let fullText = ''
-  let reasoning = ''
-  const rawEvents: any[] = []
-
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-
-    buffer += decoder.decode(value, { stream: true })
-    const lines = buffer.split('\n')
-    buffer = lines.pop() || ''
-
-    for (const line of lines) {
-      const trimmed = line.trim()
-      if (!trimmed.startsWith('data:')) continue
-      const data = trimmed.slice(5).trim()
-      if (!data || data === '[DONE]') continue
-
-      try {
-        const parsedEvent = JSON.parse(data)
-        rawEvents.push(parsedEvent)
-        if (typeof parsedEvent?.error === 'string' && parsedEvent.error) {
-          throw new Error(parsedEvent.error)
-        }
-        if (typeof parsedEvent?.text === 'string') fullText += parsedEvent.text
-        if (typeof parsedEvent?.reasoning === 'string') reasoning += parsedEvent.reasoning
-      } catch (error) {
-        if (error instanceof Error && error.message !== data) throw error
-        fullText += data
-      }
-    }
-  }
-
-  return {
-    status: 200 as const,
-    payload: buildSuccessPayload('openrouter', parsed.modelName, 'remote_ephemeral', {
-      content: fullText,
-      reasoning: reasoning || undefined,
-      raw: rawEvents,
-    }),
-  }
-}
-
 function registerDirectOpenAiGenerateHandler(app: Express, endpoint: string, openAiProvider: OpenAiChatgptProvider): void {
   app.post(endpoint, async (req, res) => {
     try {
@@ -346,7 +222,6 @@ function registerDirectOpenAiGenerateHandler(app: Express, endpoint: string, ope
 
 function registerEphemeralChatHandler(
   app: Express,
-  tokenStore: ProviderTokenStore,
   openAiProvider: OpenAiChatgptProvider,
   lmStudioProvider: LmStudioProvider,
   zaiProvider: HyperRouterZaiProvider,
@@ -359,17 +234,15 @@ function registerEphemeralChatHandler(
       const provider = inferEphemeralProvider(body)
 
       const result =
-        provider === 'openrouter'
-          ? await runRemoteOpenRouterEphemeralGenerate(tokenStore, body)
-          : provider === 'lmstudio'
-            ? await runLocalProviderGenerate('lmstudio', lmStudioProvider, body)
-            : provider === 'zai'
-              ? await runLocalProviderGenerate('zai', zaiProvider, body)
-              : provider === 'bedrock'
-                ? await runLocalProviderGenerate('bedrock', bedrockProvider, body)
-                : provider === 'openrouterbyok'
-                  ? await runLocalProviderGenerate('openrouterbyok', openRouterByokProvider, body)
-                  : await runLocalProviderGenerate('openaichatgpt', openAiProvider, body)
+        provider === 'lmstudio'
+          ? await runLocalProviderGenerate('lmstudio', lmStudioProvider, body)
+          : provider === 'zai'
+            ? await runLocalProviderGenerate('zai', zaiProvider, body)
+            : provider === 'bedrock'
+              ? await runLocalProviderGenerate('bedrock', bedrockProvider, body)
+              : provider === 'openrouterbyok'
+                ? await runLocalProviderGenerate('openrouterbyok', openRouterByokProvider, body)
+                : await runLocalProviderGenerate('openaichatgpt', openAiProvider, body)
 
       if ('error' in result) {
         res.status(result.status).json({ success: false, error: result.error })
@@ -411,7 +284,7 @@ export function registerEphemeralGenerateRoutes(app: Express, deps: RegisterEphe
   const openRouterByokProvider = new HyperRouterOpenRouterProvider({ tokenStore: deps.tokenStore })
 
   registerDirectOpenAiGenerateHandler(app, '/api/headless/provider/openai/responses', openAiProvider)
-  registerEphemeralChatHandler(app, deps.tokenStore, openAiProvider, lmStudioProvider, zaiProvider, bedrockProvider, openRouterByokProvider)
+  registerEphemeralChatHandler(app, openAiProvider, lmStudioProvider, zaiProvider, bedrockProvider, openRouterByokProvider)
   registerYggHookGenerateRoute(app, new HookGenerationService({ openAi: async input => {
     const result = await openAiProvider.generate({ modelName: input.modelName, userContent: input.content,
       systemPrompt: input.systemPrompt, history: [], tools: [], signal: input.signal })

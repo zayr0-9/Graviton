@@ -168,7 +168,6 @@ export interface StreamChunk {
     | 'reset'
     | 'generation_started'
     | 'tool_call'
-    | 'free_generations_update'
     | 'permission_request'
   content?: string
   // delta is used for token-level updates from the server
@@ -556,11 +555,6 @@ export interface ChatState {
     requestId: string
     streamId?: string | null
   }>
-  freeTier: {
-    freeGenerationsRemaining: number | null
-    showLimitModal: boolean
-    isFreeTierUser: boolean
-  }
   errorNotices: ChatErrorNoticesState
   userSystemPrompts: UserSystemPromptsState
 }

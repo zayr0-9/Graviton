@@ -23,7 +23,6 @@ export interface ProviderTurnContext {
   retrigger?: boolean
   executionMode?: 'server' | 'client'
   isBranch?: boolean
-  storageMode?: 'local' | 'cloud'
   isElectron?: boolean
   imageConfig?: any
   reasoningConfig?: any
@@ -33,13 +32,6 @@ export interface ProviderTurnContext {
   runId?: string | null
   previousResponseId?: string | null
   allowCommentaryFallbackText?: boolean
-  /**
-   * When true, Railway's free-tier meter frames are relayed up as SSE events
-   * (free_generations_update / generation_limit_reached) instead of being dropped.
-   * Set ONLY by the server-owned cloud chat path (ChatOrchestrator, gateway.chat +
-   * openrouter route). Subagents/tests/flag-off leave it unset => drop parity.
-   */
-  relayFreeTierEvents?: boolean
 }
 
 export interface ProviderGenerateInput {

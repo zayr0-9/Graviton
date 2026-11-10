@@ -528,7 +528,7 @@ export const resolveAttachmentUrl = (
 
 
 const resolveOpenRouterTemperature = (providerSlug: string): number | undefined => {
-  if (providerSlug !== 'openrouter' && providerSlug !== 'openrouterbyok') return undefined
+  if (providerSlug !== 'openrouterbyok') return undefined
   const configured = loadProviderSettings().openRouterTemperature
   return typeof configured === 'number' ? configured : undefined
 }
@@ -961,7 +961,6 @@ export const sendMessage = createAsyncThunk<
       think,
       imageConfig,
       reasoningConfig,
-      serviceTier,
       cwd,
       operationMode: requestedOperationMode,
       streamId: providedStreamId,
@@ -1162,12 +1161,10 @@ export const sendMessage = createAsyncThunk<
           localApiBase: getCachedLocalApiBase(),
           contextDirectories: loadContextDirectorySettings(),
           autoMemoryEnabled: loadLongTermMemoryContextEnabled(),
-          // Forward priority for Codex and OpenRouter only; other providers omit it.
+          // Forward priority for Codex only; other providers omit it.
           temperature: openRouterTemperature,
           serviceTier:
-            providerSlug === 'openaichatgpt' || providerSlug === 'openai(chatgpt)'
-              ? fastMode ? 'priority' : undefined
-              : providerSlug === 'openrouter' ? serviceTier : undefined,
+            (providerSlug === 'openaichatgpt' || providerSlug === 'openai(chatgpt)') && fastMode ? 'priority' : undefined,
           // ChatGPT: forward fresh renderer tokens so the server resolves auth directly
           // (null for every other provider => omitted from the body).
           accessToken: chatgptServerAuth?.accessToken,
@@ -1415,7 +1412,6 @@ export const editMessageWithBranching = createAsyncThunk<
       newContent,
       modelOverride,
       think,
-      serviceTier,
       cwd,
       operationMode: requestedOperationMode,
       streamId: providedStreamId,
@@ -1661,12 +1657,10 @@ export const editMessageWithBranching = createAsyncThunk<
           localApiBase: getCachedLocalApiBase(),
           contextDirectories: loadContextDirectorySettings(),
           autoMemoryEnabled: loadLongTermMemoryContextEnabled(),
-          // Forward priority for Codex and OpenRouter only; other providers omit it.
+          // Forward priority for Codex only; other providers omit it.
           temperature: openRouterTemperature,
           serviceTier:
-            providerSlug === 'openaichatgpt' || providerSlug === 'openai(chatgpt)'
-              ? fastMode ? 'priority' : undefined
-              : providerSlug === 'openrouter' ? serviceTier : undefined,
+            (providerSlug === 'openaichatgpt' || providerSlug === 'openai(chatgpt)') && fastMode ? 'priority' : undefined,
           // ChatGPT: forward fresh renderer tokens so the server resolves auth directly
           // (null for every other provider => omitted from the body).
           accessToken: chatgptServerAuth?.accessToken,
@@ -1772,7 +1766,6 @@ export const sendMessageToBranch = createAsyncThunk<
       content,
       modelOverride,
       think,
-      serviceTier,
       cwd,
       operationMode: requestedOperationMode,
       streamId: providedStreamId,
@@ -1920,12 +1913,10 @@ export const sendMessageToBranch = createAsyncThunk<
           localApiBase: getCachedLocalApiBase(),
           contextDirectories: loadContextDirectorySettings(),
           autoMemoryEnabled: loadLongTermMemoryContextEnabled(),
-          // Forward priority for Codex and OpenRouter only; other providers omit it.
+          // Forward priority for Codex only; other providers omit it.
           temperature: openRouterTemperature,
           serviceTier:
-            providerSlug === 'openaichatgpt' || providerSlug === 'openai(chatgpt)'
-              ? fastMode ? 'priority' : undefined
-              : providerSlug === 'openrouter' ? serviceTier : undefined,
+            (providerSlug === 'openaichatgpt' || providerSlug === 'openai(chatgpt)') && fastMode ? 'priority' : undefined,
           // ChatGPT: forward fresh renderer tokens so the server resolves auth directly
           // (null for every other provider => omitted from the body).
           accessToken: chatgptServerAuth?.accessToken,

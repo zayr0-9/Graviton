@@ -55,11 +55,6 @@ const parseSseChunk = (chunk: string, onEvent: (event: HeadlessSseEvent) => void
   }
 }
 
-const readRuntimeAppSession = async (): Promise<{ accessToken: string | null; userId: string | null }> => {
-  const result = await jsonFetch<{ snapshot?: { userId?: string | null } }>('/api/provider-auth/openrouter/token', { method: 'GET' })
-  return { accessToken: null, userId: result.snapshot?.userId ?? null }
-}
-
 export const mobileApi = {
   async listUsers(): Promise<LocalUserProfile[]> {
     const payload = await jsonFetch<LocalUserProfile[]>('/api/local/users', { method: 'GET' })
@@ -293,7 +288,7 @@ export const mobileApi = {
               Boolean(
                 provider &&
                   (provider.name === 'openaichatgpt' ||
-                    provider.name === 'openrouter' ||
+                    provider.name === 'openrouterbyok' ||
                     provider.name === 'lmstudio' ||
                     provider.name === 'zai' ||
                     provider.name === 'bedrock')
@@ -338,7 +333,7 @@ export const mobileApi = {
     })
   },
 
-  async getProviderTokenStatus(provider: 'openai' | 'openrouter' | 'zai' | 'bedrock', userId: string): Promise<{ hasToken: boolean }> {
+  async getProviderTokenStatus(provider: 'openai' | 'openrouter-byok' | 'zai' | 'bedrock', userId: string): Promise<{ hasToken: boolean }> {
     const payload = await jsonFetch<{ success: boolean; hasToken?: boolean }>(
       `/api/provider-auth/${provider}/token?userId=${encodeURIComponent(userId)}`,
       { method: 'GET' }
@@ -351,7 +346,7 @@ export const mobileApi = {
   },
 
   async getOpenRouterTokenStatus(userId: string): Promise<{ hasToken: boolean }> {
-    return this.getProviderTokenStatus('openrouter', userId)
+    return this.getProviderTokenStatus('openrouter-byok', userId)
   },
 
   async getZaiTokenStatus(userId: string): Promise<{ hasToken: boolean }> {
@@ -362,16 +357,7 @@ export const mobileApi = {
     return this.getProviderTokenStatus('bedrock', userId)
   },
 
-  async getRuntimeAppAuth(): Promise<{ hasToken: boolean; accessToken: string | null; userId: string | null }> {
-    const session = await readRuntimeAppSession()
-    return {
-      hasToken: Boolean(session.accessToken),
-      accessToken: session.accessToken,
-      userId: session.userId,
-    }
-  },
-
-  async clearProviderToken(provider: 'openai' | 'openrouter' | 'zai' | 'bedrock', userId: string): Promise<void> {
+  async clearProviderToken(provider: 'openai' | 'openrouter-byok' | 'zai' | 'bedrock', userId: string): Promise<void> {
     await jsonFetch(`/api/provider-auth/${provider}/token?userId=${encodeURIComponent(userId)}`, {
       method: 'DELETE',
     })
@@ -382,7 +368,7 @@ export const mobileApi = {
   },
 
   async clearOpenRouterToken(userId: string): Promise<void> {
-    await this.clearProviderToken('openrouter', userId)
+    await this.clearProviderToken('openrouter-byok', userId)
   },
 
   async clearZaiToken(userId: string): Promise<void> {
@@ -468,7 +454,7 @@ export const mobileApi = {
     userId: string
     accessToken: string
   }): Promise<void> {
-    await jsonFetch('/api/provider-auth/openrouter/token', {
+    await jsonFetch('/api/provider-auth/openrouter-byok/token', {
       method: 'POST',
       body: JSON.stringify({
         userId: params.userId,

@@ -188,7 +188,6 @@ interface StreamAccumulator {
   messageId: MessageId | null
   userMessage: Message | null
   providerError: boolean
-  requiresReauthentication: boolean
   /** Highest server `seq` applied — the reattach cursor. */
   lastSeq: number
   /** SSE frames that failed to parse. A run that ends having dropped frames has a
@@ -207,7 +206,6 @@ function newAccumulator(startSeq = 0): StreamAccumulator {
     messageId: null,
     userMessage: null,
     providerError: false,
-    requiresReauthentication: false,
     lastSeq: startSeq,
     droppedFrames: 0,
   }
@@ -395,19 +393,6 @@ function makeHandleEvent(
       acc.providerError = event.providerError === true
       acc.sawTerminal = true
       onMessagePersisted?.()
-    } else if (event.type === 'reauth_required') {
-      // D2: NO forced navigation. The old handler dispatched FORCE_LOGOUT_EVENT (which
-      // clears AuthContext.user, and ProtectedRoute then redirects) and set
-      // `location.hash = '/login'` — from inside an SSE frame handler, mid-reply, with
-      // no explanation and no way back. The classified envelope travels out instead, so
-      // the transcript renders a bubble with a "Sign in" button the user chooses to press.
-      const raw = typeof event.message === 'string' && event.message ? event.message : 'Server requires reauthentication'
-      acc.requiresReauthentication = true
-      acc.sawTerminal = true
-      acc.errorEnvelope = event.envelope
-        ? normalizeChatErrorEnvelope(event.envelope, raw)
-        : buildChatErrorEnvelope('session_expired', { detail: raw, status: 401 })
-      acc.streamError = raw
     } else if (event.type === 'error') {
       if (event.error === 'stream_buffer_truncated') {
         acc.needsBootstrap = true
@@ -416,7 +401,7 @@ function makeHandleEvent(
       // Contract: `terminal` absent === true. An explicit `false` is a failure the server
       // loop recovered from — it is projected, but it must not end the run.
       const terminal = event.terminal !== false
-      if (!acc.requiresReauthentication && terminal) {
+      if (terminal) {
         const raw = typeof event.error === 'string' && event.error ? event.error : 'Headless stream error'
         acc.errorEnvelope = envelopeForErrorFrame(event, raw)
         acc.streamError = raw
@@ -929,7 +914,7 @@ export async function runServerReattach(
     providerError: acc.providerError,
     gone: false,
     terminal: acc.sawTerminal,
-    // A terminal `error`/`reauth_required` frame during replay: nothing throws here, so
+    // A terminal `error` frame during replay: nothing throws here, so
     // this is the ONLY way the caller learns the run ended badly.
     ...(acc.errorEnvelope ? { envelope: acc.errorEnvelope } : {}),
   }

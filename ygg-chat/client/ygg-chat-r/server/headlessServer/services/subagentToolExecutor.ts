@@ -132,16 +132,14 @@ async function buildSubagentRequest(toolCall: ProviderToolCall, context: ToolExe
   if (!prompt) throw new Error('Subagent requires a prompt')
 
   const defaults = context.subagentDefaults
-  const inheritedProvider = defaults?.defaultProvider ? normalizeProviderRoute(defaults.defaultProvider) : context.provider || 'openaichatgpt'
-  const provider = inheritedProvider === 'openrouter' ? 'openaichatgpt' : inheritedProvider
+  const provider = normalizeProviderRoute(defaults?.defaultProvider || context.provider || 'openaichatgpt')
   const parentProvider = normalizeProviderRoute(context.provider || 'openaichatgpt')
   const providerDefault = provider === 'lmstudio' ? process.env.LMSTUDIO_MODEL || 'local-model'
     : provider === 'zai' ? process.env.ZAI_MODEL || 'glm-5.1'
     : provider === 'bedrock' ? process.env.AWS_BEDROCK_MODEL || 'anthropic.claude-3-5-sonnet-20241022-v2:0'
     : provider === 'openrouterbyok' ? DEFAULT_OPENROUTER_BYOK_MODEL
     : DEFAULT_SUBAGENT_MODEL
-  const modelName = inheritedProvider === 'openrouter' ? DEFAULT_SUBAGENT_MODEL
-    : defaults?.defaultModel || (parentProvider === provider ? context.modelName : null) || providerDefault
+  const modelName = defaults?.defaultModel || (parentProvider === provider ? context.modelName : null) || providerDefault
 
   // Docs §6: an `agent_type` selects a `<configDir>/agents/<name>.md` definition.
   const agentTypeRaw =
@@ -189,7 +187,7 @@ async function buildSubagentRequest(toolCall: ProviderToolCall, context: ToolExe
     prompt,
     systemPrompt: systemPrompt || null,
     provider,
-    authSessionId: context.authSessions?.[provider === 'openrouter' ? 'app' : 'codex'],
+    authSessionId: provider === 'openaichatgpt' ? context.authSessions?.codex : undefined,
     modelName,
     tools,
     temperature: typeof args.temperature === 'number' ? args.temperature : undefined,
@@ -205,7 +203,7 @@ async function buildSubagentRequest(toolCall: ProviderToolCall, context: ToolExe
     bashTimeoutMs: context.bashTimeoutMs,
     autoCompactionEnabled: context.autoCompactionEnabled,
     compactionThresholdPercent: context.compactionThresholdPercent,
-    contextLength: provider === context.provider ? context.contextLength : undefined,
+    contextLength: provider === parentProvider ? context.contextLength : undefined,
   }
 }
 
@@ -219,8 +217,7 @@ async function buildSubagentRequest(toolCall: ProviderToolCall, context: ToolExe
  * persisted.
  */
 function buildResumeRequest(run: SubagentRunRow, context: ToolExecutionContext): HeadlessSubagentStreamRequest {
-  const inheritedProvider = run.provider || context.provider || 'openaichatgpt'
-  const provider = inheritedProvider === 'openrouter' ? 'openaichatgpt' : inheritedProvider
+  const provider = run.provider || context.provider || 'openaichatgpt'
   return {
     conversationId: run.conversation_id,
     parentMessageId: run.parent_message_id,

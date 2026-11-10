@@ -10,7 +10,6 @@ import { useAuth } from '../../hooks/useAuth'
 import { useIsMobile } from '../../hooks/useMediaQuery'
 import { ResearchNoteItem } from '../../hooks/useQueries'
 import { Button } from '../Button/button'
-import { QuickInput } from '../QuickInput/QuickInput'
 import { TextArea } from '../TextArea/TextArea'
 import { ResearchNotesList } from './ResearchNotesList'
 interface LowBarProps {
@@ -19,7 +18,6 @@ interface LowBarProps {
   notes?: ResearchNoteItem[]
   isLoadingNotes?: boolean
   enableTabs?: boolean
-  showInput?: boolean
 }
 
 export const LowBar: React.FC<LowBarProps> = ({
@@ -28,7 +26,6 @@ export const LowBar: React.FC<LowBarProps> = ({
   notes = [],
   isLoadingNotes = false,
   enableTabs = false,
-  showInput = false,
 }) => {
   const dispatch = useDispatch()
   const queryClient = useQueryClient()
@@ -215,7 +212,6 @@ export const LowBar: React.FC<LowBarProps> = ({
             )}
           </Button>
         )}
-        {!isExpanded && !enableTabs && <QuickInput />}
       </>
       {/* Expanded content */}
       {isExpanded && (
@@ -257,14 +253,12 @@ export const LowBar: React.FC<LowBarProps> = ({
                 <div className='flex-1 min-h-0 overflow-y-auto thin-scrollbar'>
                   <ResearchNotesList notes={notes} isLoading={isLoadingNotes} isEmbedded={true} />
                 </div>
-                {showInput && <QuickInput />}
               </div>
             ) : mode === 'list' ? (
               <div className='flex-1 min-h-0 flex flex-col overflow-hidden'>
                 <div className='flex-1 min-h-0 overflow-y-auto thin-scrollbar'>
                   <ResearchNotesList notes={notes} isLoading={isLoadingNotes} isEmbedded={true} />
                 </div>
-                {/* <QuickInput /> */}
               </div>
             ) : (
               <TextArea

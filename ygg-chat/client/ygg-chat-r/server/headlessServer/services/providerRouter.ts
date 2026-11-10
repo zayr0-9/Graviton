@@ -7,7 +7,6 @@ import {
   OpenAiChatgptProvider,
   resolveOpenAIChatGPTContextLength,
 } from '../providers/openaiChatgptProvider.js'
-import { OpenRouterProvider } from '../providers/openRouterProvider.js'
 import type {
   HeadlessProvider,
   ProviderGenerateInput,
@@ -15,9 +14,8 @@ import type {
   ProviderStreamEventHandler,
 } from '../providers/providerTypes.js'
 import type { ProviderTokenStore } from '../providers/tokenStore.js'
-import type { AppAuthTokenManager } from './appAuthTokenManager.js'
 
-export type ProviderRoute = 'openrouter' | 'openrouterbyok' | 'openaichatgpt' | 'lmstudio' | 'zai' | 'bedrock'
+export type ProviderRoute = 'openrouterbyok' | 'openaichatgpt' | 'lmstudio' | 'zai' | 'bedrock'
 
 export function normalizeProviderRoute(providerName: string): ProviderRoute {
   const normalized = providerName.trim().toLowerCase().replace(/\s+/g, '')
@@ -36,15 +34,22 @@ export function normalizeProviderRoute(providerName: string): ProviderRoute {
   ) {
     return 'bedrock'
   }
-  if (normalized === 'openrouter') return 'openrouter'
-  if (normalized === 'openrouterbyok' || normalized === 'openrouter-byok' || normalized === 'openrouter(byok)') return 'openrouterbyok'
+  // 'openrouter' was the retired Graviton-hosted (Railway) route; saved settings and old
+  // conversations that still name it use the user's own OpenRouter key instead.
+  if (
+    normalized === 'openrouterbyok' ||
+    normalized === 'openrouter-byok' ||
+    normalized === 'openrouter(byok)' ||
+    normalized === 'openrouter'
+  ) {
+    return 'openrouterbyok'
+  }
   // MVP default path is OpenAI ChatGPT.
   return 'openaichatgpt'
 }
 
 interface ProviderRouterDeps {
   tokenStore?: ProviderTokenStore
-  appAuth?: AppAuthTokenManager
 }
 
 export class ProviderRouter {
@@ -52,7 +57,6 @@ export class ProviderRouter {
 
   constructor(deps: ProviderRouterDeps = {}) {
     this.providers = {
-      openrouter: new OpenRouterProvider({ tokenStore: deps.tokenStore, appAuth: deps.appAuth }),
       openaichatgpt: new OpenAiChatgptProvider({ tokenStore: deps.tokenStore }),
       lmstudio: new LmStudioProvider(),
       zai: new HyperRouterZaiProvider({ tokenStore: deps.tokenStore }),

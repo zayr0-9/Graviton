@@ -27,7 +27,7 @@ describe('createSubagentDispatchExecutor', () => {
   it.each([
     ['openaichatgpt', 'priority', 'priority'],
     ['openaichatgpt', undefined, undefined],
-    ['openrouter', 'priority', 'priority'],
+    ['openrouter', 'priority', undefined],
     ['lmstudio', 'priority', undefined],
   ])('inherits service tier only for Codex children (%s, %s)', async (provider, serviceTier, expected) => {
     const runForTool = vi.fn(async (_request: HeadlessSubagentStreamRequest) => 'done')
@@ -113,16 +113,16 @@ describe('createSubagentDispatchExecutor', () => {
     expect(request.autoApprove).toBe(false)
   })
 
-  it('falls OpenRouter parents back to the local subagent provider', async () => {
+  it('runs legacy OpenRouter parents on the BYOK provider with the parent model', async () => {
     const runForTool = vi.fn(async () => 'done')
     const execute = createSubagentDispatchExecutor({ leafExecutor: vi.fn(), subagentRunner: { runForTool } })
 
     await execute(
       { id: 'sub-3', name: 'subagent', arguments: { prompt: 'Scout' } },
-      context({ provider: 'openrouter', modelName: 'cloud-model' })
+      context({ provider: 'openrouter', modelName: 'anthropic/claude-sonnet-4' })
     )
 
-    expect(runForTool.mock.calls[0][0]).toMatchObject({ provider: 'openaichatgpt', modelName: 'gpt-5.6-sol' })
+    expect(runForTool.mock.calls[0][0]).toMatchObject({ provider: 'openrouterbyok', modelName: 'anthropic/claude-sonnet-4' })
   })
 
   it('rejects missing prompts before starting a child run', async () => {

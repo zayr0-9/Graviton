@@ -443,54 +443,6 @@ describe('projectServerEvent', () => {
     expect((a[0].payload as any).streamId).toBe('stream-1')
   })
 
-  it('reauth_required projects a sign-in bubble, never a redirect (D2)', () => {
-    const a = projectServerEvent({ type: 'reauth_required', message: 'JWT expired at 1738...' }, ctx)
-    expect(types(a)).toEqual([chatSliceActions.chatErrorRecorded.type])
-    const record = recordOf(a)
-    expect(record.envelope.code).toBe('session_expired')
-    expect(record.envelope.action).toMatchObject({ kind: 'sign_in' })
-    expect(record.envelope.detail).toBe('JWT expired at 1738...')
-    expect(record.envelope.userMessage).not.toContain('JWT')
-  })
-
-  it('reauth_required forces session_expired + sign_in even when the wire says otherwise', () => {
-    const a = projectServerEvent(
-      partial({
-        type: 'reauth_required',
-        envelope: {
-          code: 'internal_error',
-          userMessage: 'Your session expired.',
-          recoverability: 'fatal',
-          action: { kind: 'open_settings', label: 'Settings' },
-        },
-      }),
-      ctx
-    )
-    const record = recordOf(a)
-    expect(record.envelope.code).toBe('session_expired')
-    expect(record.envelope.action).toMatchObject({ kind: 'sign_in' })
-    // A server-supplied userMessage is still honoured — only the affordance is fixed.
-    expect(record.envelope.userMessage).toBe('Your session expired.')
-  })
-
-  it('free_generations_update maps to freeGenerationsUpdated', () => {
-    const a = projectServerEvent({ type: 'free_generations_update', remaining: 41 }, ctx)
-    expect(a[0].type).toBe(chatSliceActions.freeGenerationsUpdated.type)
-    expect((a[0].payload as any)).toMatchObject({ remaining: 41, isFreeTier: true })
-  })
-
-  it('generation_limit_reached projects a chat bubble, NOT the blocking modal (D3)', () => {
-    const a = projectServerEvent({ type: 'generation_limit_reached', message: 'quota=0 plan=free' }, ctx)
-    expect(types(a)).toEqual([chatSliceActions.chatErrorRecorded.type])
-    expect(types(a)).not.toContain(chatSliceActions.freeTierLimitModalShown.type)
-    const record = recordOf(a)
-    expect(record).toMatchObject({ conversationId: 'conv-1', streamId: 'stream-1', dismissed: false })
-    expect(record.envelope.code).toBe('free_tier_exhausted')
-    expect(record.envelope.action).toMatchObject({ kind: 'upgrade' })
-    expect(record.envelope.detail).toBe('quota=0 plan=free')
-    expect(record.envelope.userMessage).not.toContain('quota=0')
-  })
-
   it('projects a completed server compaction summary into the active branch, after a notice', () => {
     const a = projectServerEvent(
       partial({
@@ -588,8 +540,6 @@ describe('projectServerEvent', () => {
       { type: 'notice', code: 'retrying' },
       { type: 'tool_execution', status: 'failed' },
       { type: 'context_compaction', status: 'failed' },
-      { type: 'reauth_required' },
-      { type: 'generation_limit_reached' },
       { type: 'complete', message: null, envelope: null },
     ]
     for (const event of hostile) {

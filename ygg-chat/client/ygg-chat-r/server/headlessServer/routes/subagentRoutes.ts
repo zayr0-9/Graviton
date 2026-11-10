@@ -1,7 +1,6 @@
 import type { Express } from 'express'
 import type { HeadlessSubagentStreamRequest } from '../../../../../shared/headlessApi.js'
 import type { SubagentRunService } from '../services/subagentRunService.js'
-import { normalizeProviderRoute } from '../services/providerRouter.js'
 import { initializeSse, startSseHeartbeat, writeSseEvent } from '../stream/sseWriter.js'
 
 interface RegisterSubagentRoutesDeps {
@@ -98,10 +97,6 @@ export function registerSubagentRoutes(app: Express, deps: RegisterSubagentRoute
     }
     if (!request.prompt.trim()) {
       res.status(400).json({ error: 'prompt is required' })
-      return
-    }
-    if (normalizeProviderRoute(request.provider) === 'openrouter') {
-      res.status(400).json({ error: 'OpenRouter subagents are not supported by the local engine.' })
       return
     }
     const validation = deps.validateTarget?.(request.conversationId, request.parentMessageId)

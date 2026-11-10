@@ -1,11 +1,5 @@
 {
   "providers": {
-    "openrouter": {
-      "name": "OpenRouter",
-      "url": "https://api.openrouter.com",
-      "description": "OpenRouter's LLM API"
-    },
-
     "openrouterbyok": {
       "name": "OpenRouter BYOK",
       "url": "https://openrouter.ai",

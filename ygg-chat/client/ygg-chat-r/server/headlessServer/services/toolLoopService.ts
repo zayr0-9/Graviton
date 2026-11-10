@@ -67,7 +67,7 @@ export interface ToolExecutionContext {
   subagentReasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh'
   /** Renderer-selected baseline inherited by server-owned child subagents. */
   subagentSystemPrompt?: string | null
-  authSessions?: { app: string; codex: string }
+  authSessions?: { codex: string }
   timeoutMs?: number
   bashTimeoutMs?: number
   signal?: AbortSignal
@@ -244,7 +244,7 @@ export interface ToolLoopRunInput {
   subagentReasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh'
   /** Renderer-selected baseline inherited by server-owned child subagents. */
   subagentSystemPrompt?: string | null
-  authSessions?: { app: string; codex: string }
+  authSessions?: { codex: string }
   autoCompactionEnabled?: boolean
   contextLength?: number
   /** Project/conversation meter prompts. Direct/subagent calls use their runtime prompts. */
@@ -263,13 +263,6 @@ export interface ToolLoopRunInput {
   providerSessionId?: string | null
   /** Forwarded to openaichatgpt so commentary text can back-fill an empty final answer. */
   allowCommentaryFallbackText?: boolean
-  /**
-   * Phase 4: relay Railway free-tier SSE frames (free_generations_update /
-   * generation_limit_reached) up through the OpenRouter provider. Set only by the
-   * server-owned cloud chat path. Absent (subagents/tests/native providers) => the
-   * provider drops the frames exactly as before.
-   */
-  relayFreeTierEvents?: boolean
   /** Opt-in robustness behaviors; all default off so main-chat behavior is unchanged. */
   robustness?: ToolLoopRobustnessOptions
   /**
@@ -939,7 +932,7 @@ export class ToolLoopService {
       temperature: input.temperature,
       signal: input.signal,
       turnContext:
-        providerRoute === 'openrouter' || providerRoute === 'openaichatgpt'
+        providerRoute === 'openaichatgpt'
           ? {
               conversationId: input.providerSessionId || input.conversationId,
               parentId: params.parentId,
@@ -952,8 +945,6 @@ export class ToolLoopService {
               retrigger: turn === 1 && !params.disableTools ? input.retrigger : false,
               executionMode: input.executionMode,
               isBranch: input.isBranch,
-              storageMode: 'local',
-              relayFreeTierEvents: input.relayFreeTierEvents ?? false,
               isElectron: input.isElectron ?? true,
               imageConfig: input.imageConfig,
               reasoningConfig: input.reasoningConfig,
@@ -1239,8 +1230,6 @@ export class ToolLoopService {
       contentBlocks,
       contextUsage: output.contextUsage,
       thinkingBlock: output.reasoning ?? null,
-      // Phase 4: adopt Railway's id on the cloud path (see the main-turn persist site).
-      providerMessageId: output.raw && typeof output.raw.id === 'string' ? output.raw.id : null,
     })
     emit({ type: 'assistant_message_persisted', message: assistantMessage })
 
@@ -1262,9 +1251,8 @@ export class ToolLoopService {
 
   async run(input: ToolLoopRunInput, emit: (event: HeadlessStreamEvent) => void): Promise<ToolLoopRunResult> {
     const route = normalizeProviderRoute(input.provider)
-    const slot = route === 'openrouter' ? 'app' : route === 'openaichatgpt' ? 'codex' : null
-    const authSessions = input.authSessions ?? { app: getAuthManager().snapshot('app').sessionId ?? 'signed-out', codex: getAuthManager().snapshot('codex').sessionId ?? 'signed-out' }
-    input = { ...input, authSessions, ...(slot ? { authSessionId: input.authSessionId ?? authSessions[slot] } : {}) }
+    const authSessions = input.authSessions ?? { codex: getAuthManager().snapshot('codex').sessionId ?? 'signed-out' }
+    input = { ...input, authSessions, ...(route === 'openaichatgpt' ? { authSessionId: input.authSessionId ?? authSessions.codex } : {}) }
     const maxTurns = Math.max(1, Math.min(input.maxTurns ?? this.maxTurns, this.maxTurns))
     const robustness = input.robustness
     let currentParentId = input.assistantParentId
@@ -1454,10 +1442,6 @@ export class ToolLoopService {
         contentBlocks: persistedAssistantContentBlocks,
         contextUsage: output.contextUsage,
         thinkingBlock: output.reasoning ?? null,
-        // Phase 4: Railway's authoritative message id (when the provider surfaced a
-        // complete frame). Only CloudMirrorSink adopts it; TreeMessageSink ignores it,
-        // and it is null for native providers / streamed-only frames => mint parity.
-        providerMessageId: output.raw && typeof output.raw.id === 'string' ? output.raw.id : null,
         meta: assistantMeta,
       })
 

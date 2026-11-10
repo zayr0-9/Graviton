@@ -489,7 +489,7 @@ const Settings: React.FC = () => {
   const remoteQrCodeImageUrl = effectiveSharedBrowserUrl
     ? `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(effectiveSharedBrowserUrl)}`
     : null
-  const subagentProviderForModels = subagentSettings.defaultProvider || providers.currentProvider || 'OpenRouter'
+  const subagentProviderForModels = subagentSettings.defaultProvider || providers.currentProvider || 'OpenAI (ChatGPT)'
   const { data: subagentModelsData } = useModels(subagentProviderForModels)
   const selectedSubagentModel = subagentModelsData?.models?.find(
     model =>
@@ -1144,7 +1144,7 @@ const Settings: React.FC = () => {
 
     setOpenaiAccountEmail(null)
     if (providers.currentProvider === 'OpenAI (ChatGPT)') {
-      dispatch(chatSliceActions.providerSelected('OpenRouter'))
+      dispatch(chatSliceActions.providerSelected('LM Studio'))
     }
 
     if (failedHeadlessTokenDeletes.length > 0) {

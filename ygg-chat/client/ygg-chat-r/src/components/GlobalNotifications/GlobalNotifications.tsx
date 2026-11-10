@@ -45,7 +45,7 @@ const AUTO_DISMISS_MS = 8000
 const isGloballyActionable = (notice: UiErrorNotice): boolean => {
   const kind = notice.envelope.action?.kind
   if (!kind) return false
-  return kind === 'reconnect_provider' || kind === 'sign_in' || kind === 'open_settings' || kind === 'upgrade' || kind === 'reload_conversation'
+  return kind === 'reconnect_provider' || kind === 'open_settings' || kind === 'reload_conversation'
 }
 
 export const GlobalNotifications: React.FC = () => {
@@ -88,15 +88,9 @@ export const GlobalNotifications: React.FC = () => {
   // barely better than a console line — the user must see it and close it.
   const handleAction = (notice: UiErrorNotice) => (kind: ChatErrorActionKind) => {
     switch (kind) {
-      case 'sign_in':
-        navigate('/login')
-        break
       case 'reconnect_provider':
       case 'open_settings':
         navigate('/settings')
-        break
-      case 'upgrade':
-        navigate('/paymentplan')
         break
       case 'reload_conversation':
         // Re-runs the current route's loaders/effects; the notice's own ids are not
