@@ -17,8 +17,12 @@ import type { ProviderTokenStore } from '../providers/tokenStore.js'
 
 export type ProviderRoute = 'openrouterbyok' | 'openaichatgpt' | 'lmstudio' | 'zai' | 'bedrock'
 
-export function normalizeProviderRoute(providerName: string): ProviderRoute {
-  const normalized = providerName.trim().toLowerCase().replace(/\s+/g, '')
+/**
+ * Strict lookup: the route for a known provider name or alias, else null.
+ * Unknown names are rejected at the API boundary (fully-local plan Q7).
+ */
+export function resolveProviderRoute(providerName: string): ProviderRoute | null {
+  const normalized = String(providerName ?? '').trim().toLowerCase().replace(/\s+/g, '')
   if (normalized === 'openaichatgpt' || normalized === 'openai(chatgpt)' || normalized === 'openai') {
     return 'openaichatgpt'
   }
@@ -44,8 +48,29 @@ export function normalizeProviderRoute(providerName: string): ProviderRoute {
   ) {
     return 'openrouterbyok'
   }
-  // MVP default path is OpenAI ChatGPT.
-  return 'openaichatgpt'
+  return null
+}
+
+/**
+ * Lenient lookup for classification and defaults (unknown → 'openaichatgpt'). Generation
+ * never relies on this fallback: ProviderRouter.generate and the HTTP guard reject unknown names.
+ */
+export function normalizeProviderRoute(providerName: string): ProviderRoute {
+  return resolveProviderRoute(providerName) ?? 'openaichatgpt'
+}
+
+export class UnknownProviderError extends Error {
+  readonly status = 400
+  readonly code = 'unknown_provider'
+  constructor(providerName: string) {
+    super(`unknown provider "${providerName}"`)
+    this.name = 'UnknownProviderError'
+  }
+}
+
+/** True for every provider Graviton can run, including the Claude Code session backend. */
+export function isKnownProviderName(providerName: string): boolean {
+  return isClaudeProvider(providerName) || resolveProviderRoute(providerName) !== null
 }
 
 interface ProviderRouterDeps {
@@ -78,7 +103,8 @@ export class ProviderRouter {
     emit?: ProviderStreamEventHandler
   ): Promise<ProviderGenerateOutput> {
     if (isClaudeProvider(providerName)) throw new Error('Claude Code uses the session backend and is unavailable in Graviton subagents or compaction.')
-    const route = normalizeProviderRoute(providerName)
+    const route = resolveProviderRoute(providerName)
+    if (!route) throw new UnknownProviderError(providerName)
     const provider = this.providers[route]
     return provider.generate(input, emit)
   }

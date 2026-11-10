@@ -44,7 +44,7 @@ import { createWatchExecutor, watchService } from './services/watchService.js'
 import { createMultiCallDispatchExecutor } from './services/multiCallExecutor.js'
 import { createReplDispatchExecutor } from './services/replExecutor.js'
 import { createContextStatusExecutor } from './services/contextStatusTool.js'
-import { ProviderRouter, normalizeProviderRoute } from './services/providerRouter.js'
+import { ProviderRouter, isKnownProviderName, normalizeProviderRoute } from './services/providerRouter.js'
 import type { ToolExecutor } from './services/toolLoopService.js'
 
 type OrchestratorLike = typeof defaultToolOrchestrator
@@ -261,9 +261,15 @@ const createOrchestratorToolExecutor = (toolOrchestrator: OrchestratorLike): Too
 }
 
 export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerRouteDeps): void {
+  // Request guard: unknown provider names are rejected with 400 (fully-local plan Q7), and
   // OAuth credential overrides are not a supported local API authentication mode.
   app.use(['/api/conversations', '/api/headless/subagent', '/api/headless/ephemeral', '/api/headless/provider/openai'], (req, res, next) => {
-    const provider = normalizeProviderRoute(String(req.body?.provider || 'openaichatgpt'))
+    const requested = req.body?.provider
+    if (typeof requested === 'string' && requested.trim() && !isKnownProviderName(requested)) {
+      res.status(400).json({ error: `unknown provider "${requested}"`, code: 'unknown_provider' })
+      return
+    }
+    const provider = normalizeProviderRoute(String(requested || 'openaichatgpt'))
     if (provider === 'openaichatgpt' &&
         (req.body?.accessToken || req.body?.access_token || req.body?.refreshToken || req.body?.refresh_token || req.headers['chatgpt-account-id'])) {
       res.status(400).json({ error: 'OAuth credentials are server-owned. Connect the account in Settings instead of supplying tokens.' })

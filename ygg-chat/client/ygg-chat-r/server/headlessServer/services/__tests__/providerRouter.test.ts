@@ -6,7 +6,7 @@ vi.mock('../../../auth/runtime.js', () => ({ getAuthManager: () => ({
   resolve: async () => { throw new Error('Sign in again to continue.') },
 }) }))
 import { OpenAiChatgptProvider } from '../../providers/openaiChatgptProvider.js'
-import { ProviderRouter, normalizeProviderRoute } from '../providerRouter.js'
+import { ProviderRouter, UnknownProviderError, isKnownProviderName, normalizeProviderRoute, resolveProviderRoute } from '../providerRouter.js'
 
 describe('provider routing', () => {
   afterEach(() => {
@@ -25,6 +25,17 @@ describe('provider routing', () => {
     // The retired hosted route is an alias for the user's own OpenRouter key.
     expect(normalizeProviderRoute('openrouter')).toBe('openrouterbyok')
     expect(normalizeProviderRoute('OpenRouter BYOK')).toBe('openrouterbyok')
+  })
+
+  it('resolves known names strictly and rejects unknown providers (Q7)', async () => {
+    expect(resolveProviderRoute('OpenAI (ChatGPT)')).toBe('openaichatgpt')
+    expect(resolveProviderRoute('Amazon Bedrock')).toBe('bedrock')
+    expect(resolveProviderRoute('gemini')).toBeNull()
+    expect(isKnownProviderName('Claude Code')).toBe(true)
+    expect(isKnownProviderName('gemini')).toBe(false)
+    await expect(new ProviderRouter().generate('gemini', { modelName: 'x', history: [], userContent: 'hi' })).rejects.toBeInstanceOf(
+      UnknownProviderError
+    )
   })
 
   it('applies the global context override only to ChatGPT routes', () => {
