@@ -43,7 +43,7 @@ describe('provider routing', () => {
         modelName: 'openrouter/auto',
         history: [],
         userContent: 'hi',
-        railwayTurn: {
+        turnContext: {
           conversationId: 'c1',
         },
       })

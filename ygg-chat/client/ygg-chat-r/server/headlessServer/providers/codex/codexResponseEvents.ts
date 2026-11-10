@@ -1,4 +1,4 @@
-import type { ProviderPartialOutput } from '../openRouterProvider.js'
+import type { ProviderPartialOutput } from '../providerTypes.js'
 import type { CodexParseResult, CodexResponseParseOptions } from './types.js'
 
 type State = {

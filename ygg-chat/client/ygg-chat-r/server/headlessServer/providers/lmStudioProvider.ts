@@ -4,7 +4,7 @@ import type {
   ProviderGenerateOutput,
   ProviderStreamEventHandler,
   ProviderToolCall,
-} from './openRouterProvider.js'
+} from './providerTypes.js'
 import { buildToolNameMap, messageToolCalls, sanitizeToolResultContentForModel } from './toolResultSanitizer.js'
 
 interface LmStudioMessage {

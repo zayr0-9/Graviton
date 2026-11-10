@@ -2528,7 +2528,7 @@ ipcMain.handle('openai:chatgpt:stream-start', async (event, payload: any) => {
           accountId: tokens.accountId,
           tools: Array.isArray(payload.tools) ? payload.tools.map((tool: any) => ({ name: tool.name, description: tool.description, inputSchema: tool.inputSchema || tool.parameters })) : [],
           signal: state.controller.signal,
-          railwayTurn: {
+          turnContext: {
             conversationId: String(payload.conversationId || ''),
             parentId: payload.parentId ?? null,
             think: payload.think,

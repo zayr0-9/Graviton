@@ -1,5 +1,5 @@
 import { assertToolAllowedForOperationMode } from '../../../../../shared/operationModeToolPolicy.js'
-import type { ProviderToolCall } from '../providers/openRouterProvider.js'
+import type { ProviderToolCall } from '../providers/providerTypes.js'
 import type { ToolExecutionContext, ToolExecutor } from './toolLoopService.js'
 
 const MAX_CALLS = 20

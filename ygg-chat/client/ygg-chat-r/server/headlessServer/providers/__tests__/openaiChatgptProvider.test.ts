@@ -47,7 +47,7 @@ describe('OpenAiChatgptProvider', () => {
       modelName,
       history: [],
       userContent: 'hello',
-      railwayTurn: { conversationId: `tier-${modelName}`, serviceTier } as any,
+      turnContext: { conversationId: `tier-${modelName}`, serviceTier } as any,
     })
 
     expect(fetchMock).toHaveBeenCalledOnce()
@@ -173,7 +173,7 @@ describe('OpenAiChatgptProvider', () => {
         history: [],
         userContent: 'hello',
         tools: [{ name: 'read_file', description: 'Read a file', inputSchema: { type: 'object' } }],
-        railwayTurn: { conversationId } as any,
+        turnContext: { conversationId } as any,
       })
       expect(result.content).toBe('ok')
     }
@@ -262,7 +262,7 @@ describe('OpenAiChatgptProvider', () => {
       modelName: 'gpt-5.4-mini',
       history: [],
       userContent: 'hello',
-      railwayTurn: { conversationId: 'ephemeral-test', allowCommentaryFallbackText: true },
+      turnContext: { conversationId: 'ephemeral-test', allowCommentaryFallbackText: true },
     })
 
     expect(result.content).toBe('VISIBLE_TEXT_OK')
@@ -583,7 +583,7 @@ describe('OpenAiChatgptProvider', () => {
       modelName: 'gpt-5.5',
       userContent: '',
       tools: [{ name: 'read_file', description: 'Read a file', inputSchema: { type: 'object', properties: {} } }],
-      railwayTurn: {
+      turnContext: {
         conversationId: 'conversation-cache-key',
         runId: 'run-cache-key',
         previousResponseId: 'resp-prior-should-not-be-sent',

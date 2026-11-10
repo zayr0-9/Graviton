@@ -250,7 +250,7 @@ describe('SubagentRunService', () => {
     const service = buildService({ providerRouter, runRepo: new FakeRunRepo(), streamingRunRepo: new FakeStreamingRunRepo(), toolExecutor })
     await service.run(baseRequest({ provider, serviceTier }), () => {}, new AbortController().signal)
     expect(providerRouter.calls).toHaveLength(2)
-    for (const call of providerRouter.calls) expect(call.input.railwayTurn?.serviceTier).toBe(expected)
+    for (const call of providerRouter.calls) expect(call.input.turnContext?.serviceTier).toBe(expected)
     expect(toolExecutor.mock.calls[0][1].serviceTier).toBe(expected)
   })
 

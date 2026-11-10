@@ -6,7 +6,7 @@ import { HyperRouterBedrockProvider } from '../providers/hyperRouterBedrockProvi
 import { HyperRouterZaiProvider } from '../providers/hyperRouterZaiProvider.js'
 import { DEFAULT_OPENROUTER_BYOK_MODEL, HyperRouterOpenRouterProvider } from '../providers/hyperRouterOpenRouterProvider.js'
 import { OpenAiChatgptProvider, normalizeOpenAIChatGPTModel } from '../providers/openaiChatgptProvider.js'
-import type { ProviderGenerateOutput, ProviderToolDefinition } from '../providers/openRouterProvider.js'
+import type { ProviderGenerateOutput, ProviderToolDefinition } from '../providers/providerTypes.js'
 import type { ProviderTokenStore } from '../providers/tokenStore.js'
 import { normalizeProviderRoute, type ProviderRoute } from '../services/providerRouter.js'
 
@@ -186,7 +186,7 @@ async function runLocalProviderGenerate(
     tools: parsed.tools,
     think: parsed.think,
     temperature: parsed.temperature,
-    railwayTurn:
+    turnContext:
       providerName === 'openaichatgpt'
         ? {
             conversationId:

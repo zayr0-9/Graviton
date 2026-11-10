@@ -405,7 +405,7 @@ describeIfSqlite('ToolLoopService', () => {
     expect(events.some((evt: any) => evt.type === 'tool_loop' && evt.status === 'turn_completed' && evt.continued)).toBe(true)
 
     expect(providerRouter.calls).toHaveLength(2)
-    expect(providerRouter.calls[1].input.railwayTurn?.previousResponseId).toBeUndefined()
+    expect(providerRouter.calls[1].input.turnContext?.previousResponseId).toBeUndefined()
     expect(providerRouter.calls[1].input.history.some((entry: any) => entry.role === 'assistant')).toBe(true)
     expect(providerRouter.calls[1].input.history.some((entry: any) => entry.role === 'tool' && entry.tool_call_id === 'call-1')).toBe(true)
   })

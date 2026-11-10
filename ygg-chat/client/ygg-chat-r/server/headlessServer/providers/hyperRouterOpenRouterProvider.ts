@@ -7,7 +7,7 @@ import type {
   ProviderGenerateInput,
   ProviderGenerateOutput,
   ProviderStreamEventHandler,
-} from './openRouterProvider.js'
+} from './providerTypes.js'
 import type { ProviderTokenStore } from './tokenStore.js'
 import { generateWithHyperProvider, normalizeBearer, toHyperTools } from './hyperRouterAdapter.js'
 

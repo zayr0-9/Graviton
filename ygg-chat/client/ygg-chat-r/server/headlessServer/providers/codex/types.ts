@@ -4,7 +4,7 @@ import type {
   ProviderStreamEventHandler,
   ProviderToolCall,
   ProviderToolDefinition,
-} from '../openRouterProvider.js'
+} from '../providerTypes.js'
 
 export const CODEX_BASE_URL = 'https://chatgpt.com/backend-api/codex'
 export const CODEX_ORIGINATOR = 'codex_cli_rs'

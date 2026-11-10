@@ -12,7 +12,7 @@ import {
   type SubagentRunStatus,
 } from '../persistence/subagentRunRepo.js'
 import { StreamingRunRepo } from '../persistence/streamingRunRepo.js'
-import type { ProviderToolCall, ProviderToolDefinition } from '../providers/openRouterProvider.js'
+import type { ProviderToolCall, ProviderToolDefinition } from '../providers/providerTypes.js'
 import type { ProviderTokenStore } from '../providers/tokenStore.js'
 import { messageToolCalls } from '../providers/toolResultSanitizer.js'
 import type { RunSession, RunSessionRegistry } from './runSessionRegistry.js'
@@ -848,7 +848,7 @@ export class SubagentRunService {
           bashTimeoutMs: request.bashTimeoutMs,
           maxTurns: effectiveMaxTurns,
           signal,
-          railwaySessionId: `subagent:${runId}`,
+          providerSessionId: `subagent:${runId}`,
           allowCommentaryFallbackText: true,
           autoCompactionEnabled: request.autoCompactionEnabled ?? true,
           contextLength: request.contextLength,

@@ -1,5 +1,5 @@
 import WebSocket from 'ws'
-import { attachPartialOutput } from '../openRouterProvider.js'
+import { attachPartialOutput } from '../providerTypes.js'
 import type { CodexParseResult, CodexResponseParseOptions } from './types.js'
 import {
   codexPartialOutputFromState,

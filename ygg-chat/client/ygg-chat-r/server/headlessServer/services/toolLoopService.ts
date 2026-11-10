@@ -11,7 +11,7 @@ import {
   type ProviderPartialOutput,
   type ProviderToolCall,
   type ProviderToolDefinition,
-} from '../providers/openRouterProvider.js'
+} from '../providers/providerTypes.js'
 import { ProviderRouter, normalizeProviderRoute } from './providerRouter.js'
 import { persistWithFallback, type ToolResultPersistencePolicy } from './toolResultPersistenceService.js'
 import { sanitizeToolResultContentForModel } from '../providers/toolResultSanitizer.js'
@@ -259,8 +259,8 @@ export interface ToolLoopRunInput {
   maxTurns?: number
   /** Abort signal; checked between turns and before each tool, and forwarded to the provider. */
   signal?: AbortSignal
-  /** Overrides the codex session / prompt-cache key (railwayTurn.conversationId). */
-  railwaySessionId?: string | null
+  /** Overrides the codex session / prompt-cache key (turnContext.conversationId). */
+  providerSessionId?: string | null
   /** Forwarded to openaichatgpt so commentary text can back-fill an empty final answer. */
   allowCommentaryFallbackText?: boolean
   /**
@@ -938,10 +938,10 @@ export class ToolLoopService {
       think: input.think,
       temperature: input.temperature,
       signal: input.signal,
-      railwayTurn:
+      turnContext:
         providerRoute === 'openrouter' || providerRoute === 'openaichatgpt'
           ? {
-              conversationId: input.railwaySessionId || input.conversationId,
+              conversationId: input.providerSessionId || input.conversationId,
               parentId: params.parentId,
               operation: input.operation,
               conversationContext: input.conversationContext ?? null,

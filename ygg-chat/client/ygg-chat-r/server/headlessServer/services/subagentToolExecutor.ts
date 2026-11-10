@@ -3,7 +3,7 @@ import { DEFAULT_OPENROUTER_BYOK_MODEL } from '../providers/hyperRouterOpenRoute
 import { randomUUID } from 'node:crypto'
 import type { HeadlessSubagentStreamRequest } from '../../../../../shared/headlessApi.js'
 import type { MessageQueueSnapshot, QueuedMessageView } from '../../../../../shared/queuedMessages.js'
-import type { ProviderToolCall } from '../providers/openRouterProvider.js'
+import type { ProviderToolCall } from '../providers/providerTypes.js'
 import type { SubagentRunRow, SubagentRunStatus } from '../persistence/subagentRunRepo.js'
 import type { ToolExecutionContext, ToolExecutor } from './toolLoopService.js'
 import { getHeadlessSubagentModePrompt } from './headlessSystemPrompt.js'

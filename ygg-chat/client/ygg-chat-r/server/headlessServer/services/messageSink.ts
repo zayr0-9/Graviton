@@ -1,7 +1,7 @@
 import { extractOpenAIContextUsageFromBlocks, openAIContextUsageBlock, type OpenAIContextUsage } from '../../../../../shared/contextUsage.js'
 import type { MessageRepo } from '../persistence/messageRepo.js'
 import type { LineageRepo } from '../persistence/lineageRepo.js'
-import type { ProviderToolCall } from '../providers/openRouterProvider.js'
+import type { ProviderToolCall } from '../providers/providerTypes.js'
 
 /**
  * Persistence port for the shared tool loop.

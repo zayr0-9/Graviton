@@ -49,7 +49,7 @@ function baseInput(relayFreeTierEvents: boolean | undefined): ProviderGenerateIn
     history: [],
     userContent: 'hi',
     accessToken: 'test-token', // satisfies resolveAuth without a token store / env
-    railwayTurn: { conversationId: 'c1', relayFreeTierEvents },
+    turnContext: { conversationId: 'c1', relayFreeTierEvents },
   }
 }
 

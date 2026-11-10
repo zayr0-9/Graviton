@@ -8,7 +8,7 @@ import type {
   ModelResponse,
   ToolResultBlock,
 } from '@hyper-labs/hyper-router'
-import type { ProviderGenerateInput, ProviderGenerateOutput, ProviderToolCall } from './openRouterProvider.js'
+import type { ProviderGenerateInput, ProviderGenerateOutput, ProviderToolCall } from './providerTypes.js'
 
 export type ContentBlock = {
   type?: string

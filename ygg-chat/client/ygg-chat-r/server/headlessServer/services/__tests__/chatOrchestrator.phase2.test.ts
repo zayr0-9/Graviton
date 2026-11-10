@@ -1347,7 +1347,7 @@ describeIfSqlite('ChatOrchestrator continuation semantics', () => {
     expect(providerRouter.calls).toHaveLength(2)
     for (const call of providerRouter.calls) {
       expect(call.history.find((row: any) => row.id === user.id).attachments).toEqual([{ dataUrl }])
-      expect(call.railwayTurn.attachmentsBase64).toBeNull()
+      expect(call.turnContext.attachmentsBase64).toBeNull()
     }
     expect(JSON.stringify(events)).not.toContain(dataUrl)
     const last = events.find(event => event.type === 'complete').message
@@ -1798,8 +1798,8 @@ describeIfSqlite('ChatOrchestrator prompt resolution', () => {
     expect(providerInput.systemPrompt.indexOf('Agent Prompt: Chat and Agent modes')).toBeLessThan(
       providerInput.systemPrompt.indexOf('Project prompt from sqlite')
     )
-    expect(providerInput.railwayTurn.conversationContext).toBe('Conversation context from sqlite')
-    expect(providerInput.railwayTurn.projectContext).toBe('Project context')
+    expect(providerInput.turnContext.conversationContext).toBe('Conversation context from sqlite')
+    expect(providerInput.turnContext.projectContext).toBe('Project context')
   })
 
   it('uses renderer-selected Agent and subagent baselines without appending bundled defaults', async () => {

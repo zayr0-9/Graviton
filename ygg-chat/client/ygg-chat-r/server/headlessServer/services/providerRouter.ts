@@ -7,13 +7,13 @@ import {
   OpenAiChatgptProvider,
   resolveOpenAIChatGPTContextLength,
 } from '../providers/openaiChatgptProvider.js'
-import {
-  OpenRouterProvider,
-  type HeadlessProvider,
-  type ProviderGenerateInput,
-  type ProviderGenerateOutput,
-  type ProviderStreamEventHandler,
-} from '../providers/openRouterProvider.js'
+import { OpenRouterProvider } from '../providers/openRouterProvider.js'
+import type {
+  HeadlessProvider,
+  ProviderGenerateInput,
+  ProviderGenerateOutput,
+  ProviderStreamEventHandler,
+} from '../providers/providerTypes.js'
 import type { ProviderTokenStore } from '../providers/tokenStore.js'
 import type { AppAuthTokenManager } from './appAuthTokenManager.js'
 

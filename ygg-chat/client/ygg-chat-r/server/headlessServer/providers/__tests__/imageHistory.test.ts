@@ -12,7 +12,7 @@ const input: any = { modelName: 'test', userContent: 'inspect', history: [
   { id: 'image-owner', role: 'user', content: 'inspect', artifacts: [url], attachments: [{ dataUrl: url }] },
   { id: 'mode', role: 'user', content: '<system-reminder>Agent mode</system-reminder>' },
   { role: 'assistant', content: 'tool completed' },
-], railwayTurn: { conversationId: 'c1', attachmentsBase64: null } }
+], turnContext: { conversationId: 'c1', attachmentsBase64: null } }
 afterEach(() => vi.unstubAllGlobals())
 
 describe('provider image history projection', () => {

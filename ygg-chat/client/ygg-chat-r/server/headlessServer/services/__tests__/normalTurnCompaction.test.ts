@@ -66,7 +66,7 @@ describe('ordinary persisted compaction turns', () => {
     const summaryRequest = h.calls[1].input
     expect(summaryRequest.systemPrompt).toBe(base.systemPrompt)
     expect(summaryRequest.tools).toEqual(base.tools)
-    expect(summaryRequest.railwayTurn.conversationId).toBe('c')
+    expect(summaryRequest.turnContext.conversationId).toBe('c')
     expect(summaryRequest.history[0]).toEqual(base.history[0])
     expect(summaryRequest.history.at(-1).meta.kind).toBe('compaction_instruction')
     expect(summaryRequest.history.some((row: any) => row.content_blocks?.some?.((b: any) => b.type === 'tool_result'))).toBe(true)
