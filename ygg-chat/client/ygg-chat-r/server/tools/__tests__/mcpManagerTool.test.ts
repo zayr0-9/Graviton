@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const { manager } = vi.hoisted(() => ({ manager: {
   initialize: vi.fn(), getConfigs: vi.fn(), getStatus: vi.fn(), getServerStatus: vi.fn(),
-  startServer: vi.fn(), stopServer: vi.fn(), callServerTool: vi.fn(),
+  startServer: vi.fn(), stopServer: vi.fn(), callServerTool: vi.fn(), getStartPhase: vi.fn(),
 } }))
 vi.mock('../../mcp/mcpManager.js', () => ({ mcpManager: manager }))
 
@@ -108,6 +108,29 @@ describe('mcp_manager discovery and invoke', () => {
     const result = await execute({ action: 'invoke', name: 'demo_server', tool: 'echo', args: { text: 'hi' } }, { operationMode: 'plan' })
     expect(result.success).toBe(true)
     expect(manager.callServerTool).toHaveBeenCalledWith('demo_server', 'echo', { text: 'hi' })
+  })
+
+  it.each([
+    ['list_tools', 'credentials', /keychain prompt/i],
+    ['invoke', 'authorizing', /browser/i],
+  ] as const)('reports a %s start that waits on the user instead of running into the job timeout', async (action, phase, hint) => {
+    manager.startServer.mockReturnValue(new Promise(() => {}))
+    manager.getStartPhase.mockReturnValue(phase)
+    const result = await execute({ action, name: 'demo_server', tool: 'echo', args: { text: 'x' } }, { startWaitBudgetMs: 10 })
+    expect(result).toMatchObject({ success: false, pending: true, phase })
+    expect(result.error).toMatch(hint)
+    expect(result.error).toMatch(/retry/i)
+    expect(manager.callServerTool).not.toHaveBeenCalled()
+  })
+
+  it('still surfaces a start that fails within the wait', async () => {
+    manager.startServer.mockRejectedValue(new Error('HTTP 401 Unauthorized'))
+    await expect(execute({ action: 'list_tools', name: 'demo_server' }, { startWaitBudgetMs: 1000 })).rejects.toThrow('401')
+  })
+
+  it('shows what a connecting server is waiting on in get/list', async () => {
+    manager.getServerStatus.mockReturnValue({ status: 'connecting', phase: 'authorizing', tools: [] })
+    expect(await execute({ action: 'get', name: 'demo_server' })).toMatchObject({ server: { status: 'connecting', phase: 'authorizing' } })
   })
 
   it('blocks cancellation before connection/invocation', async () => {

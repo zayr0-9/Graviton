@@ -127,6 +127,16 @@ No MCP Keychain prompt at launch is expected: startup no longer reads those cred
 
 The Brave field starts as **Not checked**. **Load saved key** explicitly reads it; opening Settings does not read the key or automatically retry a denied request.
 
+## Connections that wait on the user
+
+A start can wait for minutes on the user: the OS keychain prompt when credentials are read (`credentials`), or the browser sign-in (`authorizing`). `McpManager.getStartPhase(name)` reports which; `getStatus()` / `getServerStatus()` return such a server as `connecting` with `phase`, including before a client exists, and keep the reason when a start fails before one does. `mcpStartPhase.ts` holds the phase type, the user-facing text (`MCP_START_PHASE_MESSAGE`) and `settleWithin`; it has no dependencies so tools and routes can import it without the manager.
+
+- **No request is held for a sign-in.** `POST /api/mcp/servers/:name/start` and `/restart` wait 3 s (`MCP_START_RESPONSE_BUDGET_MS`), then answer `202 { success: true, pending: true, phase, message }`. The connection continues; a pending start registers its tools with the orchestrator when it lands. Repeat starts join the same attempt (`starts` map). Before this, every start request waited for the whole sign-in; the renderer has six connections per host, so six parked requests stopped every other local API call, sends included.
+- **Clients follow status.** `GET /api/mcp/servers` adds `phase` and `phaseMessage`. Settings polls it every 2 s while a server is connecting, shows what it is waiting on, disables the toggle and ignores repeat clicks, and refreshes tools when a background connection finishes. A tool card's Load app follows `GET /api/mcp/servers/:name` the same way.
+- **The model is told.** `mcp_manager list_tools` / `invoke` wait 45 s (below the default 60 s job timeout), then return `{ success: false, pending: true, phase, error }` naming what the connection waits on and asking the model to tell the user and retry. `get` / `list` include `phase`.
+
+Tests: `server/__tests__/mcpStartPending.test.ts`, `mcpRoutesPending.test.ts`, the `authorizing` assertions in `mcpOAuthRedirectUri.test.ts`, and `server/tools/__tests__/mcpManagerTool.test.ts`.
+
 ## Important Invariants
 
 - Local Electron is the only supported runtime surface in this repository.

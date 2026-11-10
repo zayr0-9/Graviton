@@ -560,7 +560,14 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
         if (!isNativeShell) return
         setMcpLoadState(prev => ({ ...prev, [reloadKey]: true }))
         try {
-          await localApi.post(`/mcp/servers/${encodeURIComponent(serverName)}/start`)
+          const started = await localApi.post<{ pending?: boolean }>(`/mcp/servers/${encodeURIComponent(serverName)}/start`)
+          // The host answers `pending` while it waits on a keychain prompt or browser sign-in.
+          // Follow the connection with short status reads instead of one long-held request.
+          for (let waited = 0; started?.pending && waited < 5 * 60_000; waited += 2000) {
+            await new Promise(resolve => setTimeout(resolve, 2000))
+            const { server } = await localApi.get<{ server?: { status?: string } }>(`/mcp/servers/${encodeURIComponent(serverName)}`)
+            if (server?.status !== 'connecting') break
+          }
           await localApi.post('/mcp/refresh-tools')
           dispatch(fetchMcpTools())
           setMcpReloadTokens(prev => ({ ...prev, [reloadKey]: (prev[reloadKey] || 0) + 1 }))

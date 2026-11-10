@@ -10,7 +10,15 @@ import {
   parseMcpOAuthRedirectUri,
   type McpOAuthConfig,
 } from './mcpManager.js'
+import { MCP_START_PHASE_MESSAGE, settleWithin } from './mcpStartPhase.js'
 import { toMcpExecutionResult } from './mcpToolResult.js'
+
+/**
+ * How long a start/restart request is held open. A connection that needs the user (keychain
+ * prompt, browser sign-in) answers `pending` after this and finishes in the background; the
+ * client follows it through GET /api/mcp/servers.
+ */
+const MCP_START_RESPONSE_BUDGET_MS = 3000
 
 // Helper function to refresh MCP tools with the orchestrator
 async function refreshMcpToolsWithOrchestrator(): Promise<number> {
@@ -155,7 +163,8 @@ function sanitizeOAuthForResponse(oauth: McpOAuthConfig | undefined): Record<str
   }
 }
 
-export function registerMcpRoutes(app: Express): void {
+export function registerMcpRoutes(app: Express, options: { startResponseBudgetMs?: number } = {}): void {
+  const startResponseBudgetMs = options.startResponseBudgetMs ?? MCP_START_RESPONSE_BUDGET_MS
   // GET /api/mcp/settings - Get MCP settings
   app.get('/api/mcp/settings', async (_req, res) => {
     try {
@@ -219,6 +228,8 @@ export function registerMcpRoutes(app: Express): void {
           headers: sanitizedHeaders,
           oauth,
           status: serverStatus?.status || 'disconnected',
+          phase: serverStatus?.phase,
+          phaseMessage: serverStatus?.phase ? MCP_START_PHASE_MESSAGE[serverStatus.phase] : undefined,
           error: serverStatus?.error,
           toolCount: serverStatus?.tools.length || 0,
           resourceCount: serverStatus?.resources.length || 0,
@@ -244,7 +255,7 @@ export function registerMcpRoutes(app: Express): void {
         return
       }
 
-      res.json({ success: true, server: status })
+      res.json({ success: true, server: { ...status, phaseMessage: status.phase ? MCP_START_PHASE_MESSAGE[status.phase] : undefined } })
     } catch (error) {
       console.error('[McpRoutes] Error getting server status:', error)
       res.status(500).json({ success: false, error: 'Failed to get server status' })
@@ -430,7 +441,15 @@ export function registerMcpRoutes(app: Express): void {
         return
       }
 
-      await mcpManager.startServer(config)
+      const start = mcpManager.startServer(config)
+      const outcome = await settleWithin(start, startResponseBudgetMs)
+      if (!outcome.settled) {
+        // Do not park this request on a sign-in: answer now, register tools when it lands.
+        void start.then(() => refreshMcpToolsWithOrchestrator(), () => {})
+        const phase = mcpManager.getStartPhase(req.params.name) ?? 'connecting'
+        res.status(202).json({ success: true, pending: true, phase, message: MCP_START_PHASE_MESSAGE[phase] })
+        return
+      }
       // Refresh MCP tools with orchestrator after server starts
       const toolCount = await refreshMcpToolsWithOrchestrator()
       res.json({ success: true, message: `Server '${req.params.name}' started`, toolsRegistered: toolCount })
@@ -458,7 +477,12 @@ export function registerMcpRoutes(app: Express): void {
   app.post('/api/mcp/servers/:name/restart', async (req, res) => {
     try {
       await mcpManager.initialize()
-      await mcpManager.restartServer(req.params.name)
+      const outcome = await settleWithin(mcpManager.restartServer(req.params.name), startResponseBudgetMs)
+      if (!outcome.settled) {
+        const phase = mcpManager.getStartPhase(req.params.name) ?? 'connecting'
+        res.status(202).json({ success: true, pending: true, phase, message: MCP_START_PHASE_MESSAGE[phase] })
+        return
+      }
       res.json({ success: true, message: `Server '${req.params.name}' restarted` })
     } catch (error) {
       console.error('[McpRoutes] Error restarting server:', error)

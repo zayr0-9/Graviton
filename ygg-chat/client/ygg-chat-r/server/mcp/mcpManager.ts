@@ -21,6 +21,7 @@ import { mcpOAuthSecretStore, type McpOAuthSecrets } from './mcpOAuthSecrets.js'
 import { describeHttpFailure } from './httpFailureDetails.js'
 import { tryGetHostCapabilities, tryGetServerConfig } from '../serverHost.js'
 import { withCredentialVaultLock } from '../credentialVaultLock.js'
+import type { McpStartPhase } from './mcpStartPhase.js'
 
 // ============================================================================
 // Types and Interfaces
@@ -128,9 +129,13 @@ export interface McpToolCallResult {
   [key: string]: unknown
 }
 
+export { MCP_START_PHASE_MESSAGE, settleWithin, type McpStartPhase } from './mcpStartPhase.js'
+
 export interface McpServerStatus {
   name: string
   status: 'disconnected' | 'connecting' | 'connected' | 'error'
+  /** Present while a start is in flight; says what it is waiting on. */
+  phase?: McpStartPhase
   error?: string
   tools: McpToolDefinition[]
   resources: McpResourceDefinition[]
@@ -929,7 +934,14 @@ class McpClient extends EventEmitter {
         throw new Error('Unable to open OAuth authorization in the browser')
       }
 
-      const authCode = await callbackServer.waitForCode(5 * 60_000)
+      // The browser is open; the connection now waits on the user.
+      this.emit('authPhase', 'authorizing')
+      let authCode: string
+      try {
+        authCode = await callbackServer.waitForCode(5 * 60_000)
+      } finally {
+        this.emit('authPhase', 'connecting')
+      }
 
       const token = await this.exchangeAuthorizationCodeForToken({
         code: authCode,
@@ -1632,6 +1644,10 @@ export class McpManager extends EventEmitter {
   private initPromise: Promise<void> | null = null
   private settings: { lazyStart: boolean } = { lazyStart: true }
   private starts = new Map<string, Promise<void>>()
+  private startPhases = new Map<string, McpStartPhase>()
+  private authorizing = new Set<string>()
+  /** A start can fail before a client exists (credential load); keep why. */
+  private startErrors = new Map<string, string>()
   private configWrites: Promise<unknown> = Promise.resolve()
 
   private serializeConfig<T>(work: () => Promise<T>): Promise<T> {
@@ -1838,9 +1854,24 @@ export class McpManager extends EventEmitter {
   async startServer(config: McpServerConfig): Promise<void> {
     const pending = this.starts.get(config.name)
     if (pending) return pending
+    this.startErrors.delete(config.name)
     const operation = this.connectServer(config)
     this.starts.set(config.name, operation)
-    try { await operation } finally { if (this.starts.get(config.name) === operation) this.starts.delete(config.name) }
+    try { await operation } catch (error) {
+      this.startErrors.set(config.name, error instanceof Error ? error.message : String(error))
+      throw error
+    } finally {
+      if (this.starts.get(config.name) === operation) {
+        this.starts.delete(config.name)
+        this.startPhases.delete(config.name)
+      }
+    }
+  }
+
+  /** What an in-flight start (or a mid-session reauthorization) is waiting on. */
+  getStartPhase(name: string): McpStartPhase | undefined {
+    if (this.authorizing.has(name)) return 'authorizing'
+    return this.startPhases.get(name) ?? (this.clients.get(name)?.status === 'connecting' ? 'connecting' : undefined)
   }
 
   private async connectServer(config: McpServerConfig): Promise<void> {
@@ -1869,6 +1900,8 @@ export class McpManager extends EventEmitter {
     }
 
     if (transport === 'http' && config.credentialStorage !== 'anonymous') {
+      // Reading the vault can block on an OS keychain prompt for as long as the user leaves it.
+      this.startPhases.set(config.name, 'credentials')
       let storedSecrets: McpOAuthSecrets = {}
       if (hasOAuthSecrets(config.oauth)) {
         await mcpOAuthSecretStore.importLegacy(config.name, extractOAuthSecrets(config.oauth))
@@ -1922,13 +1955,25 @@ export class McpManager extends EventEmitter {
       this.emit('serverStatusChange', { name: config.name, status })
     })
 
+    client.on('authPhase', (phase: McpStartPhase) => {
+      if (phase === 'authorizing') this.authorizing.add(config.name)
+      else this.authorizing.delete(config.name)
+    })
+
     this.clients.set(config.name, client)
-    await client.connect()
+    this.startPhases.set(config.name, 'connecting')
+    try {
+      await client.connect()
+    } finally {
+      this.authorizing.delete(config.name)
+    }
     await this.persistClientConfig(config.name)
   }
 
   async stopServer(name: string): Promise<void> {
     const client = this.clients.get(name)
+    this.startErrors.delete(name)
+    this.authorizing.delete(name)
     if (client) {
       await client.disconnect()
       this.clients.delete(name)
@@ -2167,11 +2212,21 @@ export class McpManager extends EventEmitter {
   // ============================================================================
 
   getStatus(): McpServerStatus[] {
-    return Array.from(this.clients.values()).map(c => c.getStatus())
+    const names = new Set([...this.clients.keys(), ...this.starts.keys(), ...this.startErrors.keys()])
+    return [...names].map(name => this.getServerStatus(name)!).filter(Boolean)
   }
 
   getServerStatus(name: string): McpServerStatus | undefined {
-    return this.clients.get(name)?.getStatus()
+    const client = this.clients.get(name)
+    const phase = this.getStartPhase(name)
+    if (client) {
+      const status = client.getStatus()
+      return phase && status.status !== 'connected' ? { ...status, status: 'connecting', phase } : status
+    }
+    // No client yet: the start is still loading credentials, or failed doing so.
+    if (this.starts.has(name)) return { name, status: 'connecting', phase: phase ?? 'credentials', tools: [], resources: [], prompts: [] }
+    const error = this.startErrors.get(name)
+    return error ? { name, status: 'error', error, tools: [], resources: [], prompts: [] } : undefined
   }
 
   async getConfigs(): Promise<McpServerConfig[]> {
