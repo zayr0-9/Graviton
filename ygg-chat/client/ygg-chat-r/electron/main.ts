@@ -337,9 +337,13 @@ function cleanupTerminalSessionsForSender(sender: Electron.WebContents): void {
 
 // Custom protocol for OAuth callbacks
 const PROTOCOL = 'yggchat'
-const UPDATE_FEED_BASE_URL =
-  process.env.SUPABASE_UPDATE_FEED_BASE_URL || 'https://auth.yggchat.com/storage/v1/object/public/updates/updates'
+// Updates come from GitHub Releases (electron-builder bakes the github publish config into
+// resources/app-update.yml). macOS builds are unsigned, so Squirrel.Mac cannot install them:
+// on macOS we only check and point the user at the release page.
+const UPDATE_RELEASES_URL = 'https://github.com/zayr0-9/Graviton/releases'
+const MANUAL_UPDATE_INSTALL = process.platform === 'darwin'
 let autoUpdaterConfigured = false
+let latestUpdateReleaseUrl = UPDATE_RELEASES_URL
 
 // Persist main-process/server console output (e.g. [LineageForkDebug] diagnostics),
 // keeping the last 3 days and at most 32 MiB per day.
@@ -1435,6 +1439,16 @@ ipcMain.handle('autoUpdater:check', async () => {
   }
 })
 
+ipcMain.handle('autoUpdater:openReleasePage', async () => {
+  try {
+    await shell.openExternal(latestUpdateReleaseUrl)
+    return { success: true }
+  } catch (error) {
+    console.error('[Electron] Failed to open release page:', error)
+    return { success: false, error: String(error) }
+  }
+})
+
 ipcMain.handle('autoUpdater:installNow', async () => {
   // console.log('[Electron] User requested immediate update install')
   try {
@@ -2340,24 +2354,9 @@ function configureAutoUpdater() {
     return
   }
 
-  if (!UPDATE_FEED_BASE_URL) {
-    console.warn('[Electron] Auto-updater skipped: SUPABASE_UPDATE_FEED_BASE_URL missing')
-    return
-  }
-
-  const platformDir = process.platform === 'win32' ? 'windows' : process.platform === 'darwin' ? 'mac' : 'linux'
-
-  const normalizedBase = UPDATE_FEED_BASE_URL.replace(/\/+$/, '')
-  const feedUrl = `${normalizedBase}/${platformDir}`
-
-  try {
-    autoUpdater.setFeedURL({
-      provider: 'generic',
-      url: feedUrl,
-    })
-  } catch (error) {
-    console.error('[Electron] Failed to set feed URL:', error)
-    return
+  if (MANUAL_UPDATE_INSTALL) {
+    autoUpdater.autoDownload = false
+    autoUpdater.autoInstallOnAppQuit = false
   }
 
   autoUpdaterConfigured = true
@@ -2369,7 +2368,12 @@ function configureAutoUpdater() {
 
   autoUpdater.on('update-available', info => {
     // console.log('[Electron] Update available:', info?.version)
-    mainWindow?.webContents.send('autoUpdater:update-available', info)
+    latestUpdateReleaseUrl = info?.version ? `${UPDATE_RELEASES_URL}/tag/v${info.version}` : UPDATE_RELEASES_URL
+    mainWindow?.webContents.send('autoUpdater:update-available', {
+      ...info,
+      manualInstall: MANUAL_UPDATE_INSTALL,
+      releaseUrl: latestUpdateReleaseUrl,
+    })
   })
 
   autoUpdater.on('update-not-available', info => {
@@ -2393,8 +2397,8 @@ function configureAutoUpdater() {
   })
 
   setTimeout(() => {
-    autoUpdater
-      .checkForUpdatesAndNotify()
+    const check = MANUAL_UPDATE_INSTALL ? autoUpdater.checkForUpdates() : autoUpdater.checkForUpdatesAndNotify()
+    check
       .then(result => {
         if (!result?.downloadPromise) {
           console.log('[Electron] No update download triggered')

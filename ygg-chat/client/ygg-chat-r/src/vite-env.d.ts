@@ -144,8 +144,12 @@ interface ElectronAPI {
   autoUpdater: {
     check: () => Promise<{ success: boolean; error?: string }>
     installNow: () => Promise<{ success: boolean; error?: string }>
+    /** Opens the GitHub release page (macOS, where unsigned updates cannot be installed in place). */
+    openReleasePage?: () => Promise<{ success: boolean; error?: string }>
     onChecking: (callback: () => void) => () => void
-    onUpdateAvailable: (callback: (info: { version: string }) => void) => () => void
+    onUpdateAvailable: (
+      callback: (info: { version: string; manualInstall?: boolean; releaseUrl?: string }) => void
+    ) => () => void
     onUpdateNotAvailable: (callback: (info: any) => void) => () => void
     onDownloadProgress: (
       callback: (progress: { percent: number; bytesPerSecond: number; transferred: number; total: number }) => void

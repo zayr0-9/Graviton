@@ -73,8 +73,10 @@
   "nativeRebuilder": "sequential",
   "publish": [
     {
-      "provider": "generic",
-      "url": "https://awvlmkkdnwmpgomsuneb.supabase.co/storage/v1/object/public/updates/updates"
+      "provider": "github",
+      "owner": "zayr0-9",
+      "repo": "Graviton",
+      "releaseType": "release"
     }
   ]
 }

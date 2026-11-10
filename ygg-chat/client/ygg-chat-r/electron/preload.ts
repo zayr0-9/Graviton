@@ -212,6 +212,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   autoUpdater: {
     check: () => ipcRenderer.invoke('autoUpdater:check'),
     installNow: () => ipcRenderer.invoke('autoUpdater:installNow'),
+    openReleasePage: () => ipcRenderer.invoke('autoUpdater:openReleasePage'),
     onChecking: (callback: () => void) => {
       const listener = () => callback()
       ipcRenderer.on('autoUpdater:checking', listener)
