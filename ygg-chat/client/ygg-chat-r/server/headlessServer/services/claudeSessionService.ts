@@ -7,7 +7,8 @@ import { readFile, realpath } from 'node:fs/promises'
 import path from 'node:path'
 import { claudeProcessEnvironment, resolveClaudeExecutable } from './claudeProcessConfig.js'
 import { claudeMcpLaunchOptions, type HostClaudeMcpPreferences } from '../../../../../shared/claudeNativeMcp.js'
-import type { HookInput, Options, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
+import { ClaudeWarmProcess, ClaudeWarmRegistry, claudeIdleEvent, claudeLaunchKey, type ClaudeQuery, type ClaudeWarmConfig, type ClaudeWarmSettings } from './claudeWarmProcess.js'
+import type { HookInput, Options, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
 import type { HeadlessBackgroundTask, HeadlessBackgroundTaskOutput, HeadlessMessageRequest, HeadlessStreamEvent } from '../../../../../shared/headlessApi.js'
 import { ClaudeSessionRepo } from '../persistence/claudeSessionRepo.js'
 import type { MessageRepo } from '../persistence/messageRepo.js'
@@ -59,6 +60,8 @@ export interface ClaudeModeSwitch { mode: OperationMode; previousMode: Operation
 // Claude Code's own settings layers, as the CLI loads them: skills, hooks, plugins and CLAUDE.md.
 export const CLAUDE_SETTING_SOURCES: NonNullable<Options['settingSources']> = ['user', 'project', 'local']
 const COMMAND_LOOKUP_TIMEOUT_MS = 15_000
+// Live settings a reused CLI applies before the turn (setModel took ~730 ms on CLI 2.1.318).
+const WARM_SETTINGS_TIMEOUT_MS = 10_000
 // Hook events whose `hook_name` matcher is a tool name (`PreToolUse:Bash`).
 const NATIVE_TOOL_HOOK_EVENTS = new Set(['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'PermissionRequest', 'PermissionDenied'])
 const SKILL_BASE_DIRECTORY = /^Base directory for this skill: ([^\n]+)/
@@ -284,7 +287,23 @@ export class ClaudeSessionService {
     /** Durable store for native hook runs; defaults to the server's configured tracker. */
     hookRuns?: HookRunTracker | null
     /** Host setting for Claude Code's own MCP servers, read at each run start; absent keeps MCP off. */
-    nativeMcp?: () => HostClaudeMcpPreferences | null | undefined }) {}
+    nativeMcp?: () => HostClaudeMcpPreferences | null | undefined
+    /** Keep a branch's CLI open between runs (warm sessions); absent or null starts a CLI per run. */
+    warm?: ClaudeWarmConfig | null }) {
+    this.warm = new ClaudeWarmRegistry(deps.warm ?? null, process => {
+      // The CLI worked with no run attached: the transcript moved past the checkpoint unseen.
+      try { if (process.sessionId) this.deps.sessions.session(process.lineageId, process.sessionId, 'interrupted') }
+      catch (error) { console.warn('[ClaudeSession] could not mark a self-started session interrupted', error instanceof Error ? error.message : error) }
+    })
+  }
+
+  private readonly warm: ClaudeWarmRegistry
+
+  /** Host shutdown: close every kept Claude process. */
+  dispose(): Promise<void> { return this.warm.disposeAll() }
+
+  /** Branches whose CLI is parked (tests, diagnostics). */
+  warmLineages(): string[] { return this.warm.parkedLineages() }
 
   /** MCP servers the last fresh init of a native-MCP run reported (CLI #78820 detection). */
   private lastNativeMcpServerCount = 0
@@ -432,36 +451,110 @@ export class ClaudeSessionService {
     const sdk = await (this.deps.sdk ?? loadSdk)()
     const executable = await (this.deps.executable ?? resolveClaudeExecutable)()
     signal?.throwIfAborted()
-    const stored = this.deps.sessions.branch(lineageId)
-    let sessionId: string | undefined = stored?.session_id ?? undefined
-    if (!input.fork && stored?.state === 'running') throw new Error('This Claude session is still running. Wait for it to finish or fork a completed response.')
-    // An interrupted session's tail may be torn: never append to it, always fork at the checkpoint.
-    const interrupted = stored?.state === 'uncertain' || stored?.state === 'interrupted'
+    // Settings a CLI fixes at launch (part of a warm process's launch key) and the ones a reused
+    // process takes live (model, permission mode, effort, ultracode).
+    const nativeMcp = this.nativeMcpPreferences()
+    const mcp = claudeMcpLaunchOptions(nativeMcp)
+    // Thinking is never disabled: several Claude models reject it, so the composer offers no
+    // Off and a stale think:false falls back to the selected effort or the native default.
+    // Omitted settings keep the native default for older/non-composer callers.
+    // Newer models default to display 'omitted' (signature-only, empty thinking text), so always
+    // ask for summaries; without a thinking config the CLI flag sets only the display mode.
+    const effort = request.reasoningConfig?.effort
+    const selectedEffort = effort === 'low' || effort === 'medium' || effort === 'high' || effort === 'xhigh' ? effort : undefined
+    const adaptiveThinking = request.think === true || Boolean(selectedEffort)
+    const permissionMode = request.claudePermissionMode === 'auto' ? 'auto' : 'default'
+    const liveSettings: ClaudeWarmSettings = { model: request.modelName, effort: selectedEffort ?? null, ultracode: request.claudeUltracode === true }
+    const launchKey = this.warm.enabled ? await claudeLaunchKey({ cwd, additionalDirectories: input.additionalDirectories, adaptiveThinking, mcp,
+      plansDirectory: CLAUDE_PLANS_DIRECTORY, executable, hookShape: input.hookSession ? 'graviton-hooks' : 'native-only' }) : ''
+    // The branch's parked CLI, taken synchronously after the last await so nothing else closes or
+    // claims it. It is reused only for a send at the exact head it parked at; anything else closes it.
+    let warm = this.warm.take(lineageId)
     const sourceRow = input.sourceMessageId ? this.deps.messages.get(input.sourceMessageId) : null
     const sourceSummarySession = portableSummaryText(sourceRow) ? claudeMessageMetadata(sourceRow?.meta)?.claude?.sessionId : null
-    if (sourceSummarySession) {
-      if (input.fork || !sessionId || sessionId !== sourceSummarySession) throw new Error('Branch from this summary to start an independent session.')
-      if (interrupted) throw new Error('Claude session was interrupted. Fork from a completed Claude message before continuing.')
-      // A manual /compact ends at a summary, not an assistant response checkpoint.
-    } else if (input.sourceMessageId) {
-      const checkpoint = this.deps.sessions.checkpoint(input.sourceMessageId)
-      if (!checkpoint?.resumable) throw new Error('This node is not a completed Claude checkpoint. Choose a completed Claude response to fork or continue.')
-      if (checkpoint.cwd !== cwd) throw new Error('Claude branch workspace is locked. Start a new conversation to change it.')
-      // Verify the exact source is still available. Never silently start over.
-      const transcript = await sdk.getSessionMessages(checkpoint.session_id, { dir: cwd })
-      // getSessionMessages projects only the compacted live chain. Native forkSession
-      // can still resolve historical UUIDs in the persisted source and rejects missing cuts.
-      if (input.fork || interrupted || !sessionId || sessionId !== checkpoint.session_id || transcript.at(-1)?.uuid !== checkpoint.message_uuid) {
-        const fork = await sdk.forkSession(checkpoint.session_id, { dir: cwd, upToMessageId: checkpoint.message_uuid })
-        sessionId = fork.sessionId
-      }
-    } else if (sessionId) {
-      throw new Error('Claude session has no matching checkpoint. Start a new conversation.')
+    if (warm) {
+      const current = this.deps.sessions.branch(lineageId)
+      const checkpoint = input.sourceMessageId ? this.deps.sessions.checkpoint(input.sourceMessageId) : undefined
+      const reusable = warm.alive && warm.launchKey === launchKey && !input.fork && !sourceSummarySession && current?.state === 'ready'
+        && current.session_id === warm.sessionId && input.sourceMessageId === warm.headMessageId
+        && checkpoint?.resumable && checkpoint.cwd === cwd && checkpoint.session_id === warm.sessionId
+      if (!reusable) { await this.warm.retire(warm); warm = null }
     }
+    // A process of this branch that is still exiting (a stopped run, a closed parked CLI) must be
+    // gone before another one reads or writes its session.
+    if (!warm) await this.warm.settled(lineageId)
+    let sessionId: string | undefined
+    const resolveSession = async () => {
+      const stored = this.deps.sessions.branch(lineageId)
+      sessionId = stored?.session_id ?? undefined
+      if (!input.fork && stored?.state === 'running') throw new Error('This Claude session is still running. Wait for it to finish or fork a completed response.')
+      // An interrupted session's tail may be torn: never append to it, always fork at the checkpoint.
+      const interrupted = stored?.state === 'uncertain' || stored?.state === 'interrupted'
+      if (sourceSummarySession) {
+        if (input.fork || !sessionId || sessionId !== sourceSummarySession) throw new Error('Branch from this summary to start an independent session.')
+        if (interrupted) throw new Error('Claude session was interrupted. Fork from a completed Claude message before continuing.')
+        // A manual /compact ends at a summary, not an assistant response checkpoint.
+      } else if (input.sourceMessageId) {
+        const checkpoint = this.deps.sessions.checkpoint(input.sourceMessageId)
+        if (!checkpoint?.resumable) throw new Error('This node is not a completed Claude checkpoint. Choose a completed Claude response to fork or continue.')
+        if (checkpoint.cwd !== cwd) throw new Error('Claude branch workspace is locked. Start a new conversation to change it.')
+        // Verify the exact source is still available. Never silently start over.
+        const transcript = await sdk.getSessionMessages(checkpoint.session_id, { dir: cwd })
+        // getSessionMessages projects only the compacted live chain. Native forkSession
+        // can still resolve historical UUIDs in the persisted source and rejects missing cuts.
+        if (input.fork || interrupted || !sessionId || sessionId !== checkpoint.session_id || transcript.at(-1)?.uuid !== checkpoint.message_uuid) {
+          const fork = await sdk.forkSession(checkpoint.session_id, { dir: cwd, upToMessageId: checkpoint.message_uuid })
+          sessionId = fork.sessionId
+        }
+      } else if (sessionId) {
+        throw new Error('Claude session has no matching checkpoint. Start a new conversation.')
+      }
+    }
+    if (warm) {
+      // Apply this turn's live settings. The drainer still watches meanwhile: if the CLI starts
+      // anything by itself the process dies and this send takes the cold path instead.
+      const reused = warm
+      const live = <T>(promise: Promise<T>): Promise<T> => new Promise<T>((resolve, reject) => {
+        const stop = () => reject(signal?.reason ?? new Error('Claude run stopped'))
+        if (signal?.aborted) { stop(); return }
+        signal?.addEventListener('abort', stop, { once: true })
+        const timer = setTimeout(() => reject(new Error('Claude did not apply the turn settings in time')), WARM_SETTINGS_TIMEOUT_MS)
+        // A CLI that dies meanwhile never answers.
+        void reused.events.exited.then(() => reject(new Error('the Claude process ended')))
+        promise.then(resolve, reject).finally(() => { clearTimeout(timer); signal?.removeEventListener('abort', stop) })
+      })
+      try {
+        // Always: an accepted ExitPlanMode moves the live session to 'default'.
+        await live(reused.query.setPermissionMode(permissionMode))
+        if (reused.settings.model !== request.modelName) await live(reused.query.setModel(request.modelName))
+        // Both keys, explicitly: null returns effort to the model default, false turns ultracode off.
+        await live(reused.query.applyFlagSettings({ effortLevel: selectedEffort ?? null, ultracode: liveSettings.ultracode }))
+        // A failed server is not retried inside a session (CLI #105752); a new CLI reconnects it.
+        if (nativeMcp?.enabled) {
+          const servers = await live(reused.query.mcpServerStatus())
+          if (servers.some(server => server.status === 'failed' && !nativeMcp.disabledServers.includes(server.name))) throw new Error('an MCP server failed')
+        }
+        if (!reused.alive || reused.state !== 'claiming') throw new Error('the Claude process ended')
+        sessionId = reused.sessionId ?? undefined
+      } catch (error) {
+        await this.warm.retire(reused)
+        warm = null
+        signal?.throwIfAborted()
+        await this.warm.settled(lineageId)
+      }
+    }
+    if (!warm) await resolveSession()
     this.deps.sessions.reserve(lineageId, request.conversationId, request.modelName, cwd)
     let recordedSession: string | undefined
     let observedSession = false
     let activeSession = sessionId
+    if (warm && sessionId) {
+      // The turn goes into a live session at once: from here a failure marks the branch, as one
+      // after the first event would, so the next send forks at the checkpoint.
+      this.deps.sessions.session(lineageId, sessionId, 'running')
+      recordedSession = sessionId
+      observedSession = true
+    }
     let parent = input.parentId
     let finalMessage: any = null
     let completed = false
@@ -627,7 +720,6 @@ export class ClaudeSessionService {
         : CHAT_MODE_EDIT_DENIAL
       return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } }
     }] }]
-    const permissionMode = request.claudePermissionMode === 'auto' ? 'auto' : 'default'
     const plansDir = path.join(cwd, CLAUDE_PLANS_DIRECTORY)
     let lastPlanPath: string | null = null
     // The permission callback can race the assistant envelope that persists the tool_use block.
@@ -690,15 +782,6 @@ export class ClaudeSessionService {
       // A switch to Chat mode denies edit prompts that were still waiting.
       return { behavior: 'deny', message: control.mode === 'plan' && CHAT_MODE_BLOCKED_TOOLS.includes(name) ? CHAT_MODE_EDIT_DENIAL : 'Denied by user' }
     }
-    // Thinking is never disabled: several Claude models reject it, so the composer offers no
-    // Off and a stale think:false falls back to the selected effort or the native default.
-    // Omitted settings keep the native default for older/non-composer callers.
-    // Newer models default to display 'omitted' (signature-only, empty thinking text), so always
-    // ask for summaries; without a thinking config the CLI flag sets only the display mode.
-    const effort = request.reasoningConfig?.effort
-    const selectedEffort = effort === 'low' || effort === 'medium' || effort === 'high' || effort === 'xhigh' ? effort : undefined
-    const nativeMcp = this.nativeMcpPreferences()
-    const mcp = claudeMcpLaunchOptions(nativeMcp)
     const options: Options = {
       cwd, model: request.modelName, ...(sessionId ? { resume: sessionId } : {}),
       ...(input.additionalDirectories?.length ? { additionalDirectories: input.additionalDirectories } : {}),
@@ -713,7 +796,7 @@ export class ClaudeSessionService {
       // A one-line status for each running agent, about every 30s (task_progress `summary`). The CLI
       // forks the agent's conversation for it, reusing its model and prompt cache.
       agentProgressSummaries: true,
-      ...(request.think === true || selectedEffort
+      ...(adaptiveThinking
         ? { thinking: { type: 'adaptive', display: 'summarized' } as const, ...(selectedEffort ? { effort: selectedEffort } : {}) }
         : { extraArgs: { 'thinking-display': 'summarized' } }),
       systemPrompt: { type: 'preset', preset: 'claude_code' },
@@ -728,25 +811,30 @@ export class ClaudeSessionService {
     // A native command's arguments are the rest of its text, so the note stays off commands.
     const prompt = request.manualCompaction ? '/compact'
       : control.mode === 'plan' && !input.nativeCommand ? `${userPrompt}\n\n${CHAT_MODE_NOTE}` : userPrompt
-    // Input stays open while queued messages may still reach Claude; closing it ends the session.
-    const outbox: SDKUserMessage[] = []
+    // The run's input ends once nothing is left to start another turn. A cold CLI then exits; a
+    // warm one stays open, idle after `result`, for the branch's next send.
+    let proc: ClaudeWarmProcess | undefined = warm ?? undefined
     let inputClosed = false
-    let wakeInput = () => {}
-    const finishInput = () => { inputClosed = true; wakeInput() }
-    const releaseInput = () => finishInput()
-    abortController.signal.addEventListener('abort', releaseInput, { once: true })
-    async function* prompts(): AsyncGenerator<SDKUserMessage> {
-      const content = imageBlocks.length ? [...imageBlocks, { type: 'text' as const, text: prompt }] : prompt
-      yield { type: 'user', message: { role: 'user', content }, parent_tool_use_id: null, uuid: promptUuid,
-        session_id: sessionId ?? '' }
-      while (true) {
-        const next = outbox.shift()
-        if (next) { yield next; continue }
-        if (inputClosed) return
-        await new Promise<void>(resolve => { wakeInput = resolve })
-      }
+    let resolveIdle!: () => void
+    const idleClosed = new Promise<'idle'>(resolve => { resolveIdle = () => resolve('idle') })
+    // Only a settled run ('idle') may leave a warm CLI open; a stop never reads as one.
+    const finishInput = (reason: 'idle' | 'stop' = 'idle') => {
+      if (inputClosed) return
+      inputClosed = true
+      if (reason === 'idle') resolveIdle()
+      if (!this.warm.enabled) proc?.channel.close()
     }
-    let query: ReturnType<ClaudeSdk['query']> | undefined
+    const pushInput = (message: SDKUserMessage) => { proc?.channel.push(message) }
+    // Input Claude may still start after this run gave up on it: such a CLI is never kept.
+    let uncleanInput = false
+    // Every task the CLI reports, ambient ones included; a CLI with any is never kept.
+    let rawTaskCount = 0
+    // The run returned a completed response: its CLI may be kept for the branch's next send.
+    let parkable = false
+    // Stopping the run kills its CLI at once, which ends its turn and background tasks.
+    const releaseInput = () => { finishInput('stop'); proc?.kill() }
+    abortController.signal.addEventListener('abort', releaseInput, { once: true })
+    let query: ClaudeQuery | undefined
     const queued = input.queuedInput
     // Native command uuid → Graviton request id, for entries Claude holds but has not started.
     const offered = new Map<string, string>()
@@ -814,7 +902,8 @@ export class ClaudeSessionService {
       // Claude at once instead of waiting for the run to end. The task's end starts the next turn.
       if (liveTasks || [...unansweredTasks.values()].some(ended => !ended)) return
       if (unansweredTasks.size) {
-        startTimer = setTimeout(() => { unansweredTasks.clear(); settleIdle() }, TASK_TURN_START_TIMEOUT_MS)
+        // Claude may still answer the task later, with no run attached.
+        startTimer = setTimeout(() => { unansweredTasks.clear(); uncleanInput = true; settleIdle() }, TASK_TURN_START_TIMEOUT_MS)
         return
       }
       if (!queued) { finishInput(); return }
@@ -822,6 +911,8 @@ export class ClaudeSessionService {
       if (offered.size) startTimer = setTimeout(() => {
         for (const requestId of offered.values()) queued.release(requestId, { error: 'Claude did not start this message. Send it again.' })
         offered.clear()
+        // The CLI still holds those messages.
+        uncleanInput = true
         finishInput()
       }, QUEUED_START_TIMEOUT_MS)
     }
@@ -902,9 +993,8 @@ export class ClaudeSessionService {
             sent.set(next.requestId, uuid)
             offerMode(uuid, mode)
             // 'next' joins the running turn at its next tool boundary, or starts a turn after `result`.
-            outbox.push({ type: 'user', message: { role: 'user', content }, parent_tool_use_id: null, uuid,
+            pushInput({ type: 'user', message: { role: 'user', content }, parent_tool_use_id: null, uuid,
               session_id: activeSession ?? '', priority: 'next' })
-            wakeInput()
           }
           // A switch with no queued message to carry it goes alone, but only while a tool runs: it then
           // joins that tool's boundary instead of starting a turn of its own after `result`. Otherwise
@@ -912,9 +1002,8 @@ export class ClaudeSessionService {
           if (control.mode !== toldMode && toolsInFlight.size && !inputClosed) {
             const uuid = randomUUID()
             offerMode(uuid, control.mode)
-            outbox.push({ type: 'user', message: { role: 'user', content: claudeModeSwitchNotice(control.mode) }, parent_tool_use_id: null,
+            pushInput({ type: 'user', message: { role: 'user', content: claudeModeSwitchNotice(control.mode) }, parent_tool_use_id: null,
               uuid, session_id: activeSession ?? '', priority: 'next' })
-            wakeInput()
           }
         } while (pumpAgain && !inputClosed)
       } catch (error) {
@@ -957,7 +1046,17 @@ export class ClaudeSessionService {
     let unbindTasks: (() => void) | undefined
     try {
       signal?.throwIfAborted()
-      query = sdk.query({ prompt: prompts(), options })
+      const bindings = { canUseTool, hooks }
+      if (proc) {
+        if (!proc.activate(bindings)) throw new Error('The Claude process ended before this turn started. Send again.')
+      } else {
+        proc = new ClaudeWarmProcess(params => sdk.query(params), options, bindings, lineageId, launchKey, sessionId ?? null, liveSettings)
+      }
+      const running = proc
+      query = running.query
+      const firstContent = imageBlocks.length ? [...imageBlocks, { type: 'text' as const, text: prompt }] : prompt
+      pushInput({ type: 'user', message: { role: 'user', content: firstContent }, parent_tool_use_id: null, uuid: promptUuid,
+        session_id: sessionId ?? '' })
       unbindTasks = input.bindTasks?.({
         stop: async taskId => {
           if (!query || !liveTaskList.some(task => task.id === taskId)) return false
@@ -973,8 +1072,33 @@ export class ClaudeSessionService {
         },
       })
       void pump()
-      for await (const event of query) {
+      const stopped = new Promise<never>((_, reject) => {
+        const fail = () => reject(abortController.signal.reason ?? new Error('Claude run stopped'))
+        if (abortController.signal.aborted) fail()
+        else abortController.signal.addEventListener('abort', fail, { once: true })
+      })
+      stopped.catch(() => {})
+      // A reused CLI's turn is this run's only once Claude starts this run's prompt; anything
+      // before that is work the CLI started by itself.
+      let promptStarted = !warm
+      while (true) {
+        // A warm CLI is idle once the run's input is finished: it stays for the branch's next send.
+        if (this.warm.enabled && inputClosed && !abortController.signal.aborted) break
+        // A stop always wins, then an idle close; an unread event stays for the next reader.
+        const next = await Promise.race<IteratorResult<SDKMessage> | 'idle'>(this.warm.enabled
+          ? [stopped, idleClosed, running.events.next()] : [stopped, running.events.next()])
+        if (next === 'idle') break
+        running.events.consume()
+        if (next.done) break
+        const event = next.value
         signal?.throwIfAborted()
+        if (!promptStarted) {
+          const lifecycle = (event as { type: string }).type === 'command_lifecycle' ? event as unknown as { command_uuid: string; state: string } : null
+          if (lifecycle?.command_uuid === promptUuid && lifecycle.state === 'started') promptStarted = true
+          else if (lifecycle ? lifecycle.state === 'started' : !claudeIdleEvent(event)) {
+            throw new Error('Claude started work this send did not ask for. Send again: the branch continues from its last completed response.')
+          }
+        }
         if ((event as { type: string }).type === 'command_lifecycle') {
           const { command_uuid: uuid, state } = event as unknown as { command_uuid: string; state: string }
           const requestId = offered.get(uuid)
@@ -1039,6 +1163,7 @@ export class ClaudeSessionService {
           liveTaskList = event.tasks.filter(task => !task.ambient).map(task => ({ id: task.task_id, kind: task.task_type,
             description: task.description, toolUseId: tasks.get(task.task_id)?.toolUseId ?? null }))
           liveTasks = liveTaskList.length
+          rawTaskCount = event.tasks.length
           publishBackground()
           settleIdle()
         } else if (event.type === 'system' && (event.subtype === 'task_started' || event.subtype === 'task_progress' ||
@@ -1184,6 +1309,9 @@ export class ClaudeSessionService {
           settleIdle()
         }
       }
+      // However the loop ended, a stopped run is never a completed one: an earlier turn's
+      // `result` must not let a mid-turn row become the resumable checkpoint.
+      if (abortController.signal.aborted) throw abortController.signal.reason ?? new Error('Claude run stopped')
       if (hookFailure) throw hookFailure
       if (pendingCompactions.length) throw new Error('Claude supplied a summary without a completed compaction boundary')
       if (request.manualCompaction) {
@@ -1210,6 +1338,7 @@ export class ClaudeSessionService {
         { ...claudeMessageMetadata(finalMessage.meta), ...runMeta(), claude: { sessionId: activeSession, messageUuid: lastUuid, checkpoint: true } })
       emit({ type: 'assistant_message_persisted', message: finalMessage, lineageId })
       this.deps.sessions.session(lineageId, activeSession, 'ready')
+      parkable = true
       return finalMessage
     } catch (error) {
       if (compactionActive) compactionEvent('failed', undefined, 'Claude compaction did not complete')
@@ -1252,7 +1381,14 @@ export class ClaudeSessionService {
       unsubscribeQueue?.()
       abortController.signal.removeEventListener('abort', releaseInput)
       signal?.removeEventListener('abort', abort)
-      query?.close()
+      if (proc) {
+        // Kept only when it is idle at a completed response with nothing it could still start.
+        const keep = parkable && !uncleanInput && !offered.size && !offeredModes.size && !rawTaskCount && !abortController.signal.aborted
+          && Boolean(activeSession) && Boolean(finalMessage)
+        if (keep) this.warm.park(proc, String(finalMessage.id), activeSession!, liveSettings)
+        else if (this.warm.enabled) void this.warm.retire(proc)
+        else proc.kill()
+      }
       nativeHooks.settle(abortController.signal.aborted)
       // A Graviton SessionStart after a compaction can land after its boundary.
       hookSession?.attachPendingHookRuns(compactionSummary?.id ?? finalMessage?.id ?? parent)

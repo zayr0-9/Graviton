@@ -45,6 +45,7 @@ Native hooks stream as `hook_started` / `hook_progress` / `hook_response` (`incl
 - Direct content edits are rejected; use an edit branch. Notes remain editable. Deletion works like Claude Code's rewind: it cascades, so it cuts the branch back, and `planMessageDeletion` (`persistence/claudeMessageDeletion.ts`) allows the cut only where Claude can continue — at a resumable response checkpoint, at the conversation root, or beside a surviving sibling (for example a regenerated response). Launch scaffolding owned only by a deleted first prompt goes with it. Other cuts (a mid-turn queued message, the only response of a turn, the first prompt after a compaction summary) return 409 `claude_delete_refused`. The next send forks the native session at the checkpoint; an emptied branch loses its `claude_branch_sessions` row and starts fresh. Chat shows Delete on Claude user messages; Heimdall accepts any selection and the server validates it. Claude's native session files are never deleted, and workspace files are not restored.
 - The displayed model list is a configured catalog, not verified account entitlement.
 - Uses installed CLI plus version-pinned SDK `0.3.309`; no bundled CLI resolution relative to esbuild output.
+- A branch's CLI stays open between sends at its head (see Warm sessions); every other run starts its own.
 
 ## Claude Code MCP servers
 
@@ -71,7 +72,7 @@ Limits:
 - **Toggling:** Graviton never calls `toggleMcpServer`. In CLI 2.1.318 it writes `disabledMcpServers` / `enabledMcpServers` to Claude's config, which would also change the terminal CLI. A server disabled in Claude Code shows as `disabled` and must be enabled with `/mcp`.
 - **Project servers:** a project `.mcp.json` server needs approval in Claude Code first.
 - **Environment:** stdio servers get the filtered `claudeProcessEnvironment()`, so a server relying on other inherited variables fails. Put them in its `env` config.
-- **Reconnects:** every run starts its own CLI, so servers reconnect each turn. A failed HTTP server is not retried within a run (CLI #105752); use Reconnect.
+- **Reconnects:** servers connect when a CLI starts: once per warm session (see Warm sessions), or each turn when it relaunches. A failed HTTP server is not retried inside a CLI (CLI #105752), so a reused CLI with a failed visible server is relaunched; Reconnect, sign-in and sign-out in Settings also make the next send relaunch.
 
 Observed on CLI 2.1.318 / SDK 0.3.309:
 - Status listed 47 servers (4 connected) without config.
@@ -80,6 +81,53 @@ Observed on CLI 2.1.318 / SDK 0.3.309:
 - `mcpAuthenticate` on a claude.ai connector returned a `claude.ai/api/organizations/…/mcp/start-auth/…` address.
 
 No completed sign-in and no non-connector OAuth sign-in were exercised.
+
+## Warm sessions
+
+A branch's Claude CLI stays open between runs, so the next send at the head of that branch is pushed into the same process instead of launching a new one: no CLI boot, no MCP reconnects, no reload of skills, plugins and CLAUDE.md. Observed on CLI 2.1.318 with Haiku: first token about 0.8 s on a reused CLI against about 1.8 s on a new one.
+
+`claudeWarmProcess.ts` holds the process (`ClaudeWarmProcess`) and the parked set (`ClaudeWarmRegistry`). `claudeWarmChannel.ts` holds its prompt channel and the shared event reader. `index.ts` passes `claudeWarmConfigFromEnv()` to the orchestrator: `GRAVITON_CLAUDE_WARM_IDLE_MS` (default 10 min, `0` turns warm sessions off), `GRAVITON_CLAUDE_WARM_MAX` (parked CLIs, default 3, longest-unused closed first) and `GRAVITON_CLAUDE_WARM_MAX_AGE_MS` (default 60 min; an older CLI is not parked again, so it relaunches with fresh configuration). Without a config (tests, direct callers) every run starts its own CLI, as before.
+
+**Reuse** needs every one of these:
+- The send continues at the row the CLI parked at (`sourceMessageId === headMessageId`): not a fork, edit, retry, summary branch or deletion cut.
+- The branch is `ready` with the same native session.
+- The launch key is equal. That covers cwd, extra directories, the thinking mode (adaptive or not), MCP options, the plans directory, the executable (realpath and mtime), the hook shape (with or without Graviton hooks), a config epoch, and the mtime and size of `settings.json` / `settings.local.json` under the Claude config dir and the workspace, and of the workspace `.mcp.json`. The epoch is bumped by sign-in, reconnect and sign-out in the Claude MCP panel.
+
+Anything else closes the kept CLI and takes the cold path. The cold path first waits (8 s at most) until the old process has exited, so two CLIs never write one session.
+
+**Per-turn settings** go to the live CLI before the prompt:
+- `setPermissionMode` always, since an accepted ExitPlanMode moves the session to `default`.
+- `setModel` when the model changed.
+- `applyFlagSettings({ effortLevel, ultracode })`, always with both keys: `null` returns effort to the model default, and `false` turns ultracode off.
+
+With Claude Code MCP on, a CLI with a failed server that is not hidden is relaunched. A setter failure, timeout or exit, or work the CLI starts meanwhile, closes the CLI and takes the cold path. A Stop during the setters fails the send.
+
+**Ownership.** The CLI's `canUseTool` and SDK hooks forward to the run that owns it. While parked, `canUseTool` denies and PreToolUse denies, so the Chat-mode guard never fails open. A reused run treats events as its own only after the CLI reports `command_lifecycle: started` for its prompt. A turn, or another message's start, before that fails the send: "Claude started work this send did not ask for". The branch is then `uncertain`, so the next send forks at the checkpoint.
+
+**Parking.** After a run returns a completed response, its CLI is parked only when all of these hold:
+- The run was not stopped.
+- No queued message or mode notice is still offered.
+- No message was given up on: the 30 s start timeout, or the 10 s wait for a background task's answer turn.
+- The CLI's last task list, ambient tasks included, is empty.
+
+A manual `/compact` never parks. While parked, a drainer reads the CLI's events. Idle chatter is dropped: the previous prompt's `completed` lifecycle, rate limits, late hook frames, an empty task list, idle states and status. Anything else means the CLI started work by itself. Graviton then closes it and marks the branch `interrupted`, so the next send forks at the checkpoint instead of appending to a transcript it never saw.
+
+**Stop** kills the CLI at once, ending its turn and background tasks, as before. A stop never reads as a settled run, and a stopped run always throws, even when an earlier turn of the same run already reached `result`.
+
+**Host shutdown** (`stopHeadlessSessions` → `ChatOrchestrator.disposeClaudeSessions`) closes every kept CLI.
+
+**Differences from a CLI per turn**, which are the terminal CLI's own behaviour:
+- Native SessionStart(`resume`) hooks run once per process, and SessionEnd only when it closes.
+- Startup instruction files load when the CLI starts, so an edit to CLAUDE.md or rules between sends of one warm session reaches Claude as the terminal CLI would handle it. A settings or `.mcp.json` edit relaunches, through the launch key.
+- A native hook still open at the end of a run is recorded as `no_response`. Its late frame goes to the drainer.
+
+`claudeWarmSessions.test.ts` drives a fake CLI that behaves as CLI 2.1.318 does in streaming-input mode. Observed live on CLI 2.1.318 with Haiku:
+- Recall across a reused turn.
+- A new CLI when the thinking mode changed.
+- A Stop mid-turn on a reused CLI ended as `uncertain`, with nothing kept.
+- The next send forked and recalled.
+- The CLI after it was reused again.
+- Shutdown closed it.
 
 ## Queued input
 

@@ -6,6 +6,7 @@ import {
   DEFAULT_HOST_CLAUDE_MCP, type ClaudeMcpServerView, type ClaudeMcpSignInResponse, type ClaudeMcpStatusResponse, type HostClaudeMcpPreferences,
 } from '../../../../../shared/claudeNativeMcp.js'
 import { claudeProcessEnvironment, resolveClaudeExecutable } from './claudeProcessConfig.js'
+import { bumpClaudeConfigEpoch } from './claudeWarmProcess.js'
 
 // Claude Code's own settings layers, as Claude runs load them (see CLAUDE_SETTING_SOURCES).
 const SETTING_SOURCES: NonNullable<Options['settingSources']> = ['user', 'project', 'local']
@@ -219,7 +220,11 @@ export class ClaudeMcpControlService {
         // A claude.ai connector authorizes on claude.ai, which this CLI does not hear about.
         if (!callbackExpected) await session.query.reconnectMcpServer(name).catch(() => {})
         const servers = await this.rawStatus(session.query)
-        if (servers.find(server => server.name === name)?.status === 'connected') this.endSignIn(name)
+        if (servers.find(server => server.name === name)?.status === 'connected') {
+          // A chat CLI kept open still holds the unauthenticated connection.
+          bumpClaudeConfigEpoch()
+          this.endSignIn(name)
+        }
       })().catch(() => {}).finally(() => { checking = false })
     }, this.deps.pollMs ?? SIGN_IN_POLL_MS)
     const expiry = setTimeout(() => this.endSignIn(name), this.deps.signInTtlMs ?? SIGN_IN_TTL_MS)
@@ -263,6 +268,7 @@ export class ClaudeMcpControlService {
       const server = (await this.rawStatus(query)).find(candidate => candidate.name === name)
       if (!server) throw new ClaudeMcpControlError(404, 'claude_mcp_not_found', `Claude Code has no MCP server named "${name}".`)
       const view = claudeMcpServerView(server, this.preferences())
+      bumpClaudeConfigEpoch()
       return failure && !view.error ? { ...view, error: truncate(failure, MAX_ERROR_CHARS) } : view
     })
   }
@@ -278,6 +284,7 @@ export class ClaudeMcpControlService {
         throw new ClaudeMcpControlError(501, 'claude_mcp_sign_in_unavailable', `This Claude Code version cannot sign out from Graviton. Run \`claude mcp logout "${name}"\` in a terminal.`)
       }
       await withTimeout(query.mcpClearAuth(name), CALL_TIMEOUT_MS, 'Claude did not sign out in time.')
+      bumpClaudeConfigEpoch()
     })
   }
 

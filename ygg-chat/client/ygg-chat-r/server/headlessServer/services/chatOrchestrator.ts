@@ -5,6 +5,7 @@ import { CLAUDE_MODELS, claudeMessageMetadata, isClaudeProvider, isClaudeTranscr
 import { ClaudeSessionRepo, assertClaudeBranchSelection } from '../persistence/claudeSessionRepo.js'
 import { CHAT_MODE_BLOCKED_TOOLS, ClaudeSessionService, claudeImageBlock, parseClaudeSlashCommand, type ClaudeModeSwitch, type ClaudeQueuedInput, type ClaudeTaskControl } from './claudeSessionService.js'
 import type { HostClaudeMcpPreferences } from '../../../../../shared/claudeNativeMcp.js'
+import type { ClaudeWarmConfig } from './claudeWarmProcess.js'
 import { compactionInstruction } from '../../../../../shared/compaction.js'
 import type { AdmissionMismatchReason } from '../../../../../shared/runAdmission.js'
 import { v4 as uuidv4 } from 'uuid'
@@ -83,6 +84,8 @@ interface ChatOrchestratorDeps {
   claudeSessions?: ClaudeSessionService
   /** Host setting for Claude Code's own MCP servers; absent (tests, subagents) keeps Claude's MCP off. */
   claudeNativeMcp?: () => HostClaudeMcpPreferences
+  /** Keep a Claude branch's CLI open between runs; absent (tests, subagents) starts a CLI per run. */
+  claudeWarm?: ClaudeWarmConfig | null
 }
 
 export function linkPreparedAttachmentsToMessage(
@@ -584,6 +587,11 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     return this.claudeSessions.recoverInterruptedBranches?.() ?? Promise.resolve(0)
   }
 
+  /** Host shutdown: close the Claude CLIs kept open between runs. */
+  disposeClaudeSessions(): Promise<void> {
+    return this.claudeSessions.dispose?.() ?? Promise.resolve()
+  }
+
   validateExecutionSelection(request: HeadlessMessageRequest): void {
     const sourceId = request.operation === 'send' ? request.parentId : request.messageId ?? request.parentId
     const path = sourceId ? this.conversationRepo.listPathToMessage(request.conversationId, sourceId) : []
@@ -867,7 +875,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     this.hookRunner = deps.hookRunner
     this.claudeSessionRepo = new ClaudeSessionRepo(deps.db)
     this.claudeSessions = deps.claudeSessions ?? new ClaudeSessionService({ sessions: this.claudeSessionRepo, messages: this.messageRepo, broker: deps.decisionBroker,
-      nativeMcp: deps.claudeNativeMcp })
+      nativeMcp: deps.claudeNativeMcp, warm: deps.claudeWarm })
     this.toolLoopService =
       deps.toolLoopService ??
       new ToolLoopService({
