@@ -316,7 +316,8 @@ User rows with `meta.kind = watcher_completion` render through
 `WatcherCompletionNotice`, not the tinted user bubble. It shares
 `CompactMessageNotice` chrome with `SummarisedMessage` (h-8, text-xs, muted
 light/dark/custom-theme text). The visible label shows outcome, watch kind and
-short handle; the full continuation text remains in the tooltip and canonical
+short handle (`Subagent completed · <handle>` / `Claude job <status> · <job>` for
+delegated completions, via `getWatcherCompletionLabel`); the full continuation text remains in the tooltip and canonical
 model/history content. Detection uses provenance metadata, not matching prose.
 `Chat.tsx` uses the compact virtual-height estimate; `ChatMessage` also guards
 shared callers such as the parallel transcript. Rendering tests:

@@ -1,3 +1,12 @@
+import { parseMessageMeta } from './contextInjection'
+
+/** Automated watcher/subagent/Claude-bridge completion rows, identified by server provenance, never by matching text. */
+export function isWatcherCompletionMessage(message: unknown): boolean {
+  if (!message || typeof message !== 'object') return false
+  const row = message as { role?: unknown; meta?: unknown }
+  return row.role === 'user' && parseMessageMeta(row.meta)?.kind === 'watcher_completion'
+}
+
 export interface ClaudeBridgeSource {
   action: 'start' | 'send' | 'resume' | 'fork'
   toolCallId: string

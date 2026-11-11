@@ -98,6 +98,21 @@ describe('Full access node visibility', () => {
   })
 })
 
+describe('watcher/subagent completion node visibility', () => {
+  it('promotes automated completion rows across branch points only while filtering is on', () => {
+    for (const row of [{ role: 'user', meta: { kind: 'watcher_completion' } }, { role: 'user', meta: '{"kind":"watcher_completion"}' }]) {
+      expect(isHeimdallScaffoldingMessage(row)).toBe(true)
+      expect(isHeimdallScaffoldingMessage(row, false)).toBe(false)
+    }
+    expect(shouldPromoteHeimdallNode({ isWatcherCompletion: true, isContextInjection: false,
+      isOperationModeChange: false, isEmpty: false, hasSiblings: true, filterEmptyMessages: true })).toBe(true)
+  })
+  it('keeps user prose that only looks like a completion', () => {
+    expect(isHeimdallScaffoldingMessage({ role: 'user', content: 'Source: subagent_manager spawn, tool call x' })).toBe(false)
+    expect(isHeimdallScaffoldingMessage({ role: 'assistant', meta: { kind: 'watcher_completion' } })).toBe(false)
+  })
+})
+
 describe('compaction node visibility', () => {
   const rows = [
     { role: 'user', meta: { kind: 'compaction_instruction' } },

@@ -2,6 +2,7 @@ import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'rea
 import { useAppSelector } from '../../hooks/redux'
 import { ChatMessage } from '../ChatMessage/ChatMessage'
 import { SummarisedMessage } from '../ChatMessage/SummarisedMessage'
+import { WatcherCompletionNotice } from '../ChatMessage/WatcherCompletionNotice'
 import { StreamingThinkingIndicator } from '../StreamingThinkingIndicator'
 import { buildAgentPreviewRows } from './agentPreviewContent'
 import { buildForkPreviewRows, createAgentPreviewRunsSelector } from './agentForkPreview'
@@ -50,6 +51,8 @@ export const AgentRunPreview = memo(function AgentRunPreview({ streamId, grouped
           <div key={row.key} className={row.role === 'user' ? 'min-w-0 [&_.chat-markdown]:[overflow-wrap:anywhere]' : 'min-w-0'}>
           {row.summarised ? <SummarisedMessage id={`agent-preview:${row.streamId}:${row.key}`} className='w-full'
             customTheme={theme} customThemeEnabled={enabled} isDarkMode={isDarkMode} /> :
+          row.watcherCompletion ? <WatcherCompletionNotice id={`agent-preview:${row.streamId}:${row.key}`} className='w-full'
+            content={row.content} customTheme={theme} customThemeEnabled={enabled} isDarkMode={isDarkMode} /> :
           <ChatMessage id={`agent-preview:${row.streamId}:${row.key}`} role={row.role}
             content={row.content} contentBlocks={row.blocks}
             width='w-full' showInlineActions={false} readOnly keepTextOutsideGroups

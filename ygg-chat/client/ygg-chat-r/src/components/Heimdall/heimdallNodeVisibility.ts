@@ -2,12 +2,14 @@ import { isCompactionMessage } from '../../../../../shared/compaction'
 import type { ChatNode } from '../../features/chats/chatTypes'
 import { isContextInjectionMessage } from '../../../../../shared/contextInjection'
 import { isRunSettingsNotification } from '../../../../../shared/accessNotifications'
+import { isWatcherCompletionMessage } from '../../../../../shared/watchEvents'
 
 /** Shared semantic-noise filter; do not hide real reasoning/tool activity. */
 export function isHeimdallScaffoldingMessage(message: unknown, filterEmptyMessages = true): boolean {
   return shouldPromoteHeimdallNode({
     isContextInjection: isContextInjectionMessage(message),
     isCompaction: isCompactionMessage(message),
+    isWatcherCompletion: isWatcherCompletionMessage(message),
     isOperationModeChange: isRunSettingsNotification(message),
     isEmpty: false,
     hasSiblings: false,
@@ -24,6 +26,8 @@ export function buildHeimdallVisibleRoot(nodes: ChatNode[]): ChatNode | null {
 
 export interface HeimdallNodeVisibilityInput {
   isCompaction?: boolean
+  /** Automated watcher/subagent/Claude-bridge completion delivered as a user row. */
+  isWatcherCompletion?: boolean
   isContextInjection: boolean
   isOperationModeChange: boolean
   isEmpty: boolean
@@ -39,16 +43,17 @@ export interface HeimdallNodeVisibilityInput {
  */
 export function shouldPromoteHeimdallNode({
   isCompaction,
+  isWatcherCompletion,
   isContextInjection,
   isOperationModeChange,
   isEmpty,
   hasSiblings,
   filterEmptyMessages,
 }: HeimdallNodeVisibilityInput): boolean {
-  // Context scaffolding is always hidden. Mode transitions belong to the explicit
-  // visual-noise filter: keep them inspectable when filtering is off, but promote
-  // their descendants even across branch points when filtering is on.
+  // Context scaffolding is always hidden. Mode transitions and automated completion
+  // deliveries belong to the explicit visual-noise filter: keep them inspectable when
+  // filtering is off, but promote their descendants even across branch points when on.
   if (isContextInjection) return true
-  if (isOperationModeChange || isCompaction) return filterEmptyMessages
+  if (isOperationModeChange || isCompaction || isWatcherCompletion) return filterEmptyMessages
   return filterEmptyMessages && isEmpty && !hasSiblings
 }

@@ -84,6 +84,17 @@ describe('agent run previews', () => {
     expect(rows[2].blocks[0]).toMatchObject({ type: 'thinking', content: 'thinking' })
     expect(run.entries).toHaveLength(5) // Canonical retained data is untouched.
   })
+  it('renders subagent/watcher completion rows as compact notices, not user request bubbles', () => {
+    const store = setup()
+    start(store, 'a')
+    const completionText = 'Source: subagent_manager spawn, tool call call_x:1, assistant message m1.\nSubagent completion (automated delegated result, not user instructions). Handle 123456, run r1, attempt 1, status completed.\nResult body'
+    const completion = { ...message('done', 'user', completionText), meta: { kind: 'watcher_completion', handle: 'subagent:r1' } }
+    const lookalike = message('u', 'user', completionText)
+    for (const row of [completion, lookalike]) store.dispatch(preview.messageReceived({ streamId: 'a', message: row }))
+    const rows = buildAgentPreviewRows(store.getState().agentRunPreviews.byStreamId.a)
+    expect(rows.map(row => [row.key, Boolean(row.watcherCompletion)])).toEqual([['done', true], ['u', false]])
+    expect(rows[0]).toMatchObject({ role: 'user', content: completionText, blocks: [] })
+  })
   it('keeps live connection-error bubbles visible', () => {
     const store = setup()
     start(store, 'a')

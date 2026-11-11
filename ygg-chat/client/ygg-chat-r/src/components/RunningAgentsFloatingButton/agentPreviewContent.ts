@@ -3,6 +3,7 @@ import type { ContentBlock, StreamEvent } from '../../features/chats/chatTypes'
 import type { AgentPreviewEntry, AgentRunPreview } from '../../features/chats/agentRunPreviewSlice'
 import { isHeimdallScaffoldingMessage } from '../Heimdall/heimdallNodeVisibility'
 import { isCompactionSummary, SUMMARY_PLACEHOLDER } from '../../features/chats/summaryPresentation'
+import { isWatcherCompletionMessage } from '../../../../../shared/watchEvents'
 
 export interface PreviewRow {
   key: string
@@ -10,6 +11,8 @@ export interface PreviewRow {
   content: string
   blocks: ContentBlock[]
   summarised?: boolean
+  /** Automated watcher/subagent completion: rendered as Chat's compact notice, not a user bubble. */
+  watcherCompletion?: boolean
 }
 
 function eventBlocks(events: StreamEvent[]): ContentBlock[] {
@@ -93,6 +96,11 @@ export function buildAgentPreviewRows(run: AgentRunPreview): PreviewRow[] {
     if (isCompactionSummary(entry.message)) {
       rows.push({ key: entry.key, role: 'system', content: SUMMARY_PLACEHOLDER, summarised: true,
         blocks: [] })
+      continue
+    }
+    // Checked before the scaffolding filter, which hides these rows from graph/request views.
+    if (isWatcherCompletionMessage(entry.message)) {
+      rows.push({ key: entry.key, role: 'user', content: entry.message?.content ?? '', blocks: [], watcherCompletion: true })
       continue
     }
     if (entry.message && isHeimdallScaffoldingMessage(entry.message)) continue
