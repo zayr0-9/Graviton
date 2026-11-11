@@ -1,4 +1,4 @@
-import { extractOpenAIContextUsageFromBlocks, openAIContextUsageBlock, type OpenAIContextUsage } from '../../../../../shared/contextUsage.js'
+import { extractContextUsageFromBlocks, contextUsageBlock, type ContextUsage } from '../../../../../shared/contextUsage.js'
 import type { MessageRepo } from '../persistence/messageRepo.js'
 import type { LineageRepo } from '../persistence/lineageRepo.js'
 import type { ProviderToolCall } from '../providers/providerTypes.js'
@@ -19,7 +19,7 @@ export interface AssistantMessageDraft {
   modelName?: string | null
   toolCalls?: ProviderToolCall[] | null
   contentBlocks?: any[] | null
-  contextUsage?: OpenAIContextUsage | null
+  contextUsage?: ContextUsage | null
   /**
    * Reasoning text. TreeMessageSink intentionally ignores this to keep main-tree
    * rows byte-identical to today (reasoning lives in content_blocks there);
@@ -31,10 +31,10 @@ export interface AssistantMessageDraft {
 }
 
 function durableResponseBlocks(draft: AssistantMessageDraft): any[] | undefined {
-  if (!draft.contextUsage || extractOpenAIContextUsageFromBlocks(draft.contentBlocks)) return draft.contentBlocks ?? undefined
+  if (!draft.contextUsage || extractContextUsageFromBlocks(draft.contentBlocks)) return draft.contentBlocks ?? undefined
   const blocks = draft.contentBlocks?.length ? draft.contentBlocks : draft.content
     ? [{ type: 'text', content: draft.content, index: 0 }] : []
-  return [...blocks, openAIContextUsageBlock(draft.contextUsage)]
+  return [...blocks, contextUsageBlock(draft.contextUsage)]
 }
 
 const runMessageTransaction = <T>(messageRepo: MessageRepo, operation: () => T): T => {

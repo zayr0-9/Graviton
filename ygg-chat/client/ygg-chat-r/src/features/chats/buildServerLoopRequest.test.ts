@@ -159,6 +159,14 @@ describe('buildServerLoopRequest', () => {
     }
   })
 
+  it('sends plan mode only for Claude, on every operation', () => {
+    for (const op of ['send', 'edit', 'branch'] as const) {
+      expect(buildServerLoopRequest(op, { ...base, messageId: 'm', provider: 'Claude Code', claudePlanMode: true }).body.claudePlanMode).toBe(true)
+      expect(buildServerLoopRequest(op, { ...base, messageId: 'm', provider: 'Claude Code', claudePlanMode: false }).body).not.toHaveProperty('claudePlanMode')
+      expect(buildServerLoopRequest(op, { ...base, messageId: 'm', claudePlanMode: true }).body).not.toHaveProperty('claudePlanMode')
+    }
+  })
+
   it('forwards hooksEnabled verbatim and localApiBase (defaulting null)', () => {
     const on = buildServerLoopRequest('send', { ...base, hooksEnabled: true, localApiBase: 'http://x/api' }).body
     expect(on.hooksEnabled).toBe(true)

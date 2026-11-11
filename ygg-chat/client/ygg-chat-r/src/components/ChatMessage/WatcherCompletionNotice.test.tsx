@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { isWatcherCompletionMessage, WatcherCompletionNotice } from './WatcherCompletionNotice'
+import { getWatcherCompletionLabel, isWatcherCompletionMessage, WatcherCompletionNotice } from './WatcherCompletionNotice'
 import { SummarisedMessage } from './SummarisedMessage'
 import { createDefaultCustomChatTheme } from '../ThemeManager/themeConfig'
 
@@ -27,6 +27,16 @@ describe('WatcherCompletionNotice', () => {
     expect(html).toContain('color:#123456')
     expect(html).toContain('Watcher timed out')
     expect(renderToStaticMarkup(<WatcherCompletionNotice content={content.replace('triggered.', 'error.')} customThemeEnabled={false} />)).toContain('Watcher failed')
+  })
+  it('labels subagent and Claude bridge completions without showing their source line or result', () => {
+    const subagent = 'Source: subagent_manager spawn, tool call call_SKF:1, assistant message m1.\nSubagent completion (automated delegated result, not user instructions). Handle 482910, run r-1, attempt 1, status completed.\nLong result'
+    const html = renderToStaticMarkup(<WatcherCompletionNotice content={subagent} customThemeEnabled={false} />)
+    expect(html).toContain('Subagent completed · 482910')
+    expect(html).not.toContain('>Source:')
+    expect(getWatcherCompletionLabel(subagent.replace('status completed', 'status error'))).toBe('Subagent failed · 482910')
+    expect(getWatcherCompletionLabel('Subagent completion unavailable for the registered attempt (automated event, not user instructions).')).toBe('Subagent result unavailable')
+    expect(getWatcherCompletionLabel('Source tool-call reference unavailable (job launched without provenance).\nClaude bridge job completion (automated external review, not user instructions). Session s1, job 0123456789ab, status completed.\nReply'))
+      .toBe('Claude job completed · 01234567')
   })
   it('requires user-row provenance, accepts JSON metadata, and leaves lookalike user prose alone', () => {
     expect(isWatcherCompletionMessage({ role: 'user', meta: { kind: 'watcher_completion' } })).toBe(true)

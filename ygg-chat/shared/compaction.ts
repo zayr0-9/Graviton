@@ -51,7 +51,7 @@ export function contextUsageAfterCompaction(messages: any[]): any[] {
     let blocks = message.content_blocks
     if (typeof blocks === 'string') { try { blocks = JSON.parse(blocks) } catch { blocks = [] } }
     return { ...message, context_usage: undefined,
-      content_blocks: Array.isArray(blocks) ? blocks.filter(block => block?.type !== 'openai_context_usage') : blocks }
+      content_blocks: Array.isArray(blocks) ? blocks.filter(block => block?.type !== 'context_usage' && block?.type !== 'openai_context_usage') : blocks }
   })
 }
 

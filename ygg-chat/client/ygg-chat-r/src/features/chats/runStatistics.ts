@@ -1,6 +1,6 @@
 import { readModelThroughput, type ModelThroughput, type ConversationRunStatistics, type RunMessageAttribution } from '../../../../../shared/runStatistics'
 import { parseMessageMeta } from '../../../../../shared/contextInjection'
-import { extractOpenAIContextUsageFromBlocks } from '../../../../../shared/contextUsage'
+import { extractContextUsageFromBlocks } from '../../../../../shared/contextUsage'
 import type { Message } from './chatTypes'
 import { runSliceTokenPrefixes, type SliceTokenEstimate } from './runSliceTokens'
 
@@ -81,7 +81,7 @@ export function deriveRunStatistics(
     let covered = 0
     const seenUsage = new Set<string>()
     for (const response of responses) {
-      const usage = extractOpenAIContextUsageFromBlocks(response.content_blocks)
+      const usage = extractContextUsageFromBlocks(response.content_blocks)
       if (!usage) continue
       covered += 1
       const identity = usage.responseId ? `${usage.provider}:${usage.model ?? ''}:${usage.responseId}` : String(response.id)

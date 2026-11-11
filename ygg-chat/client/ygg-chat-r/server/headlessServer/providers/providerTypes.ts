@@ -3,7 +3,7 @@
  * Bedrock, OpenRouter BYOK) and the tool loop.
  */
 import type { HeadlessStreamEvent } from '../../../../../shared/headlessApi.js'
-import type { OpenAIContextUsage } from '../../../../../shared/contextUsage.js'
+import type { ContextUsage } from '../../../../../shared/contextUsage.js'
 
 export interface ProviderToolDefinition {
   name: string
@@ -65,7 +65,7 @@ export interface ProviderGenerateOutput {
   reasoning?: string
   toolCalls?: ProviderToolCall[]
   contentBlocks?: any[]
-  contextUsage?: OpenAIContextUsage
+  contextUsage?: ContextUsage
   raw?: any
 }
 

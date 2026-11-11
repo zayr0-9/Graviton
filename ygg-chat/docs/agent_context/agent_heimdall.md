@@ -64,6 +64,7 @@ Important details:
 - Multiple top-level roots are wrapped under a synthetic root node with `id: 'root'` and `message: 'Conversation'`.
 - Heimdall receives the coordinator-built tree and derives a visual filter locally. Context/mode scaffolding and eligible empty nodes may be promoted away; flat Redux messages remain authoritative for complete selected paths/actions.
 - `filterEmptyMessages` can hide empty/tool-only visual nodes; selection expansion then adds hidden in-between messages back into action inputs.
+- With the filter on, automated completion user rows (`meta.kind = watcher_completion`, detected by `isWatcherCompletionMessage` in `shared/watchEvents.ts`; includes async `subagent_manager` and `claude_bridge` results) are promoted away like mode/compaction rows, even at branch points. Turning the filter off shows them again.
 
 ## Major Interaction Areas
 

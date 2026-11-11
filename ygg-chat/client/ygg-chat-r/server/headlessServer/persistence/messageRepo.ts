@@ -1,6 +1,6 @@
 import { v4 as uuidv4 } from 'uuid'
 import { FULL_ACCESS_NOTIFICATION_KIND } from '../../../../../shared/accessNotifications.js'
-import type { OpenAIContextUsage } from '../../../../../shared/contextUsage.js'
+import type { ContextUsage } from '../../../../../shared/contextUsage.js'
 
 interface MessageRepoDeps {
   db: any
@@ -23,7 +23,7 @@ export interface CreateMessageInput {
   toolCalls?: any[] | null
   toolCallId?: string | null
   contentBlocks?: any[] | null
-  contextUsage?: OpenAIContextUsage | null
+  contextUsage?: ContextUsage | null
   thinkingBlock?: string | null
   note?: string | null
   noteColor?: string | null

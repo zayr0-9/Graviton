@@ -1,8 +1,8 @@
 import { describe, it, expect, vi } from 'vitest'
-import { mkdir, mkdtemp, realpath, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, realpath, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { CHAT_MODE_NOTE, ClaudeSessionService, claudeModeSwitchNotice, interruptedResumePoint, parseClaudeSlashCommand, safeResumePoint, type ClaudeTaskControl } from '../claudeSessionService.js'
+import { CHAT_MODE_NOTE, ClaudeSessionService, PLAN_MODE_NOTE, claudeAnswersFromClarify, claudeQuestionsForClarify, isClaudePlanFile, claudeModeSwitchNotice, interruptedResumePoint, parseClaudeSlashCommand, safeResumePoint, type ClaudeTaskControl } from '../claudeSessionService.js'
 import { OperationModeControl } from '../operationModeControl.js'
 import { assertClaudeBranchSelection } from '../../persistence/claudeSessionRepo.js'
 import { DecisionBroker } from '../decisionBroker.js'
@@ -646,7 +646,7 @@ it.each(['execute', 'plan'])('honors stream auto-approval in %s without SDK perm
     signal: new AbortController().signal, toolUseID: 'auto-tool',
   })).resolves.toMatchObject({ behavior: 'allow', updatedInput: { file_path: 'file' } })
   expect(f.emit.mock.calls.some(([event]) => event.type === 'permission_required')).toBe(false)
-  for (const name of ['AskUserQuestion', ...(operationMode === 'plan' ? ['Write', 'Edit', 'MultiEdit', 'NotebookEdit'] : [])]) {
+  for (const name of operationMode === 'plan' ? ['Write', 'Edit', 'MultiEdit', 'NotebookEdit'] : []) {
     await expect(options.canUseTool(name, {}, { signal: new AbortController().signal, toolUseID: name })).resolves.toMatchObject({ behavior: 'deny' })
   }
   // Chat mode is a conversation without file edits, not native plan mode: other tools follow the approval gate.
@@ -742,6 +742,164 @@ describe('ExitPlanMode escalation', () => {
     expect(prompt.toolInput).toMatchObject({ plan: expect.stringContaining('# Ship it'), planFilePath: planFile })
     f.broker.resolve('stream', 'exit', 'deny')
     await decision
+  })
+})
+
+describe('AskUserQuestion', () => {
+  const ask = {
+    questions: [
+      { question: 'Which library?', header: 'Library', multiSelect: false,
+        options: [{ label: 'date-fns', description: 'Small and modular' }, { label: 'Luxon', description: 'Time zones' }] },
+      { question: 'Which features?', header: 'Features', multiSelect: true, options: [{ label: 'Parsing', description: '' }, { label: 'Formatting', description: 'Locale aware' }] },
+    ],
+  }
+
+  it.each(['plan', 'execute'] as const)('asks the user through the clarification panel in %s mode, even with Allow all, and returns the answers', async operationMode => {
+    const f = fixture([assistant(), success])
+    f.input.request.operationMode = operationMode
+    f.input.request.claudePlanMode = operationMode === 'plan'
+    f.broker.initSession('stream', { autoApproveAll: true })
+    await f.service.run(f.input)
+    const decision = f.sdk.query.mock.calls[0][0].options.canUseTool('AskUserQuestion', ask, { signal: new AbortController().signal, toolUseID: 'ask' })
+    await vi.waitFor(() => expect(f.broker.hasPending('stream', 'ask')).toBe(true))
+    const prompt = f.emit.mock.calls.map(([event]) => event).find(event => event.type === 'clarify_required')
+    expect(prompt).toMatchObject({ toolCallId: 'ask', toolName: 'AskUserQuestion', questions: [
+      { id: 'Which library?', question: 'Which library?', description: 'Library', options: [{ label: 'date-fns', description: 'Small and modular' }, { label: 'Luxon' }] },
+      { id: 'Which features?', description: expect.stringContaining('Several may apply') },
+    ] })
+    expect(f.broker.resolve('stream', 'ask', { answers: [
+      { questionId: 'Which library?', question: 'Which library?', selectedOptionLabel: 'date-fns', manual: false, answer: 'Small and modular' },
+      { questionId: 'Which features?', question: 'Which features?', selectedOptionLabel: 'Write my own answer', manual: true, answer: 'Parsing and formatting' },
+    ] })).toBe(true)
+    await expect(decision).resolves.toEqual({ behavior: 'allow', updatedInput: { ...ask,
+      answers: { 'Which library?': 'date-fns', 'Which features?': 'Parsing and formatting' } } })
+  })
+
+  it('tells Claude when the user dismisses the questions', async () => {
+    const f = fixture([assistant(), success])
+    await f.service.run(f.input)
+    const decision = f.sdk.query.mock.calls[0][0].options.canUseTool('AskUserQuestion', ask, { signal: new AbortController().signal, toolUseID: 'ask' })
+    await vi.waitFor(() => expect(f.broker.hasPending('stream', 'ask')).toBe(true))
+    f.broker.resolve('stream', 'ask', { cancelled: true })
+    await expect(decision).resolves.toMatchObject({ behavior: 'deny', message: expect.stringContaining('dismissed') })
+  })
+
+  it('maps malformed input and answers defensively', () => {
+    expect(claudeQuestionsForClarify({ questions: [{ question: ' ' }, { question: 'Go?', options: [{ label: '' }, { label: 'Yes' }] }] }))
+      .toEqual([{ id: 'Go?', question: 'Go?', options: [{ id: 'option-2', label: 'Yes' }] }])
+    expect(claudeQuestionsForClarify({})).toEqual([])
+    expect(claudeAnswersFromClarify([{ question: 'Go?', manual: true, answer: '  ' }, null, { questionId: 'Q', answer: 'A' }])).toEqual({ Q: 'A' })
+  })
+})
+
+describe('native plan mode', () => {
+  const nativePlanFixture = async (operationMode: 'plan' | 'execute') => {
+    const cwd = await mkdtemp(path.join(tmpdir(), 'claude-native-plan-'))
+    await mkdir(path.join(cwd, '.ygg', 'plans'), { recursive: true })
+    const f = fixture([assistant(), success])
+    f.input.cwd = cwd
+    f.input.request.operationMode = operationMode
+    f.input.request.claudePlanMode = true
+    const control = new OperationModeControl(operationMode)
+    f.input.modeControl = control
+    await f.service.run(f.input)
+    const options = f.sdk.query.mock.calls[0][0].options
+    const guard = (tool_name: string, tool_input: Record<string, unknown> = {}) => options.hooks.PreToolUse.at(-1).hooks[0](
+      { hook_event_name: 'PreToolUse', session_id: 's', tool_name, tool_input, tool_use_id: tool_name }, tool_name, { signal: new AbortController().signal })
+    const exit = () => options.canUseTool('ExitPlanMode', { plan: '# Plan' }, { signal: new AbortController().signal, toolUseID: 'exit' })
+    return { f, cwd, options, guard, exit, control }
+  }
+
+  it.each(['plan', 'execute'] as const)('runs the CLI in plan mode in %s mode and lets Claude write only its plan file', async operationMode => {
+    const { f, cwd, options, guard } = await nativePlanFixture(operationMode)
+    expect(options.permissionMode).toBe('plan')
+    // The tool list stays the same: plan mode must not change the cached prefix either.
+    expect(options.disallowedTools).toBeUndefined()
+    const { value } = await f.sdk.query.mock.calls[0][0].prompt.next()
+    expect(value.message.content).toBe(`hello\n\n${PLAN_MODE_NOTE}`)
+    await expect(guard('Write', { file_path: path.join(cwd, '.ygg', 'plans', 'soft-gem.md') })).resolves.toEqual({})
+    await expect(guard('Edit', { file_path: '.ygg/plans/soft-gem.md' })).resolves.toEqual({})
+    for (const file_path of ['src/app.ts', '.ygg/plans/notes.txt', '.ygg/plans/../escape.md', path.join(cwd, 'plan.md')]) {
+      expect((await guard('Write', { file_path })).hookSpecificOutput?.permissionDecision).toBe('deny')
+    }
+    expect((await guard('NotebookEdit', { notebook_path: '.ygg/plans/a.md' })).hookSpecificOutput?.permissionDecision).toBe('deny')
+    // Claude is already in plan mode; it cannot enter it again on its own.
+    expect((await guard('EnterPlanMode')).hookSpecificOutput?.permissionDecisionReason).toMatch(/user's request/)
+    await expect(guard('Read', { file_path: 'src/app.ts' })).resolves.toEqual({})
+    // The permission callback backs the hook up, even with Allow all.
+    await expect(options.canUseTool('Write', { file_path: 'src/app.ts' }, { signal: new AbortController().signal, toolUseID: 'w' }))
+      .resolves.toMatchObject({ behavior: 'deny' })
+  })
+
+  it('refuses a plan path that a symlink leads out of the plans directory', async () => {
+    const cwd = await mkdtemp(path.join(tmpdir(), 'claude-plan-link-'))
+    const outside = await mkdtemp(path.join(tmpdir(), 'claude-plan-outside-'))
+    const plansDir = path.join(cwd, '.ygg', 'plans')
+    await mkdir(plansDir, { recursive: true })
+    await symlink(outside, path.join(plansDir, 'link'))
+    await writeFile(path.join(outside, 'existing.md'), 'x')
+    await expect(isClaudePlanFile(plansDir, cwd, '.ygg/plans/link/new.md')).resolves.toBe(false)
+    await expect(isClaudePlanFile(plansDir, cwd, '.ygg/plans/link/existing.md')).resolves.toBe(false)
+    await expect(isClaudePlanFile(plansDir, cwd, '.ygg/plans/sub/new.md')).resolves.toBe(true)
+    await expect(isClaudePlanFile(plansDir, cwd, undefined)).resolves.toBe(false)
+  })
+
+  it('asks the user to approve the plan even in Agent mode, then lifts the plan-mode block', async () => {
+    const { f, guard, exit, control } = await nativePlanFixture('execute')
+    const decision = exit()
+    await vi.waitFor(() => expect(f.broker.hasPending('stream', 'exit')).toBe(true))
+    expect(f.emit.mock.calls.some(([event]) => event.type === 'operation_mode_upgrade_required' && event.toolName === 'ExitPlanMode')).toBe(true)
+    f.broker.resolve('stream', 'exit', 'switch_to_execute')
+    await expect(decision).resolves.toMatchObject({ behavior: 'allow', updatedPermissions: [{ type: 'setMode', mode: 'default', destination: 'session' }] })
+    expect(control.mode).toBe('execute')
+    await expect(guard('Edit', { file_path: 'src/app.ts' })).resolves.toEqual({})
+  })
+
+  it('records plan mode on each response row, and off once the plan is approved', async () => {
+    const f = fixture()
+    f.input.request.claudePlanMode = true
+    f.sdk.query.mockImplementation(({ options }: any) => Object.assign((async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 's' }
+      yield assistant('p')
+      const decision = options.canUseTool('ExitPlanMode', { plan: '# Plan' }, { signal: new AbortController().signal, toolUseID: 'exit' })
+      await vi.waitFor(() => expect(f.broker.hasPending('stream', 'exit')).toBe(true))
+      f.broker.resolve('stream', 'exit', 'switch_to_execute')
+      await decision
+      yield assistant('q')
+      yield success
+    })(), { close: vi.fn() }) as any)
+    const final = await f.service.run(f.input)
+    // The composer reads these back to restore plan mode per branch.
+    expect(f.rows[0].meta).toMatchObject({ claudePlanMode: true })
+    expect(final.meta).toMatchObject({ claudePlanMode: false })
+  })
+
+  it('switches Chat mode to Agent mode when the user approves the plan', async () => {
+    const { f, guard, exit, control } = await nativePlanFixture('plan')
+    const decision = exit()
+    await vi.waitFor(() => expect(f.broker.hasPending('stream', 'exit')).toBe(true))
+    f.broker.resolve('stream', 'exit', 'switch_to_execute')
+    await expect(decision).resolves.toMatchObject({ behavior: 'allow' })
+    expect(control.mode).toBe('execute')
+    await expect(guard('Write', { file_path: 'src/app.ts' })).resolves.toEqual({})
+  })
+
+  it('keeps planning when the user does not approve the plan', async () => {
+    const { f, guard, exit, control } = await nativePlanFixture('execute')
+    const decision = exit()
+    await vi.waitFor(() => expect(f.broker.hasPending('stream', 'exit')).toBe(true))
+    f.broker.resolve('stream', 'exit', 'deny')
+    await expect(decision).resolves.toMatchObject({ behavior: 'deny', message: expect.stringContaining('keep planning') })
+    expect(control.mode).toBe('execute')
+    expect((await guard('Edit', { file_path: 'src/app.ts' })).hookSpecificOutput?.permissionDecision).toBe('deny')
+  })
+
+  it('takes precedence over auto mode', async () => {
+    const f = fixture([assistant(), success])
+    f.input.request.claudePermissionMode = 'auto'
+    f.input.request.claudePlanMode = true
+    await f.service.run(f.input)
+    expect(f.sdk.query.mock.calls[0][0].options.permissionMode).toBe('plan')
   })
 })
 
@@ -1072,7 +1230,7 @@ describe('Queued input on a live Claude session', () => {
     })
     const final = await f.service.run(f.input)
     expect(sent[1]).toMatchObject({ type: 'user', priority: 'next', parent_tool_use_id: null, message: { role: 'user', content: 'also PURPLE' } })
-    expect(q.bridge.deliver).toHaveBeenCalledWith('r1', 'row0', { mode: 'execute', modeSwitch: null })
+    expect(q.bridge.deliver).toHaveBeenCalledWith('r1', 'row0', { mode: 'execute', planMode: false, modeSwitch: null })
     expect(f.rows[1].parentId).toBe('user-r1')
     expect(final.content).toBe('DONE PURPLE')
     expect(f.sessions.record).toHaveBeenLastCalledWith(final.id, 's', 'a2', '/workspace', true)
@@ -1096,7 +1254,7 @@ describe('Queued input on a live Claude session', () => {
     })
     const final = await f.service.run(f.input)
     expect(results).toBe(2)
-    expect(q.bridge.deliver).toHaveBeenCalledWith('r1', 'row0', { mode: 'execute', modeSwitch: null })
+    expect(q.bridge.deliver).toHaveBeenCalledWith('r1', 'row0', { mode: 'execute', planMode: false, modeSwitch: null })
     expect(final).toMatchObject({ content: 'second' })
     expect(f.rows[1].parentId).toBe('user-r1')
     expect(f.sessions.record).toHaveBeenLastCalledWith(final.id, 's', 'a2', '/workspace', true)
@@ -1316,7 +1474,7 @@ describe('Queued input on a live Claude session', () => {
       expect(queued.message.content).toBe(`next question\n\n${claudeModeSwitchNotice('plan')}`)
       expect(q.bridge.recordModeSwitch).not.toHaveBeenCalled()
       expect(q.bridge.deliver).toHaveBeenCalledWith('r1', 'row0',
-        { mode: 'plan', modeSwitch: { mode: 'plan', previousMode: 'execute', revision: 1, content: claudeModeSwitchNotice('plan') } })
+        { mode: 'plan', planMode: false, modeSwitch: { mode: 'plan', previousMode: 'execute', revision: 1, content: claudeModeSwitchNotice('plan') } })
     })
 
     it('adds the Chat-mode note to queued messages in Chat mode', async () => {
@@ -1333,7 +1491,7 @@ describe('Queued input on a live Claude session', () => {
       })
       await f.service.run(f.input)
       expect(queued.message.content).toBe(`and this\n\n${CHAT_MODE_NOTE}`)
-      expect(q.bridge.deliver).toHaveBeenCalledWith('r1', 'row0', { mode: 'plan', modeSwitch: null })
+      expect(q.bridge.deliver).toHaveBeenCalledWith('r1', 'row0', { mode: 'plan', planMode: false, modeSwitch: null })
     })
 
     it('records a switch Claude never read on the final response, not as a row after it', async () => {

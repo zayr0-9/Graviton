@@ -100,7 +100,7 @@ export const MESSAGE_IMAGE_CLASS = 'max-w-full max-h-96 object-contain rounded-2
  * Block types that draw something to READ, as opposed to a step of agent work.
  *
  * Everything absent from this set draws nothing or folds into a tool card: `tool_result`,
- * `reasoning_details`, and provider bookkeeping such as `openai_context_usage`. Unknown types
+ * `reasoning_details`, and provider bookkeeping such as `context_usage`. Unknown types
  * belong here too, because `buildContentBlockRenderItems` falls through and draws nothing for
  * them. Listing what IS readable, rather than what is not, keeps this predicate correct when a
  * provider adds a new metadata block.

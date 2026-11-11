@@ -316,7 +316,7 @@ and the server cloud mirror (`cloudMirrorService`, `CloudMirrorSink`) were delet
 
 ## Provider Context Metadata
 
-OpenAI assistant messages may include nullable `context_usage`, a normalized provider-reported token snapshot. The same snapshot is also stored as an `openai_context_usage` content block for compatibility with existing SQLite message persistence. Consumers must scope it to the selected parent/child branch and ignore snapshots before the latest `__auto_compaction_summary__` marker. Non-OpenAI messages continue to use estimate-only context accounting.
+OpenAI assistant messages may include nullable `context_usage`, a normalized provider-reported token snapshot. The same snapshot is also stored as a `context_usage` content block (older rows: `openai_context_usage`; readers accept both) for compatibility with existing SQLite message persistence. Claude Code runs store one per run, on the final response row only (see `../claude-provider-v1.md` § Context usage). Consumers must scope it to the selected parent/child branch and ignore snapshots before the latest compaction boundary. Other providers continue to use estimate-only context accounting.
 
 ## Committed assistant compaction boundaries
 

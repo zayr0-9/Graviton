@@ -1,4 +1,4 @@
-import type { OpenAIContextUsage } from './contextUsage'
+import type { ContextUsage } from './contextUsage'
 
 // This file contains types shared between client and server
 
@@ -54,7 +54,7 @@ export interface BaseMessage {
   // Structured content with thinking, tool_use, tool_result, text blocks
   content_blocks?: string | any
   /** Latest OpenAI/Codex provider-reported context snapshot for this assistant turn. */
-  context_usage?: OpenAIContextUsage | string | null
+  context_usage?: ContextUsage | string | null
   content: string
   content_plain_text: string
   parent_id?: MessageId | null

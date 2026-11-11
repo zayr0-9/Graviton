@@ -162,6 +162,7 @@ Slash commands currently include:
 - `/compactify`
 - `/bench on|off|status|export|reset`
 - `/theme-demo on|off`
+- `/plan [task]` (Claude Code only): toggles native plan mode, or turns it on and sends the task. See `../claude-provider-v1.md` § Native plan mode.
 
 ## Tool Permission and Plan Clarification Dialogs
 
@@ -312,9 +313,9 @@ When adding new persistent UI settings, prefer helper modules in `src/helpers/*S
 - `agent_local_tools_runtime.md`
 - `agent_hooks_system.md`
 
-## OpenAI Context Meter
+## Reported Context Meter (OpenAI and Claude)
 
-`Chat.tsx` resolves context from the selected branch after its latest auto-compaction marker. For OpenAI only, it uses the latest assistant `context_usage` snapshot whenever it is available and falls back to the local `tokenx` estimate only when usage is unavailable. For every other provider, the context bar and 85% auto-compaction gate continue using the existing estimate unchanged. Never select usage from a sibling branch or sum usage across OpenAI tool turns.
+`Chat.tsx` resolves context from the selected branch after its latest compaction boundary. For OpenAI and Claude Code (`contextUsageProviderFor`), it uses the latest assistant `context_usage` snapshot of that provider family whenever one is available and falls back to the local `tokenx` estimate only when usage is unavailable. Both show the usage sparkline. A `contextWindow` reported with the snapshot (Claude) replaces the catalog context length as the meter's denominator, and Claude adds cache read/write and the session cost estimate to the popover. For every other provider, the context bar and 85% auto-compaction gate continue using the existing estimate unchanged. Never select usage from a sibling branch or sum usage across tool turns.
 
 
 ## Active-run Compaction

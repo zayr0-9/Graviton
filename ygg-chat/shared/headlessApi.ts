@@ -11,7 +11,7 @@
  * bundler-style and writes none.
  */
 import type { ChatErrorEnvelope, ChatNoticeCode } from './chatErrors.js'
-import type { OpenAIContextUsage } from './contextUsage.js'
+import type { ContextUsage } from './contextUsage.js'
 
 export type {
   ChatErrorAction,
@@ -94,6 +94,12 @@ export interface HeadlessMessageRequest {
    * Workflow tool, which runs agents as background tasks. Absent == off.
    */
   claudeUltracode?: boolean
+  /**
+   * Claude provider only. Runs the turn in Claude Code's native plan mode: Claude explores
+   * read-only, writes its plan under `.ygg/plans/` and calls ExitPlanMode, which asks the user
+   * to approve it. Absent == off.
+   */
+  claudePlanMode?: boolean
   manualCompaction?: boolean
   autoCompactionEnabled?: boolean
   contextLength?: number
@@ -352,7 +358,7 @@ export type HeadlessStreamEvent =
   | { type: 'chunk'; part: 'image'; url: string; mimeType?: string }
   | { type: 'chunk'; part: 'tool_call'; toolCall: any }
   | { type: 'chunk'; part: 'tool_result'; toolResult: any }
-  | { type: 'context_usage'; usage: OpenAIContextUsage }
+  | { type: 'context_usage'; usage: ContextUsage }
   | {
       type: 'context_compaction'
       status: 'threshold_reached' | 'started' | 'completed' | 'failed'

@@ -1,6 +1,7 @@
 import { createSlice, current, PayloadAction } from '@reduxjs/toolkit'
 import { composerApprovalHandoff, composerProvider, loadBranchToolApprovalDrafts, resolveComposerToolApproval, saveBranchToolApprovalDrafts } from './branchToolApproval'
 import { loadBranchFastModeDrafts, saveBranchFastModeDrafts } from './branchFastMode'
+import { loadClaudePlanModeDrafts, saveClaudePlanModeDrafts, withClaudePlanModeDraft } from './branchPlanMode'
 import { branchModelKey, loadBranchModelDrafts, saveBranchModelDrafts, type BranchModelSelection } from './branchModelSelection'
 import { normalizeChatErrorEnvelope } from '../../../../../shared/chatErrors'
 import providersList from '../../../../../shared/providers.json'
@@ -275,6 +276,7 @@ const makeInitialState = (): ChatState => {
     toolAutoApprove: loadDefaultToolAutoApprove(),
     ...claudeToolApprovalState(loadClaudeToolApprovalDefault()),
     claudeUltracode: loadClaudeUltracode(),
+    claudePlanModeDrafts: loadClaudePlanModeDrafts(),
     operationMode: 'plan',
     operationModeChanges: {},
     operationModeDrafts: {},
@@ -1927,6 +1929,21 @@ export const chatSlice = createSlice({
     claudeUltracodeSet: (state, action: PayloadAction<boolean>) => {
       state.claudeUltracode = action.payload
       saveClaudeUltracode(action.payload)
+    },
+
+    // Plan mode belongs to the branch: the choice is kept at the selected tip (or the edit being
+    // composed), and resolveBranchPlanMode reads it back when the user returns to that branch.
+    claudePlanModeSelected: (state, action: PayloadAction<boolean>) => {
+      if (state.composition.editingBranch) {
+        state.composition.branchEditModes ??= {}
+        state.composition.branchEditModes.claudePlanMode = action.payload
+        return
+      }
+      const { currentConversationId, currentPath } = state.conversation
+      if (!currentConversationId) return
+      state.claudePlanModeDrafts = withClaudePlanModeDraft(state.claudePlanModeDrafts,
+        branchModelKey(currentConversationId, currentPath.at(-1) ?? null), action.payload)
+      saveClaudePlanModeDrafts(state.claudePlanModeDrafts)
     },
 
     branchToolApprovalSelected: (state, action: PayloadAction<{

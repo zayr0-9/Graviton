@@ -475,6 +475,8 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
   private readonly inputRuns = new Map<string, {
     queue: MessageInputQueue; request: HeadlessMessageRequest; control: OperationModeControl
     head: string | null; successor?: string; restartRequestId?: string; restartFingerprint?: string; terminal?: 'completed' | 'failed'; signal?: AbortSignal
+    /** Claude native plan mode, live: an approved plan turns it off for the rest of the run. */
+    claudePlan?: { active: boolean }
     /** A live Claude session: `wake` hands it new entries, `claudeCancel` withdraws one it holds. */
     wake?: () => void; claudeCancel?: (requestId: string) => Promise<boolean | null>
     claudeTasks?: ClaudeTaskControl
@@ -801,6 +803,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       fullAccess: run.request.fullAccess === true,
       fullAccessNotificationId: submission.fullAccessNotificationId,
       attachmentsBase64: submission.attachmentsBase64 ?? null, operationMode: run.control.mode,
+      claudePlanMode: run.claudePlan?.active === true ? true : undefined,
       retrigger: false, isBranch: false } }
   }
 
@@ -1053,12 +1056,12 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
         }
         return null
       },
-      deliver: (requestId, parentId, { mode, modeSwitch }) => {
+      deliver: (requestId, parentId, { mode, planMode, modeSwitch }) => {
         const entry = queue.claimEntry(requestId) ?? queue.get(requestId)!
         const { content, blocks } = prepared.get(requestId) ?? { content: entry.submission.content, blocks: [] }
         prepared.delete(requestId)
         // The user row records the mode Claude read it in, which may differ from the run's start.
-        const submissionRequest = { ...request, operation: 'send' as const, content, manualCompaction: false, operationMode: mode,
+        const submissionRequest = { ...request, operation: 'send' as const, content, manualCompaction: false, operationMode: mode, claudePlanMode: planMode,
           selectedFiles: entry.submission.selectedFiles ?? [], attachmentsBase64: entry.submission.attachmentsBase64 ?? null }
         const parent = modeSwitch ? recordModeSwitch(modeSwitch, parentId).id : parentId
         const row = this.messageRepo.transaction(() => {
@@ -1121,6 +1124,9 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
         // Claude runs never persist mode-notification rows (they would displace the
         // resumable checkpoint), so the turn's mode is recorded on its user row.
         ...(isClaudeProvider(request.provider) ? { operationMode: request.operationMode === 'plan' ? 'plan' : 'execute' } : {}),
+        // Native plan mode too: Chat shows the Plan mode notice where it starts and ends, and the
+        // composer restores it per branch. Absent on a Claude row means off.
+        ...(isClaudeProvider(request.provider) && request.claudePlanMode === true ? { claudePlanMode: true } : {}),
       },
     })
 
@@ -1280,9 +1286,10 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     })
     const inputQueue = new MessageInputQueue(trackedStreamId, request.conversationId, null,
       snapshot => emit({ type: 'message_queue_updated', snapshot }))
-    const inputRun = { queue: inputQueue, request, control: modeControl, head: request.parentId ?? null, signal } as {
+    const claudePlan = { active: isClaudeProvider(request.provider) && request.claudePlanMode === true }
+    const inputRun = { queue: inputQueue, request, control: modeControl, head: request.parentId ?? null, signal, claudePlan } as {
       queue: MessageInputQueue; request: HeadlessMessageRequest; control: OperationModeControl
-      head: string | null; successor?: string; terminal?: 'completed' | 'failed'; signal?: AbortSignal
+      head: string | null; successor?: string; terminal?: 'completed' | 'failed'; signal?: AbortSignal; claudePlan?: { active: boolean }
       wake?: () => void; claudeCancel?: (requestId: string) => Promise<boolean | null>; claudeTasks?: ClaudeTaskControl
     }
     this.inputRuns.set(trackedStreamId, inputRun)
@@ -1804,7 +1811,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       if (queuedInput) emit({ type: 'message_queue_updated', snapshot: inputQueue.snapshot() })
       // Live mode switches reach this run through the same route as Graviton runs.
       this.modeRuns.set(trackedStreamId, { conversationId: request.conversationId, control: modeControl })
-      const finalMessage = await this.claudeSessions.run({ request: { ...request, content, streamId: trackedStreamId }, lineageId, modeControl,
+      const finalMessage = await this.claudeSessions.run({ request: { ...request, content, streamId: trackedStreamId }, lineageId, modeControl, planControl: claudePlan,
         images: turnUser?.artifacts ?? [],
         userMessage: resolved.userMessage, parentId: resolved.assistantParentId, sourceMessageId: sourceId ?? null,
         fork: request.operation !== 'send' || Boolean(request.isBranch), cwd: contextRootPath!, sink, signal, hookSession, nativeCommand,

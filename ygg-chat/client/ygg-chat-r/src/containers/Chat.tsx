@@ -7,6 +7,7 @@ import { ModelSwitchDialog } from '../components/ModelSelectControl/ModelSwitchD
 import { isClaudeProvider, isClaudeTranscriptMessage } from '../../../../shared/claudeProvider'
 import { isCleanStartBranchEdit, isProviderHandoffEdit, resolveComposerModelSelection, resolveComposerClaudeLock, resolveSummaryContinuation } from '../features/chats/branchModelSelection'
 import { resolveBranchFastMode } from '../features/chats/branchFastMode'
+import { resolveBranchPlanMode } from '../features/chats/branchPlanMode'
 import { resolveComposerToolApproval } from '../features/chats/branchToolApproval'
 import { isCommittedCompaction } from '../../../../shared/compaction'
 import { isHiddenCompactionMessage, resolveBranchBeforeSummaryAnchor } from '../features/chats/summaryPresentation'
@@ -153,6 +154,7 @@ import { changeOperationMode, enqueueUserMessage, loadMessageQueue, cancelQueued
 import { QueuedMessages } from '../components/ChatMessage/QueuedMessages'
 import { OperationModeNotice } from '../components/ChatMessage/OperationModeNotice'
 import { claudeModeNoticesByMessageId } from '../features/chats/claudeModeNotices'
+import { parsePlanCommand } from '../features/chats/planCommand'
 import { FullAccessNotice } from '../components/ChatMessage/FullAccessNotice'
 import { isFullAccessNotification, isRunSettingsNotification } from '../../../../shared/accessNotifications'
 import { SummaryBranchMessage } from '../components/ChatMessage/SummaryBranchMessage'
@@ -165,7 +167,7 @@ import type { PlanClarificationAnswer } from '../features/chats/planToolTypes'
 import {
   calculateBranchContextUsage,
 } from '../features/chats/contextTokenEstimate'
-import { isOpenAIProvider } from '../../../../shared/contextUsage'
+import { contextUsageProviderFor } from '../../../../shared/contextUsage'
 import { isContextInjectionMessage, parseMessageMeta } from '../../../../shared/contextInjection'
 import { ContextInjectionCard, type ContextInjectionCardEntry } from '../components/ChatMessage/ContextInjectionCard'
 import { AgentSteps } from '../components/ChatMessage/AgentSteps'
@@ -1126,7 +1128,7 @@ function Chat() {
   }, [toolDefinitions])
   const currentProviderSlug = (providers.currentProvider || '').toLowerCase().replace(/\s+/g, '')
   const isOpenAIChatGPTProvider = currentProviderSlug === 'openaichatgpt' || currentProviderSlug === 'openai(chatgpt)'
-  const isOpenAIContextProvider = isOpenAIProvider(providers.currentProvider)
+  const reportsContextUsage = contextUsageProviderFor(providers.currentProvider) !== null
   const openAIServiceTier: OpenAIServiceTier | undefined =
     isOpenAIChatGPTProvider && fastServiceTierEnabled ? 'priority' : undefined
   const messageInput = useAppSelector(selectMessageInput)
@@ -1334,6 +1336,11 @@ function Chat() {
   const toolAutoApprove = useAppSelector(state => resolveComposerToolApproval(state.chat))
   const claudeAutoMode = useAppSelector(state => state.chat.claudeAutoMode === true)
   const claudeUltracode = useAppSelector(state => state.chat.claudeUltracode === true)
+  // Per branch: follows the selected branch as the user navigates (resolveBranchPlanMode).
+  const claudePlanMode = useAppSelector(state =>
+    (state.chat.composition.editingBranch ? state.chat.composition.branchEditModes?.claudePlanMode : undefined)
+      ?? resolveBranchPlanMode(state.chat)
+  )
   // Claude cycles Ask -> Auto -> Allow all; Auto is the CLI classifier and only replaces Ask.
   const claudeApproval = toolAutoApprove ? 'allow_all' : claudeAutoMode ? 'auto' : 'ask'
 
@@ -1578,7 +1585,8 @@ function Chat() {
   const themeDemoThemeIdsRef = useRef<string[]>([])
   const themeDemoThemeIndexRef = useRef(0)
 
-  const composerSlashCommands = COMPOSER_SLASH_COMMANDS
+  // /plan is Claude Code's native plan mode, so only Claude chats offer it.
+  const composerSlashCommands = useMemo(() => isClaudeSession ? ['plan', ...COMPOSER_SLASH_COMMANDS] : COMPOSER_SLASH_COMMANDS, [isClaudeSession])
   const isElectronEnv = isNativeShell
 
   const appendBenchEvent = useCallback((kind: string, details?: Record<string, unknown>) => {
@@ -5240,6 +5248,20 @@ function Chat() {
         return
       }
 
+      // Claude's /plan: alone it toggles plan mode; with a task it turns plan mode on and sends the task.
+      const planCommand = isClaudeSession ? parsePlanCommand(trimmedInputValue) : null
+      if (planCommand) {
+        if (!planCommand.task) {
+          dispatch(chatSliceActions.claudePlanModeSelected(!claudePlanMode))
+          clearLocalInput()
+          return
+        }
+        dispatch(chatSliceActions.claudePlanModeSelected(true))
+        updateLocalInput(planCommand.task)
+        preparedSendRef.current(value)
+        return
+      }
+
       if (canQueueLocal && currentConversationId && streamState.id) {
         if (queueSubmittingRef.current) return
         queueSubmittingRef.current = true
@@ -5428,6 +5450,9 @@ function Chat() {
       withPendingCwdAnnouncement,
       clearPendingCwdAnnouncement,
       runComposerCommand,
+      isClaudeSession,
+      claudePlanMode,
+      updateLocalInput,
       composerImageDraftDataUrls,
       retriggerLastUserMessage,
       recordLocalChatError,
@@ -6413,11 +6438,13 @@ function Chat() {
   ])
 
   // Context budget is the model context window (no Graviton credits: users pay their providers).
+  // A window the provider reported with its usage (Claude) outranks the configured catalog value.
+  const reportedContextWindow = tokenUsage.reportedUsage?.contextWindow
   const tokenLimits = useMemo(() => {
-    const totalContextLimit =
+    const totalContextLimit = reportedContextWindow ||
       resolveProviderContextLength(providers.currentProvider, selectedModel?.contextLength, providerSettings) || 128_000
     return { totalBudget: totalContextLimit, totalContextLimit }
-  }, [selectedModel?.contextLength, providers.currentProvider, providerSettings.openAiChatGptMaxContextTokens])
+  }, [reportedContextWindow, selectedModel?.contextLength, providers.currentProvider, providerSettings.openAiChatGptMaxContextTokens])
 
   // Calculate progress percentages.
   const totalContextProgress =
@@ -7578,14 +7605,31 @@ function Chat() {
                             {tokenLimits.totalBudget.toLocaleString()}
                           </span>
                         </div>
-                        {isOpenAIContextProvider && tokenUsage.openAIUsageHistory.length > 0 && (
+                        {reportsContextUsage && tokenUsage.usageHistory.length > 0 && (
                           <ContextUsageSparkline
-                            points={tokenUsage.openAIUsageHistory}
+                            points={tokenUsage.usageHistory}
                             totalColor={tokenUsageProgressColor}
                             isDarkMode={isDarkMode}
                           />
                         )}
-                        {!isOpenAIContextProvider && (
+                        {tokenUsage.reportedUsage?.provider === 'claude' && (
+                          <>
+                            <div className='mt-1 flex items-center gap-2 text-xs'>
+                              <span className='text-neutral-700 dark:text-neutral-300'>Cache read / write:</span>
+                              <span>
+                                {tokenUsage.reportedUsage.cachedInputTokens.toLocaleString()} /{' '}
+                                {(tokenUsage.reportedUsage.cacheCreationInputTokens ?? 0).toLocaleString()}
+                              </span>
+                            </div>
+                            {tokenUsage.reportedUsage.session && (
+                              <div className='mt-1 flex items-center gap-2 text-xs'>
+                                <span className='text-neutral-700 dark:text-neutral-300'>Session estimate:</span>
+                                <span>${tokenUsage.reportedUsage.session.costUsd.toFixed(2)}</span>
+                              </div>
+                            )}
+                          </>
+                        )}
+                        {!reportsContextUsage && (
                           <>
                             <div className='mt-1 flex items-center gap-2 text-xs'>
                               <span className='text-neutral-700 dark:text-neutral-300'>Messages:</span>
@@ -7632,6 +7676,7 @@ function Chat() {
                         toolAutoApprove ||
                         (isClaudeSession && claudeAutoMode) ||
                         (isClaudeSession && claudeUltracode) ||
+                        (isClaudeSession && claudePlanMode) ||
                         operationMode === 'plan' ||
                         !!imageConfig.aspectRatio ||
                         !!imageConfig.imageSize ||
@@ -7798,6 +7843,22 @@ function Chat() {
                               onClick={() => dispatch(chatSliceActions.claudeUltracodeSet(!claudeUltracode))}
                               title={!isClaudeSession ? 'Ultracode is a Claude Code setting'
                                 : claudeUltracode ? 'Ultracode on for new turns (click to turn off)' : 'Turn on ultracode for new turns'}
+                            />
+                          </div>
+                          <div className='action-cloud-row action-cloud-row-fast'>
+                            <div className='flex min-w-0 flex-col'>
+                              <span>Plan mode</span>
+                              <span className='action-cloud-hint'>
+                                {isClaudeSession ? 'Claude plans, then asks before editing' : 'Only sent for Claude Code'}
+                              </span>
+                            </div>
+                            <ActionPopoverSwitch
+                              label='Plan mode'
+                              disabled={!isClaudeSession}
+                              checked={isClaudeSession && claudePlanMode}
+                              onClick={() => dispatch(chatSliceActions.claudePlanModeSelected(!claudePlanMode))}
+                              title={!isClaudeSession ? 'Plan mode is a Claude Code setting'
+                                : claudePlanMode ? 'Plan mode on for new turns (click to turn off, or type /plan)' : 'Turn on plan mode for new turns (or type /plan)'}
                             />
                           </div>
                           <div className='flex flex-col gap-1'>
