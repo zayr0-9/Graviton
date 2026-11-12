@@ -4,6 +4,7 @@ import { OpenRouterProvider } from '@hyper-labs/hyper-router/providers/openroute
 import { z } from 'zod'
 import { generateWithHyperProvider, toHyperMessages } from '../hyperRouterAdapter.js'
 import { HyperRouterZaiProvider } from '../hyperRouterZaiProvider.js'
+import { HyperRouterDeepSeekProvider } from '../hyperRouterDeepSeekProvider.js'
 import { HyperRouterOpenRouterProvider, toOpenRouterTools } from '../hyperRouterOpenRouterProvider.js'
 
 const readFileTool = {
@@ -92,6 +93,50 @@ describe('HyperRouterZaiProvider', () => {
     controller.abort()
     vi.stubGlobal('fetch', vi.fn())
     await expect(new HyperRouterZaiProvider().generate({ ...input, accessToken: 'zai-key', signal: controller.signal })).rejects.toThrow()
+  })
+})
+
+describe('HyperRouterDeepSeekProvider', () => {
+  const deepSeekResponse = () => new Response(JSON.stringify({
+    choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: 'Done.', reasoning_content: 'thought' } }],
+  }))
+
+  it('sends thinking on and replays prior reasoning, which DeepSeek requires on tool turns', async () => {
+    const fetch = vi.fn().mockResolvedValue(deepSeekResponse())
+    vi.stubGlobal('fetch', fetch)
+
+    const output = await new HyperRouterDeepSeekProvider().generate({ ...input, modelName: 'deepseek-flash', accessToken: 'ds-key', think: true })
+
+    const [url, init] = fetch.mock.calls[0]
+    expect(String(url)).toBe('https://api.deepseek.com/chat/completions')
+    expect(init.headers.Authorization ?? new Headers(init.headers).get('authorization')).toBe('Bearer ds-key')
+    const body = JSON.parse(init.body)
+    expect(body.model).toBe('deepseek-flash')
+    expect(body.thinking).toEqual({ type: 'enabled' })
+    expect(body.messages.find((message: any) => message.role === 'assistant')?.reasoning_content).toBe('need the file')
+    expect(output.content).toBe('Done.')
+    expect(output.reasoning).toBe('thought')
+  })
+
+  it('disables thinking explicitly when the toggle is off', async () => {
+    const fetch = vi.fn().mockResolvedValue(deepSeekResponse())
+    vi.stubGlobal('fetch', fetch)
+
+    await new HyperRouterDeepSeekProvider().generate({ ...input, modelName: 'deepseek-v4-pro', accessToken: 'ds-key', think: false })
+
+    expect(JSON.parse(fetch.mock.calls[0][1].body).thinking).toEqual({ type: 'disabled' })
+  })
+
+  it('fails fast without an API key', async () => {
+    vi.stubEnv('DEEPSEEK_API_KEY', '')
+    const fetch = vi.fn()
+    vi.stubGlobal('fetch', fetch)
+    try {
+      await expect(new HyperRouterDeepSeekProvider().generate({ ...input, modelName: 'deepseek-flash' })).rejects.toThrow('DeepSeek API key missing')
+      expect(fetch).not.toHaveBeenCalled()
+    } finally {
+      vi.unstubAllEnvs()
+    }
   })
 })
 

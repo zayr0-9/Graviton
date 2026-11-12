@@ -58,6 +58,7 @@ export function registerCapabilityRoutes(app: Express, deps: RegisterCapabilityR
         { name: 'openaichatgpt', auth: 'oauth_or_token' },
         { name: 'openrouterbyok', auth: 'api_key' },
         { name: 'zai', auth: 'api_key' },
+        { name: 'deepseek', auth: 'api_key' },
         { name: 'bedrock', auth: 'api_key' },
         { name: 'lmstudio', auth: 'local_or_bearer' },
       ],

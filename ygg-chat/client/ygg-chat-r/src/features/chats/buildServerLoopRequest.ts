@@ -7,7 +7,7 @@
  * forwards its locals.
  *
  * Notes / invariants (see Phase 1 spec):
- * - MUST send provider ('lmstudio'|'zai'|'openrouterbyok'|'bedrock'|'openaichatgpt'|'claude') and modelName,
+ * - MUST send provider ('lmstudio'|'zai'|'deepseek'|'openrouterbyok'|'bedrock'|'openaichatgpt'|'claude') and modelName,
  *   or the server silently defaults to openaichatgpt / gpt-5.6-sol.
  * - `content` is the RAW first-turn user text; the server owns the multi-turn loop.
  * - supplemental systemPrompt is intentionally OMITTED: the server assembles the final

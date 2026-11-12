@@ -13,6 +13,7 @@ Historical gaps have been reconstructed from Git tags, app-version changes, and 
 - Added an experimental attached-browser build of the shared Electron UI, with shared host identity/settings, multi-observer run recovery, queue/decision controls, independent host terminals and a phone workspace panel. This trusted-network preview has no device authentication; physical-device acceptance and legacy-mobile retirement remain pending.
 - Added draggable dividers for resizing agent-monitor grid cards within each row.
 - Added a server route that copies a whole conversation locally in one transaction (sidebar Copy).
+- Added a DeepSeek provider through Hyper Router (`deepseek-flash`, `deepseek-v4-pro`), with API-key setup in Settings. The thinking toggle maps to DeepSeek thinking mode, and earlier reasoning is replayed as DeepSeek requires on tool turns. Text only for now.
 
 ### Changed
 

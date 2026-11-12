@@ -10,7 +10,7 @@ Last reviewed: 2026-11-10 (fully-local migration)
 
 ## Purpose
 
-Documents the local **headless Express server** (`http://127.0.0.1:3002`) that runs inside the Electron main process. After the "headless main agent loop" migration (branch `feat/headless-agent-loop`, Phases 0–6, live), this server OWNS the main chat agent loop for every provider route (`openaichatgpt`, `openrouterbyok`, `lmstudio`, `zai`, `bedrock`; Claude Code uses its own session backend) — not just subagents. It also owns pause/resume (permission + plan clarify), in-process Ygg hooks, server-side compaction, and the local data gateway (`/api/gw/*`). Graviton is fully local: there is no hosted backend, cloud proxy or account session.
+Documents the local **headless Express server** (`http://127.0.0.1:3002`) that runs inside the Electron main process. After the "headless main agent loop" migration (branch `feat/headless-agent-loop`, Phases 0–6, live), this server OWNS the main chat agent loop for every provider route (`openaichatgpt`, `openrouterbyok`, `lmstudio`, `zai`, `deepseek`, `bedrock`; Claude Code uses its own session backend) — not just subagents. It also owns pause/resume (permission + plan clarify), in-process Ygg hooks, server-side compaction, and the local data gateway (`/api/gw/*`). Graviton is fully local: there is no hosted backend, cloud proxy or account session.
 
 The React renderer is now a **thin client**: it POSTs the SSE chat routes here and projects server events onto the existing Redux `streamChunk` vocabulary. It keeps no loop control, no tool execution, and no permission/hook/compaction orchestration. The thunks require a host client (Electron, or the browser-client/standalone targets served by the host).
 
@@ -201,7 +201,8 @@ The renderer's 3 chat thunks (`sendMessage`, `editMessageWithBranching`, `sendMe
 
 ## Provider notes
 
-- Routes: `openaichatgpt` (Codex/ChatGPT OAuth), `openrouterbyok` (user's own OpenRouter key, direct to openrouter.ai), `lmstudio`, `zai`, `bedrock`; Claude Code runs on its session backend. All local-authoritative on `TreeMessageSink`.
+- Routes: `openaichatgpt` (Codex/ChatGPT OAuth), `openrouterbyok` (user's own OpenRouter key, direct to openrouter.ai), `lmstudio`, `zai`, `deepseek`, `bedrock`; Claude Code runs on its session backend. All local-authoritative on `TreeMessageSink`.
+- `deepseek` (`providers/hyperRouterDeepSeekProvider.ts`) uses the Hyper Router DeepSeek adapter with the stored `deepseek` token or `DEEPSEEK_API_KEY` (`DEEPSEEK_BASE_URL`/`DEEPSEEK_MODEL` optional). `think` is sent explicitly as thinking enabled/disabled because DeepSeek defaults it on; stored reasoning is replayed (required for thinking + tools). Model-prefix inference never claims `deepseek/…`: those are OpenRouter model ids.
 - The legacy name `openrouter` (the retired hosted route) is an alias for `openrouterbyok`. Unknown names are rejected (400 `unknown provider "x"`).
 
 ## Important invariants

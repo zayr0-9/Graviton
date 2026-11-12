@@ -15,6 +15,7 @@ export class RunSnapshotProjector {
   private terminal: RunProjectionEvent | undefined
   private queueRevision = 0
   private readonly rowIds = new Set<string>()
+  private readonly anchorIds = new Set<string>()
 
   referencedMessageIds(): string[] { return [...this.rowIds] }
 
@@ -31,7 +32,14 @@ export class RunSnapshotProjector {
     if (event.type === 'message_queue_updated') { this.queueRevision = event.snapshot.revision; this.latest.set(event.type, structuredClone(event)); return }
     if (event.type === 'permission_required' || event.type === 'clarify_required' || event.type === 'operation_mode_upgrade_required' || event.type === 'decision_settled') return
     if (event.type === 'complete' || (event.type === 'error' && event.terminal !== false)) { this.terminal = structuredClone(event); return }
-    if (event.type === 'assistant_message_persisted' || event.type === 'queued_user_message_persisted' || event.type === 'compaction_control_persisted') this.currentAnchor = structuredClone(event)
+    if (event.type === 'assistant_message_persisted' || event.type === 'queued_user_message_persisted' || event.type === 'compaction_control_persisted') {
+      // An earlier row persisted again in place (a late tool result, a background task's progress
+      // on its launching call) is not the run's head and must not become a replay's anchor.
+      const id = event.message?.id
+      const current = this.currentAnchor && 'message' in this.currentAnchor ? this.currentAnchor.message?.id : undefined
+      if (!id || id === current || !this.anchorIds.has(id)) this.currentAnchor = structuredClone(event)
+      if (id) this.anchorIds.add(id)
+    }
     if (event.type === 'tool_loop' && event.status === 'turn_started') {
       this.priorAnchor = this.currentAnchor
       this.turn.reset()

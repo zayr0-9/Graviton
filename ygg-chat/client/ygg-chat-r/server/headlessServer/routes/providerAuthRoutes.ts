@@ -3,6 +3,7 @@ import type { Express } from 'express'
 const JWT_CLAIM_PATH = 'https://api.openai.com/auth'
 import type { ProviderTokenStore } from '../providers/tokenStore.js'
 import { fetchOpenRouterByokModels, OPENROUTER_BYOK_PROVIDER_KEY } from '../providers/hyperRouterOpenRouterProvider.js'
+import { DEEPSEEK_MODELS } from '../providers/hyperRouterDeepSeekProvider.js'
 
 interface RegisterProviderAuthRoutesDeps {
   tokenStore: ProviderTokenStore
@@ -82,7 +83,7 @@ export function registerProviderAuthRoutes(app: Express, deps: RegisterProviderA
     }
   }
 
-  const registerTokenRoutes = (providerSlug: 'openai' | 'openrouter-byok' | 'zai' | 'bedrock', providerKey: string, opts?: { deriveAccountId?: boolean }) => {
+  const registerTokenRoutes = (providerSlug: 'openai' | 'openrouter-byok' | 'zai' | 'deepseek' | 'bedrock', providerKey: string, opts?: { deriveAccountId?: boolean }) => {
     app.post(`/api/provider-auth/${providerSlug}/token`, (req, res) => {
       if (providerSlug === 'openai') { res.status(410).json({ error: 'OAuth tokens are server-owned. Use the login flow.' }); return }
       const payload = normalizePayload(req.body)
@@ -143,6 +144,7 @@ export function registerProviderAuthRoutes(app: Express, deps: RegisterProviderA
 
   registerTokenRoutes('openai', 'openaichatgpt', { deriveAccountId: true })
   registerTokenRoutes('zai', 'zai')
+  registerTokenRoutes('deepseek', 'deepseek')
   registerTokenRoutes('bedrock', 'bedrock')
   registerTokenRoutes('openrouter-byok', OPENROUTER_BYOK_PROVIDER_KEY)
 
@@ -184,6 +186,10 @@ export function registerProviderAuthRoutes(app: Express, deps: RegisterProviderA
         {
           name: 'zai',
           models: DEFAULT_ZAI_MODELS,
+        },
+        {
+          name: 'deepseek',
+          models: DEEPSEEK_MODELS,
         },
         {
           name: 'bedrock',

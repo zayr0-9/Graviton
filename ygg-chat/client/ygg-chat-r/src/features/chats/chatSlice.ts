@@ -423,7 +423,16 @@ function catchUpSelectedPath(state: ChatState) {
     const target = [stream.finalMessageId, stream.lastCompletedMessageId, stream.currentBranchAnchorMessageId, stream.liveMessageId]
       .filter((id): id is MessageId => id != null && selectedTipTrails(state, stream, id))
       .sort((a, b) => buildPathToMessage(state.conversation.messages, b).length - buildPathToMessage(state.conversation.messages, a).length)[0]
-    if (!target) continue
+    if (!target) {
+      // Already at the run's head. A conversation-only route resolves without a lineage;
+      // adopt the run's own, which matches the run to this view whatever its anchors do.
+      const tip = state.conversation.currentPath.at(-1)
+      if (stream.active && state.conversation.currentLineageId == null && stream.lineage.lineageIdConfirmed && tip != null &&
+          [stream.lastCompletedMessageId, stream.finalMessageId].some(id => id != null && String(id) === String(tip))) {
+        state.conversation.currentLineageId = stream.lineage.lineageId ?? null
+      }
+      continue
+    }
     state.conversation.currentPath = buildPathToMessage(state.conversation.messages, target)
     extendContinuationTail(state, target)
     if (state.conversation.currentLineageId == null && stream.lineage.lineageIdConfirmed) {
@@ -1049,6 +1058,15 @@ export const chatSlice = createSlice({
         }
       } else if (chunk.type === 'complete') {
         const completedMessageId = chunk.message?.id || null
+        // A row that already has children is not the run's head: the host re-persists an
+        // earlier row in place (a late tool result, or a background task's progress on the
+        // call that launched it, about once a second). Its row is upserted by `messageAdded`;
+        // moving the anchors back to it detached the run from the view showing its head.
+        // The first row after a (re)start is always adopted: a replay opens with one.
+        const children = (chunk.message as any)?.children_ids
+        if (completedMessageId && Array.isArray(children) && children.length > 0 &&
+            stream.lastCompletedMessageId != null && stream.currentBranchAnchorMessageId != null &&
+            String(stream.currentBranchAnchorMessageId) !== String(completedMessageId)) return
         stream.messageId = completedMessageId
         stream.lastCompletedMessageId = completedMessageId
         stream.persistedTurnMessageId = completedMessageId

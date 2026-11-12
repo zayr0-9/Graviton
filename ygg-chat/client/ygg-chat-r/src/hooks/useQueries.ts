@@ -654,6 +654,28 @@ export function useModels(provider: string | null) {
         }
       }
 
+      if (normalizedSlug === 'deepseek') {
+        // Current DeepSeek API ids (deepseek-flash = V4.1-Flash); 1M context, 384K max output.
+        // Text only: the Hyper Router DeepSeek adapter sends string content.
+        const models = ['deepseek-flash', 'deepseek-v4-pro'].map(name => ({
+          ...stringToModel(name),
+          contextLength: 1048576,
+          inputTokenLimit: 1048576,
+          outputTokenLimit: 393216,
+          maxCompletionTokens: 393216,
+          thinking: true,
+        }))
+        const defaultModel = models[0]
+        const storedSelection = getStoredSelectedModel()
+        const selectedModel = storedSelection ? models.find(m => m.name === storedSelection.name) || defaultModel : defaultModel
+
+        return {
+          models,
+          default: defaultModel,
+          selected: selectedModel,
+        }
+      }
+
       if (
         normalizedSlug === 'bedrock' ||
         normalizedSlug === 'awsbedrock' ||

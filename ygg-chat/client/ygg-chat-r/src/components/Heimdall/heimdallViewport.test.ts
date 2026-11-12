@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { calculateDockedPreviewLayout, observeHeimdallViewport } from './heimdallViewport'
+import { calculateDockedPreviewLayout, observeHeimdallViewport, clampPreviewRect, resizePreviewEdge } from './heimdallViewport'
 
 afterEach(() => vi.unstubAllGlobals())
 
@@ -89,5 +89,36 @@ describe('calculateDockedPreviewLayout', () => {
         expect(layout.top + layout.maxHeight).toBeLessThanOrEqual(height)
       }
     }
+  })
+})
+
+describe('edge resize geometry', () => {
+  const viewport = { width: 1000, height: 800 }
+  const rect = { left: 200, top: 200, width: 320, height: 200 }
+  it('keeps the opposite edge fixed for all four directions', () => {
+    expect(resizePreviewEdge(rect, 'left', -100, viewport)).toEqual({ ...rect, left: 100, width: 420 })
+    expect(resizePreviewEdge(rect, 'right', 100, viewport)).toEqual({ ...rect, width: 420 })
+    expect(resizePreviewEdge(rect, 'top', -100, viewport)).toEqual({ ...rect, top: 100, height: 300 })
+    expect(resizePreviewEdge(rect, 'bottom', 100, viewport)).toEqual({ ...rect, height: 300 })
+  })
+  it('grows beyond half the panel and respects full-panel bounds and minimums', () => {
+    expect(resizePreviewEdge(rect, 'right', 9999, viewport).width).toBe(788)
+    expect(resizePreviewEdge(rect, 'left', 9999, viewport)).toEqual({ ...rect, left: 300, width: 220 })
+    expect(resizePreviewEdge(rect, 'bottom', -9999, viewport).height).toBe(120)
+    expect(resizePreviewEdge(rect, 'top', -9999, viewport).top).toBe(10)
+  })
+  it.each([{ width: 0, height: 0 }, { width: 100, height: 80 }])('contains tiny panels', viewport => {
+    for (const edge of ['left', 'right', 'top', 'bottom'] as const) {
+      const result = resizePreviewEdge(rect, edge, 9999, viewport)
+      expect(result.left).toBeGreaterThanOrEqual(0)
+      expect(result.top).toBeGreaterThanOrEqual(0)
+      expect(result.left + result.width).toBeLessThanOrEqual(viewport.width)
+      expect(result.top + result.height).toBeLessThanOrEqual(viewport.height)
+    }
+  })
+  it('does not enlarge a short natural card before dragging', () => {
+    const short = { ...rect, height: 60 }
+    expect(clampPreviewRect(short, viewport)).toEqual(short)
+    expect(resizePreviewEdge(short, 'right', 20, viewport).height).toBe(60)
   })
 })

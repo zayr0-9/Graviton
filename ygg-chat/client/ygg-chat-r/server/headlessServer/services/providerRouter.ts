@@ -1,5 +1,6 @@
 import { isClaudeProvider } from '../../../../../shared/claudeProvider.js'
 import { HyperRouterBedrockProvider } from '../providers/hyperRouterBedrockProvider.js'
+import { HyperRouterDeepSeekProvider } from '../providers/hyperRouterDeepSeekProvider.js'
 import { HyperRouterOpenRouterProvider } from '../providers/hyperRouterOpenRouterProvider.js'
 import { HyperRouterZaiProvider } from '../providers/hyperRouterZaiProvider.js'
 import { LmStudioProvider } from '../providers/lmStudioProvider.js'
@@ -15,7 +16,7 @@ import type {
 } from '../providers/providerTypes.js'
 import type { ProviderTokenStore } from '../providers/tokenStore.js'
 
-export type ProviderRoute = 'openrouterbyok' | 'openaichatgpt' | 'lmstudio' | 'zai' | 'bedrock'
+export type ProviderRoute = 'openrouterbyok' | 'openaichatgpt' | 'lmstudio' | 'zai' | 'deepseek' | 'bedrock'
 
 /**
  * Strict lookup: the route for a known provider name or alias, else null.
@@ -28,6 +29,7 @@ export function resolveProviderRoute(providerName: string): ProviderRoute | null
   }
   if (normalized === 'lmstudio') return 'lmstudio'
   if (normalized === 'zai' || normalized === 'z.ai' || normalized === 'glm' || normalized === 'glmprovider' || normalized === 'z.ai/glm' || normalized === 'zai/glm') return 'zai'
+  if (normalized === 'deepseek') return 'deepseek'
   if (
     normalized === 'bedrock' ||
     normalized === 'awsbedrock' ||
@@ -85,6 +87,7 @@ export class ProviderRouter {
       openaichatgpt: new OpenAiChatgptProvider({ tokenStore: deps.tokenStore }),
       lmstudio: new LmStudioProvider(),
       zai: new HyperRouterZaiProvider({ tokenStore: deps.tokenStore }),
+      deepseek: new HyperRouterDeepSeekProvider({ tokenStore: deps.tokenStore }),
       bedrock: new HyperRouterBedrockProvider({ tokenStore: deps.tokenStore }),
       openrouterbyok: new HyperRouterOpenRouterProvider({ tokenStore: deps.tokenStore }),
     }

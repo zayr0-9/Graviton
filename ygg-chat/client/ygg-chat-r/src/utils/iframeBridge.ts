@@ -26,7 +26,7 @@ type BridgeContext = {
   registerCleanup?: (cleanup: () => void) => void
 }
 
-type GenerationProvider = 'openrouterbyok' | 'openaichatgpt' | 'lmstudio' | 'zai' | 'bedrock'
+type GenerationProvider = 'openrouterbyok' | 'openaichatgpt' | 'lmstudio' | 'zai' | 'deepseek' | 'bedrock'
 
 type GenerationStreamResult = {
   text: string
@@ -39,6 +39,7 @@ function normalizeGenerationProvider(provider: string): GenerationProvider | nul
   if (normalized === 'openrouter' || normalized.replace(/\s+/g, '') === 'openrouterbyok') return 'openrouterbyok'
   if (normalized === 'lmstudio') return 'lmstudio'
   if (normalized === 'zai' || normalized === 'z.ai' || normalized === 'glm') return 'zai'
+  if (normalized === 'deepseek') return 'deepseek'
   if (
     normalized === 'bedrock' ||
     normalized === 'aws' ||
@@ -58,6 +59,7 @@ const DEFAULT_GENERATION_MODELS: Record<GenerationProvider, string> = {
   openrouterbyok: 'openai/gpt-5-mini',
   lmstudio: 'local-model',
   zai: 'glm-5.1',
+  deepseek: 'deepseek-flash',
   bedrock: 'anthropic.claude-3-5-sonnet-20241022-v2:0',
 }
 
@@ -65,6 +67,7 @@ function inferProviderFromModel(modelName: string): GenerationProvider {
   if (/^(gpt-|o1|o3|o4)/i.test(modelName)) return 'openaichatgpt'
   if (/lmstudio|local-model/i.test(modelName)) return 'lmstudio'
   if (/^(glm-|zai|z\.ai)/i.test(modelName)) return 'zai'
+  if (/^deepseek-/i.test(modelName)) return 'deepseek'
   if (/^(bedrock|aws|awsbedrock|aws-bedrock|amazonbedrock|amazon-bedrock)\//i.test(modelName) || /^anthropic\.claude-/i.test(modelName)) return 'bedrock'
   // Any other vendor/model slug is an OpenRouter model served with the user's own key.
   return 'openrouterbyok'

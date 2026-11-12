@@ -23,7 +23,7 @@ headless Express server (`http://127.0.0.1:3002`, inside the Electron main proce
 projects the returned server SSE events onto the pre-existing Redux `streamChunk`
 vocabulary. The server owns the entire loop — provider dispatch, tool execution,
 permission/clarify pausing, hooks, and in-loop compaction — for every provider route
-(`openaichatgpt`, `openrouterbyok`, `lmstudio`, `zai`, `bedrock`; Claude Code uses its own
+(`openaichatgpt`, `openrouterbyok`, `lmstudio`, `zai`, `deepseek`, `bedrock`; Claude Code uses its own
 session backend). Graviton is fully local: there is no hosted backend or account.
 
 This is the **same engine** that already served subagents; the new main-loop behavior is
@@ -115,7 +115,7 @@ All 3 thunks share the same shape:
      `branch → …/messages/{messageId}/branch`;
      `edit → …/messages/{messageId}/edit-branch`.
    - Body highlights: `provider` (UI provider mapped to server slug: `google→gemini`,
-     `zai/glm/z.ai→zai`, `bedrock*→bedrock`), `modelName`, `content` (raw first-turn text),
+     `zai/glm/z.ai→zai`, `bedrock*→bedrock`; `DeepSeek→deepseek` passes through), `modelName`, `content` (raw first-turn text),
      `parentId`/`messageId`, `operationMode` + `includeOperationModePrompt`,
      `toolAutoApprove` (verbatim — undefined survives, only explicit `false` pauses),
      `hooksEnabled: isElectronMode`, `tools` (an explicit `[]` is authoritative → no tools),

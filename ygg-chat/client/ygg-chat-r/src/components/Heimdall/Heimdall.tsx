@@ -34,10 +34,10 @@ import type { Conversation } from '../../features/conversations/conversationType
 import { Message } from '@/features/chats'
 import { ConversationId, MessageId } from '../../../../../shared/types'
 import { useHoverIntent } from '../../hooks/useHoverIntent'
-import { useIsMobile } from '../../hooks/useMediaQuery'
 import { useConversations, useProjects } from '../../hooks/useQueries'
 import { groupConversationsByProject } from './conversationProjectGroups'
 import { NoteColorLegend } from './NoteColorLegend'
+import { ResizableMessagePreview } from './ResizableMessagePreview'
 import { calculateDockedPreviewLayout, observeHeimdallViewport } from './heimdallViewport'
 import { expandHeimdallSelectionToBranchMessages, getHeimdallTransferScopes, selectHeimdallContextMenuNodes } from './heimdallSelection'
 import { TransferScopeChooser } from './TransferScopeChooser'
@@ -324,8 +324,6 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   )
   // Track total messages to detect a truly empty conversation
   const messagesCount = useSelector((state: RootState) => state.chat.conversation.messages.length)
-  // Track if on mobile device for responsive tooltip behavior
-  const isMobile = useIsMobile()
 
   const svgRef = useRef<SVGSVGElement>(null)
   const keyboardId = React.useId()
@@ -391,6 +389,10 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   // Docked previews sit across the graph from their anchor, so the path to them
   // crosses other nodes/pills. Hover intent holds swaps/closes while heading there.
   const messagePreviewCardRef = useRef<HTMLDivElement | null>(null)
+  const messagePreviewDraggingRef = useRef(false)
+  const messagePreviewSizeRef = useRef<{ width?: number; height?: number } | null>(null)
+  const isMessagePreviewHeld = useCallback(() => messagePreviewDraggingRef.current ||
+    !!messagePreviewCardRef.current?.contains(document.activeElement), [])
   const notePreviewCardRef = useRef<HTMLDivElement | null>(null)
   const messagePreviewIntent = useHoverIntent({
     enabled: selectedNode !== null,
@@ -1055,9 +1057,9 @@ export const Heimdall: React.FC<HeimdallProps> = ({
           y: event.clientY - containerRect.top,
         },
       }
-      notePreviewIntent.run(() => setHoveredNote(nextHoveredNote))
+      notePreviewIntent.run(() => { if (!isMessagePreviewHeld()) setHoveredNote(nextHoveredNote) })
     },
-    [clearNotePreviewCloseTimeout, notePreviewIntent]
+    [clearNotePreviewCloseTimeout, notePreviewIntent, isMessagePreviewHeld]
   )
 
   // Leaving a pill drops any swap still deferred for it, then starts the close timer.
@@ -1697,6 +1699,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
 
   useEffect(() => {
     setSubagentPanel(null)
+    setSelectedNode(null)
     setHoveredNote(null)
     // A deferred swap must not reopen a preview from the previous conversation.
     messagePreviewIntent.cancel()
@@ -2864,9 +2867,9 @@ export const Heimdall: React.FC<HeimdallProps> = ({
     clearMessagePreviewCloseTimeout()
     messagePreviewCloseTimeoutRef.current = window.setTimeout(() => {
       messagePreviewCloseTimeoutRef.current = null
-      messagePreviewIntent.run(() => setSelectedNode(null))
+      messagePreviewIntent.run(() => { if (!isMessagePreviewHeld()) setSelectedNode(null) })
     }, DOCKED_PREVIEW_CLOSE_DELAY_MS)
-  }, [clearMessagePreviewCloseTimeout, messagePreviewIntent])
+  }, [clearMessagePreviewCloseTimeout, messagePreviewIntent, isMessagePreviewHeld])
 
   const handleNodeMouseEnter = useCallback(
     (e: React.MouseEvent<SVGElement>) => {
@@ -2880,11 +2883,12 @@ export const Heimdall: React.FC<HeimdallProps> = ({
         : null
 
       messagePreviewIntent.run(() => {
+        if (isMessagePreviewHeld()) return
         if (node) setSelectedNode(node)
         if (nextMousePosition) setMousePosition(nextMousePosition)
       })
     },
-    [clearMessagePreviewCloseTimeout, getNodeIdFromTarget, messagePreviewIntent, positions]
+    [clearMessagePreviewCloseTimeout, getNodeIdFromTarget, messagePreviewIntent, positions, isMessagePreviewHeld]
   )
 
   // Moving off the node starts the close timer; entering the docked card cancels it
@@ -2899,7 +2903,8 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   const handleMessagePreviewEnter = useCallback(() => {
     clearMessagePreviewCloseTimeout()
     messagePreviewIntent.cancel()
-  }, [clearMessagePreviewCloseTimeout, messagePreviewIntent])
+    notePreviewIntent.cancel()
+  }, [clearMessagePreviewCloseTimeout, messagePreviewIntent, notePreviewIntent])
 
   const handleMessagePreviewLeave = useCallback(() => {
     scheduleCloseMessagePreview()
@@ -4808,23 +4813,19 @@ export const Heimdall: React.FC<HeimdallProps> = ({
           const dockedPreview = getDockedPreviewLayout(selectedNode.id, popupWidth, popupMaxHeight, mousePosition)
 
           return (
-            <div
-              className='pointer-events-none absolute z-20'
-              style={{ left: dockedPreview.left, top: dockedPreview.top }}
+            <ResizableMessagePreview
+              previewKey={`${conversationId}:${selectedNode.id}`}
+              layout={dockedPreview}
+              dimensions={dimensions}
+              containerRef={containerRef}
+              cardRef={messagePreviewCardRef}
+              preferredRef={messagePreviewSizeRef}
+              draggingRef={messagePreviewDraggingRef}
+              style={heimdallHoverPreviewStyle}
+              accent={customThemeEnabled ? getThemeModeColor(customTheme.colors.composerToggleActiveText, isDarkMode) : isDarkMode ? '#fb923c' : '#3b82f6'}
+              onEnter={handleMessagePreviewEnter}
+              onLeave={handleMessagePreviewLeave}
             >
-              <div
-                ref={messagePreviewCardRef}
-                className='pointer-events-auto rounded-[20px] border border-stone-200/55 bg-white/75 p-4 shadow-[0_18px_36px_-22px_rgba(0,0,0,0.18)] backdrop-blur-2xl no-scrollbar dark:border-neutral-700/55 dark:bg-neutral-900/75 dark:shadow-[0_30px_60px_-12px_rgba(0,0,0,0.6)]'
-                data-heimdall-wheel-exempt='true'
-                onMouseEnter={handleMessagePreviewEnter}
-                onMouseLeave={handleMessagePreviewLeave}
-                style={{
-                  width: `${dockedPreview.width}px`,
-                  maxHeight: `${dockedPreview.maxHeight}px`,
-                  overflow: 'auto',
-                  ...heimdallHoverPreviewStyle,
-                }}
-              >
               <div className='text-sm mb-2 font-medium' style={{ color: heimdallNodeHoverModalTitleTextColor }}>
                 {selectedNode.sender === 'user' ? 'User' : selectedNode.sender === 'ex_agent' ? 'Agent' : 'Assistant'}
               </div>
@@ -4858,7 +4859,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                           return (
                             <div
                               key={`text-${idx}`}
-                              className='prose prose-sm dark:prose-invert max-w-none text-sm break-words overflow-hidden ygg-line-clamp-8'
+                              className='prose prose-sm dark:prose-invert max-w-none text-sm break-words overflow-hidden'
                             >
                               <ReactMarkdown
                                 components={SCROLLABLE_MARKDOWN_COMPONENTS}
@@ -4936,7 +4937,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                       {selectedNode.message &&
                         selectedNode.message.trim().length > 0 &&
                         !contentBlocks.some((b: any) => b.type === 'text' && b.text) && (
-                          <div className='prose prose-sm dark:prose-invert max-w-none text-sm break-words overflow-hidden ygg-line-clamp-8'>
+                          <div className='prose prose-sm dark:prose-invert max-w-none text-sm break-words overflow-hidden'>
                             <ReactMarkdown
                               components={SCROLLABLE_MARKDOWN_COMPONENTS}
                               remarkPlugins={[remarkGfm]}
@@ -4953,11 +4954,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                 // Fallback to message content
                 return (
                   <div
-                    className={`prose prose-sm dark:prose-invert max-w-none text-sm break-words ${
-                      isMobile
-                        ? 'max-h-80 overflow-y-auto overflow-x-hidden thin-scrollbar'
-                        : 'overflow-hidden overflow-x-hidden ygg-line-clamp-15'
-                    }`}
+                    className='prose prose-sm dark:prose-invert max-w-none text-sm break-words overflow-x-hidden'
                   >
                     <ReactMarkdown
                       components={SCROLLABLE_MARKDOWN_COMPONENTS}
@@ -4969,8 +4966,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                   </div>
                 )
               })()}
-              </div>
-            </div>
+            </ResizableMessagePreview>
           )
         })()}
       {hoveredNote &&
