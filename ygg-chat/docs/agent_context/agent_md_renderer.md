@@ -2,6 +2,10 @@
 paths:
   - "client/ygg-chat-r/src/components/ChatMessage/**"
   - "client/ygg-chat-r/src/components/MarkdownLink/**"
+  - "client/ygg-chat-r/src/components/MarkdownContent/AppMarkdown.tsx"
+  - "client/ygg-chat-r/src/helpers/linkTargets.ts"
+  - "client/ygg-chat-r/shared/linkPolicy.ts"
+  - "client/ygg-chat-r/electron/externalLinks.ts"
   - "client/ygg-chat-r/src/components/MermaidDiagram/**"
   - "client/ygg-chat-r/src/containers/Chat.tsx"
   - "client/ygg-chat-r/src/index.css"
@@ -31,7 +35,8 @@ Open this when changing:
 - `client/ygg-chat-r/src/components/ChatMessage/MessageActions.tsx`: hover pill and right-click menu for copy, edit, branch, delete, undo, and selection actions.
 - `client/ygg-chat-r/src/features/chats/chatTypes.ts`: `ContentBlock`, `StreamEvent`, `ToolCall`, and stream state types.
 - `client/ygg-chat-r/src/index.css`: global Tailwind/prose/Highlight.js/KaTeX styling and animation utilities used by rendered messages.
-- `client/ygg-chat-r/src/components/MarkdownLink/MarkdownLink.tsx`: custom anchor renderer used by chat Markdown. When preload `auth.openExternal` is available, HTTP(S) links open the OS browser; bridge failures log without fallback. When the capability is absent, the current implementation falls back to `window.open`.
+- `client/ygg-chat-r/src/components/MarkdownLink/MarkdownLink.tsx`: the anchor renderer and URL sanitizer every Markdown surface uses (see "Markdown links" below). Desktop links open through the preload `shell.openExternal` / `shell.openPath` bridge; failures log without a fallback, and nothing ever calls `window.open` in Electron.
+- `client/ygg-chat-r/src/components/MarkdownContent/AppMarkdown.tsx`: the only ReactMarkdown entry point. It always applies `markdownUrlTransform` and `a: MarkdownLink`.
 - `client/ygg-chat-r/src/components/MermaidDiagram/MermaidDiagram.tsx`: secure, lazy Mermaid renderer shared by chat and plan Markdown surfaces.
 
 ## End-to-End Rendering Flow
@@ -110,7 +115,7 @@ Custom component renderers:
 - fenced `mermaid` blocks are detected by the `pre` renderer and rendered through the shared `MermaidDiagram`; completion-aware preprocessing temporarily marks an unmatched Mermaid fence as `mermaid-pending`, so live streams show ordinary source and do not invoke Mermaid until the matching closing fence arrives. Mermaid is lazy-loaded, uses strict security, follows light/dark mode, and falls back to source text on syntax errors. Each completed diagram can open a diagram-only fullscreen viewer with drag panning, cursor-centered wheel/trackpad zoom, zoom controls, fit-to-view, and 100% reset;
 - `pre: PreRenderer` wraps other fenced code blocks in a flat `not-prose` surface with a copy pill;
 - `code: CodeRenderer` applies custom inline-code colors and leaves block code to Highlight.js/pre styling;
-- `a: MarkdownLink` renders links through the app's link component. The shared `markdownUrlTransform` preserves `file:` URLs only for anchor `href` attributes and maps hostless `graviton:///chat/:projectId/:conversationId` and `graviton:///conversationPage?projectId=...` links to internal routes, preserving query strings and message hashes. Unsupported/malformed `graviton:` links are blocked; valid links use the existing chat-selection navigation facade, never an OS protocol handler. Other URLs retain ReactMarkdown's default sanitization. File clicks prevent document navigation and use the existing Electron `shell.openPath` bridge to open the OS default application; empty/stripped URLs cannot navigate either.
+- `a: MarkdownLink` is applied by `AppMarkdown`, not per surface. See "Markdown links" for the full link contract.
 
 `renderMarkdownNode` receives a class name from `chatMessageShared.ts`:
 - `SHARED_TEXT_MARKDOWN_CLASS`: current structured/streamed text block rendering;
@@ -352,3 +357,36 @@ Regression tests: `src/components/ChatMessage/agentActivity.test.tsx` plus exist
 context, disclosure, hook state, and stream projection tests. Manual checks should cover
 an open group across provider turns, collapsed hook polling, long-answer scrolling,
 branch changes, abort/error, disabled grouping, custom themes and reduced motion.
+
+## Trailing activity indicator ownership
+
+`agentActivity.ts` builds JSX-free live render descriptors consumed by both `Chat.tsx` and `ChatMessage.tsx`. Tool results remain at their tool anchor; empty/hidden events do not pretend to be a visible process group. `resolveTrailingStatusGroupKey` and `resolveActivityIndicatorOwner` derive one run-level status owner from the selected run lifecycle, actual trailing grouped layout and message/input-tab preference: input tab, trailing Agent steps, live-tail footer, virtual footer, or none. No extra Redux/effect state or provider phase is used.
+
+Any streamed prose (commentary or answer) can use the non-virtualized live tail. Its fallback status renders inside the measured content ref, before clearance. Earlier groups do not keep a duplicate run indicator after visible prose appears. Compaction/background-task statuses retain dedicated presentation; hooks that outlive a model run retain local group activity when no run-level indicator is shown. Existing auto-follow, branch selection and virtualizer row keys remain unchanged.
+
+Regression coverage: `agentActivity.test.tsx` covers grouping/ownership and late-result boundaries; `scripts/test-browser-workspace.cjs` drives the production shared renderer on two clients through commentary → tools → commentary, late results, preference/grouping changes, completion and reconnect.
+
+## Markdown links
+
+Every Markdown surface renders through `AppMarkdown`: chat, the agents pill preview, subagent transcripts, Heimdall, plan views (`MarkdownContent`), Settings and the edit-diff view. A raw `<ReactMarkdown>` renders bare `<a>` tags, which navigate the Electron window itself (a blank screen for `src/foo.ts`, a document reload for a stripped `href=""`). `src/components/MarkdownContent/AppMarkdown.test.tsx` fails the build if any other module default-imports `react-markdown`.
+
+`classifyLinkHref` (`src/helpers/linkTargets.ts`) decides what a click does:
+
+- **App routes** (hostless `graviton:///chat/...`, or an absolute path matching a real route such as `/chat/:p/:c`, `/settings`) navigate through the chat-selection facade.
+- **Web and mail links** open in the OS browser or mail app.
+- **File paths** open in the OS default app. This covers `file:` URLs, absolute POSIX, `C:\` and UNC paths, `~/…` (expanded by main), and relative paths joined to the nearest `MarkdownLinkRootProvider` root. `:12`, `:12:3` and `#L12` suffixes are dropped. A relative path with no root does nothing.
+- **Editor and app links** (`vscode://`, `cursor://`, JetBrains, `slack://` …) go to main through `shell.openExternal`.
+- **Blocked schemes** (`javascript:`, `data:`, `blob:`, Windows `ms-*` / `search-ms:` …) are stripped by the sanitizer and never opened.
+
+Every click except a `#hash` calls `preventDefault`; middle-click takes the same path. On browser clients, file links and editor links with a file path open the host's shared editor (`OPEN_HOST_FILE`); other app links do nothing, because the path belongs to the host.
+
+The relative-link root comes from `MarkdownLinkRootProvider` (`src/components/MarkdownLink/markdownLinkRoot.tsx`). Chat provides the live `ccCwd`; the agents pill preview and the parallel pane resolve their conversation's cwd, then the project cwd, then the IDE workspace root (`selectConversationLinkRoot`). Heimdall, plan views and nested subagent transcripts inherit it. Settings and the sidebar have no root.
+
+Main enforces the policy (`electron/externalLinks.ts`, scheme lists in `shared/linkPolicy.ts`):
+
+- Web, mail and editor schemes open without a prompt. If no editor is registered, the file named in the editor link opens with `shell.openPath` instead.
+- Any other non-blocked scheme shows a native "Open link in another app?" dialog with Cancel as the default. "Don't ask again" lasts for that scheme until the app restarts.
+- Navigation guards on the main and floating windows cancel every `will-navigate` away from the app document and deny every `window.open`, routing the URL to the same opener.
+- `shell:openExternal` accepts calls from the main frame of the main or floating window.
+
+Tests: `src/helpers/linkTargets.test.ts`, `src/components/MarkdownLink/MarkdownLink.test.tsx`, `src/components/MarkdownContent/AppMarkdown.test.tsx`, `server/__tests__/externalLinks.test.ts`, `server/__tests__/shellPath.test.ts`.

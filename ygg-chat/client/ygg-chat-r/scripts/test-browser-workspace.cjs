@@ -186,6 +186,13 @@ if (!process.versions.electron) {
     await click(windows[0], 'button[title="Send message"]')
     await wait(windows[0], `document.body.innerText.includes('Permission requested')`, 'Permission missing')
     await wait(windows[1], `document.body.innerText.includes('Permission requested')`, 'Second observer permission missing')
+    // Commentary is still active work: it must retain one status BELOW the live text.
+    for (const window of windows) await wait(window, `(()=>{
+      const footer=document.querySelector('[data-live-activity-footer]');
+      const tail=document.querySelector('[data-live-streaming-tail]');
+      return footer && tail && tail.contains(footer) && tail.innerText.includes('Synthetic reply in progress') &&
+        !!footer.querySelector('[aria-label="Assistant is working"]') && !document.querySelector('#message-generation-loader');
+    })()`, 'Commentary lost its live-tail activity footer')
     if (subscribers.size !== 2) throw new Error(`Expected two live subscribers; got ${subscribers.size}`)
     if (await windows[1].webContents.executeJavaScript(`document.querySelector('textarea').value`) !== 'phone private draft') throw new Error('Remote event stole phone draft')
     await fill(windows[0], 'second synthetic prompt'); await click(windows[0], 'button[title="Queue message"]')
@@ -234,8 +241,25 @@ if (!process.versions.electron) {
       for (const name of ['read_file', 'glob', 'ripgrep']) await wait(window, `document.body.innerText.includes('${name}')`, `Missing completed tool ${name}`)
     }
     console.log('PASS observer reload retains three completed tool turns and expanded call history')
+    // Exercise ownership transitions in the real shared Chat/ChatMessage renderers.
+    publish({ type: 'chunk', part: 'text', delta: 'I have checked the files and am now preparing the next operation for this task.' })
+    for (const window of windows) await wait(window, `!!document.querySelector('[data-live-activity-footer] [aria-label="Assistant is working"]')`, 'Trailing commentary footer missing')
+    publish({ type: 'chunk', part: 'tool_call', toolCall: { id: 'last-step', name: 'read_file', arguments: {} } })
+    for (const window of windows) await wait(window, `!document.querySelector('[data-live-activity-footer]') && !!document.querySelector('[data-live-streaming-tail] [data-agent-steps] [role="status"]')`, 'Trailing steps did not take activity ownership')
+    publish({ type: 'chunk', part: 'text', delta: 'The final check finished; I am putting the findings into the answer.' })
+    publish({ type: 'chunk', part: 'tool_result', toolResult: { tool_use_id: 'last-step', content: 'ok' } })
+    for (const window of windows) await wait(window, `!!document.querySelector('[data-live-activity-footer] [aria-label="Assistant is working"]') && !document.querySelector('[data-agent-steps] [role="status"]')`, 'Late tool result stole trailing prose ownership')
+    for (const window of windows) {
+      await window.webContents.executeJavaScript(`window.dispatchEvent(new CustomEvent('streamingThinkingIndicatorPlacementChange', { detail: 'input-tab' }))`)
+      await wait(window, `!document.querySelector('[data-live-activity-footer]') && !document.querySelector('[data-agent-steps] [role="status"]') && !!document.querySelector('[aria-label="Assistant is working"]')`, 'Input-tab preference lost activity')
+      await window.webContents.executeJavaScript(`window.dispatchEvent(new CustomEvent('streamingThinkingIndicatorPlacementChange', { detail: 'message' })); window.dispatchEvent(new CustomEvent('groupToolReasoningRunsChange', { detail: false }))`)
+      await wait(window, `!!document.querySelector('[data-live-activity-footer]')`, 'Ungrouped commentary lost footer')
+      await window.webContents.executeJavaScript(`window.dispatchEvent(new CustomEvent('groupToolReasoningRunsChange', { detail: true }))`)
+    }
+    console.log('PASS commentary -> active steps -> commentary/late result indicator ownership, placement and grouping on both clients')
     rows.push(row('a1', 'assistant', 'Synthetic final reply', parent)); publish({ type: 'complete', message: rows[rows.length - 1] }); for (const res of subscribers) res.end()
     for (const window of windows) await wait(window, `document.body.innerText.includes('Synthetic final reply')`, 'Final reply missing on sender/observer')
+    for (const window of windows) await wait(window, `!document.querySelector('[data-live-activity-footer]') && !document.querySelector('#message-generation-loader') && !document.querySelector('[data-agent-steps] [role="status"]')`, 'Activity indicator remained after completion')
     const phone = windows[1]
     await phone.webContents.executeJavaScript(`[...document.querySelectorAll('button')].find(button=>button.textContent.trim()==='Workspace')?.click()`)
     await wait(phone, `!!document.querySelector('dialog[aria-label="Workspace"]')?.open`, 'Phone workspace missing')

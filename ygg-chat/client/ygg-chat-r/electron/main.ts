@@ -15,6 +15,7 @@ import { installRendererRecovery, type RendererRecovery } from './rendererRecove
 import { installMainProcessLog } from './mainProcessLog.js'
 import { createClientErrorLog, type ClientErrorLog } from './clientErrorLog.js'
 import { normalizeShellPath } from './shellPath.js'
+import { createExternalLinkOpener, installNavigationGuards } from './externalLinks.js'
 import { createQuitConfirmationGuard } from './quitConfirmation.js'
 import {
   consolidateSecureSecrets,
@@ -35,6 +36,13 @@ import { fetchOpenAIUsageStatus } from '../server/auth/codexUsage.js'
 
 // Destructure autoUpdater from CommonJS module (ESM/CJS interop)
 const { autoUpdater } = autoUpdaterPkg
+
+const { openExternalLink } = createExternalLinkOpener({
+  platform: process.platform,
+  openExternal: url => shell.openExternal(url),
+  openPath: target => shell.openPath(normalizeShellPath(target)),
+  showDialog: (parent, options) => parent ? dialog.showMessageBox(parent, options) : dialog.showMessageBox(options),
+})
 
 // ESM: Get __dirname from import.meta.url
 const __dirname = fileURLToPath(new URL('.', import.meta.url))
@@ -704,22 +712,9 @@ function createWindow() {
   mainWindow.on('leave-full-screen', sendWindowState)
   mainWindow.webContents.once('did-finish-load', sendWindowState)
 
-  // Never let target=_blank/window.open create an untrusted Electron window.
-  // Route ordinary web links to the user's OS default browser instead.
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    try {
-      const parsedUrl = new URL(url)
-      if (parsedUrl.protocol === 'http:' || parsedUrl.protocol === 'https:') {
-        void shell.openExternal(parsedUrl.toString()).catch(error => {
-          console.error('[Electron] Failed to open external link:', error)
-        })
-      }
-    } catch (error) {
-      console.error('[Electron] Refused invalid external link:', url, error)
-    }
-
-    return { action: 'deny' }
-  })
+  // Never let a link navigate this window or open another Electron window.
+  // Web, editor and app links go to the OS; local file links open in their default app.
+  installNavigationGuards(window, entryUrl, process.platform, url => openExternalLink(url, window))
 
   // applyTitleBarTheme(mainWindow)
 
@@ -909,6 +904,12 @@ function createFloatingWindow() {
 
   // Load the app - use the same URL as main window
   const isDev = !app.isPackaged
+
+  const floatingEntryUrl = isDev
+    ? 'http://localhost:5173/'
+    : pathToFileURL(path.join(__dirname, '../dist-electron/index.html')).href
+  const floating = floatingWindow
+  installNavigationGuards(floating, floatingEntryUrl, process.platform, url => openExternalLink(url, floating))
 
   if (isDev) {
     floatingWindow.loadURL('http://localhost:5173')
@@ -1387,15 +1388,14 @@ ipcMain.handle('autoUpdater:installNow', async () => {
   }
 })
 
-// Open a URL in the OS browser (links, ChatGPT sign-in). Main window only.
-authHandle('shell:openExternal', async (_event, url: string) => {
-  try {
-    await shell.openExternal(url)
-    return { success: true }
-  } catch (error) {
-    console.error('[Electron IPC] Failed to open external URL:', error)
-    return { success: false, error: String(error) }
-  }
+// Open a link with the OS (web, mail, editor and confirmed app links; ChatGPT sign-in).
+// Main or floating window main frame only; the shared link policy refuses dangerous schemes.
+ipcMain.handle('shell:openExternal', async (event, url: unknown) => {
+  const window = [mainWindow, floatingWindow].find(candidate => candidate && !candidate.isDestroyed() && candidate.webContents === event.sender)
+  if (!window || event.senderFrame !== event.sender.mainFrame) throw new Error('Untrusted link caller')
+  const result = await openExternalLink(url, window)
+  if (!result.success && !result.cancelled) console.error('[Electron IPC] Failed to open external URL:', result.error)
+  return result
 })
 
 // Open files in their default application and folders in the system file manager.

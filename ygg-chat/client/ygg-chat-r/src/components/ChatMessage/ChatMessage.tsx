@@ -12,7 +12,8 @@ import { createSelector } from '@reduxjs/toolkit'
 import { createPortal } from 'react-dom'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import { motionState, softTransition, useMotionPreferences } from '../motion'
-import ReactMarkdown from 'react-markdown'
+import type { Options as MarkdownOptions } from 'react-markdown'
+import { AppMarkdown } from '../MarkdownContent/AppMarkdown'
 import { useChatNavigate as useNavigate } from '../ChatSelection/ChatSelectionProvider'
 import { useSelector } from 'react-redux'
 import rehypeHighlight from 'rehype-highlight'
@@ -34,7 +35,6 @@ import { isNativeShell } from '../../platform/clientCapabilities'
 import { ChatErrorBubble } from '../ChatErrorBubble/ChatErrorBubble'
 import { useHtmlIframeRegistry } from '../HtmlIframeRegistry/HtmlIframeRegistry'
 import { ImageModal } from '../ImageModal/ImageModal'
-import { MarkdownLink, markdownUrlTransform } from '../MarkdownLink/MarkdownLink'
 import { MarkdownTable } from '../MarkdownContent/MarkdownTable'
 import { MermaidDiagram, getMermaidSource, isMermaidCodeBlock, prepareMermaidMarkdown } from '../MermaidDiagram'
 import { TextArea } from '../TextArea/TextArea'
@@ -51,7 +51,7 @@ import {
 import { ContextInjectionCard, type ContextInjectionCardEntry } from './ContextInjectionCard'
 import { HookActivityCard } from './HookActivityCard'
 import { AgentSteps } from './AgentSteps'
-import { partitionAgentItems, isProcessRunSeparatorText, getAgentProgress } from './agentActivity'
+import { partitionAgentItems, isProcessRunSeparatorText, getAgentProgress, buildStreamRenderItems, trailingAgentGroupKey, type StreamRenderItem } from './agentActivity'
 import { MessageActions } from './MessageActions'
 import { submitMessageDraft } from './messageSubmission'
 import { DisclosurePanel, DisclosureRow } from './messagePrimitives'
@@ -66,7 +66,6 @@ import { FullAccessNotice } from './FullAccessNotice'
 import { ToolCallGroupCard, type McpViewerPayload } from './ToolCallGroupCard'
 import {
   buildToolCallGroupsFromBlocks,
-  buildToolCallGroupsFromStream,
   COLLAPSED_CONTENT_WORD_LIMIT,
   contentBlocksToEditableText,
   editableTextToContentBlocks,
@@ -146,6 +145,8 @@ export interface ChatMessageProps {
   /** Group long consecutive reasoning/tool runs into one "Agent steps" disclosure. */
   groupToolReasoningRuns?: boolean
   processRunActive?: boolean
+  /** Shared live layout computed by the owner, avoiding a second classification pass. */
+  streamRenderItems?: StreamRenderItem[]
   firstProcessGroupExpanded?: boolean
   onFirstProcessGroupToggle?: () => void
   /** Display-only projection; canonical tool results remain complete. */
@@ -330,8 +331,8 @@ const CodeRenderer: React.FC<any> = ({ inline, className, children, ...props }) 
 }
 
 // Stable components map so ReactMarkdown does not treat its renderers as changed each render.
-const MARKDOWN_COMPONENTS = { pre: PreRenderer, code: CodeRenderer, a: MarkdownLink, table: MarkdownTable }
-type MarkdownPlugins = NonNullable<React.ComponentProps<typeof ReactMarkdown>['rehypePlugins']>
+const MARKDOWN_COMPONENTS = { pre: PreRenderer, code: CodeRenderer, table: MarkdownTable }
+type MarkdownPlugins = NonNullable<MarkdownOptions['rehypePlugins']>
 const MARKDOWN_REMARK_PLUGINS: MarkdownPlugins = [remarkGfm, remarkMath]
 const MARKDOWN_REHYPE_PLUGINS: MarkdownPlugins = [[rehypeHighlight, { detect: true }], rehypeKatex]
 
@@ -352,14 +353,13 @@ const MarkdownBlock = React.memo(function MarkdownBlock({ markdown, className, t
   const mergedStyle = useMemo(() => ({ ...themeVars, ...style }), [themeVars, style])
   return (
     <div id={id} className={className} style={mergedStyle}>
-      <ReactMarkdown
+      <AppMarkdown
         remarkPlugins={MARKDOWN_REMARK_PLUGINS}
         rehypePlugins={MARKDOWN_REHYPE_PLUGINS}
         components={MARKDOWN_COMPONENTS}
-        urlTransform={markdownUrlTransform}
       >
         {prepareMermaidMarkdown(markdown)}
-      </ReactMarkdown>
+      </AppMarkdown>
     </div>
   )
 })
@@ -453,6 +453,7 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
     fontSizeOffset = 0,
     groupToolReasoningRuns = false,
     processRunActive = false,
+    streamRenderItems,
     firstProcessGroupExpanded,
     onFirstProcessGroupToggle,
     truncateToolOutput = true,
@@ -516,7 +517,7 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
     const [selectedText, setSelectedText] = useState<string>('')
     const floatingActionsRef = useRef<HTMLDivElement | null>(null)
     const [selectedArtifactUrl, setSelectedArtifactUrl] = useState<string | null>(null)
-    const streamToolGroupsByIndex = useMemo(() => buildToolCallGroupsFromStream(streamEvents), [streamEvents])
+    const liveRenderItems = useMemo(() => streamRenderItems ?? buildStreamRenderItems(streamEvents ?? [], keepTextOutsideGroups), [streamRenderItems, streamEvents, keepTextOutsideGroups])
     const contentToolGroupsByIndex = useMemo(() => buildToolCallGroupsFromBlocks(contentBlocks), [contentBlocks])
     const htmlRegistry = useHtmlIframeRegistry()
     const explainThemeColor = (key:
@@ -1299,6 +1300,7 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
     const renderItemsWithOptionalProcessGrouping = (items: MessageRenderItem[], sourceKey: string): React.ReactNode[] => {
       if (!groupToolReasoningRuns || isUserRow) return items.map(item => item.node)
       let firstGroup = true
+      const trailingKey = processRunActive ? trailingAgentGroupKey(items, groupToolReasoningRuns) : null
       return partitionAgentItems(items).map(part => {
         if (!('history' in part)) return part.node
         // First-item identity survives appended tools, context loads and hook updates.
@@ -1306,7 +1308,7 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
         const controlled = firstGroup && firstProcessGroupExpanded !== undefined && onFirstProcessGroupToggle
         firstGroup = false
         const toolCount = part.history.filter(item => item.processType === 'tool').length
-        const isLiveTail = processRunActive && [...part.history, ...part.activity].includes(items[items.length - 1])
+        const isLiveTail = processRunActive && part.key === trailingKey
         const progress = isLiveTail ? getAgentProgress([], streamEvents ?? [], hookRuns ?? [], true) : undefined
         return <AgentSteps key={groupKey} id={`${id}-${groupKey}`} style={messageContentStyle}
           expanded={controlled ? firstProcessGroupExpanded! : expandedBlocks.groupRuns.has(groupKey)} onToggle={controlled ? onFirstProcessGroupToggle! : () => toggleBlock('groupRuns', groupKey)}
@@ -1367,178 +1369,23 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
       ),
     })
 
-    const isHiddenStreamSeparator = (event: StreamEvent, index: number): boolean => {
-      if (event.type !== 'text') return false
-      const text = event.delta || ''
-      if (!text.trim()) return true
-      const prev = streamEvents?.[index - 1]
-      const next = streamEvents?.[index + 1]
-      return prev?.type === 'reasoning' && next?.type === 'reasoning' && isProcessRunSeparatorText(text)
-    }
-
-    const getPreviousVisibleStreamType = (index: number): StreamEvent['type'] | null => {
-      if (!Array.isArray(streamEvents)) return null
-      let cursor = index - 1
-      while (cursor >= 0) {
-        const event = streamEvents[cursor]
-        if (event && !isHiddenStreamSeparator(event, cursor)) return event.type
-        cursor -= 1
-      }
-      return null
-    }
-
-    const buildStreamRenderItems = (): MessageRenderItem[] => {
-      if (!Array.isArray(streamEvents) || streamEvents.length === 0) return []
-
-      const items: MessageRenderItem[] = []
-      let idx = 0
-
-      while (idx < streamEvents.length) {
-        const event = streamEvents[idx]
-        if (!event) {
-          idx += 1
-          continue
-        }
-
-        const groupedTool = streamToolGroupsByIndex.get(idx)
-        if (groupedTool) {
-          if (groupedTool.anchorIndex === idx) {
-            const toolNode = renderToolCallGroupCard(groupedTool, `stream-${groupedTool.id}-${idx}`)
-            if (toolNode) {
-              items.push({
-                key: `stream-tool-${groupedTool.id}-${idx}`,
-                kind: isExcludedFromProcessRunGrouping(groupedTool.name, groupedTool.args) ? 'other' : 'process',
-                processType: 'tool',
-                node: toolNode,
-              })
-            }
-          }
-          idx += 1
-          continue
-        }
-
-        // A non-terminal status frame ("Reconnecting…", "Trying again…", "Summarising
-        // earlier turns…"). `kind: 'other'` keeps it out of the collapsed process group,
-        // since the point is to be seen while it is happening.
-        if (event.type === 'notice') {
-          const noticeText = event.content
-          if (noticeText) {
-            const noticeKey = `stream-notice-${idx}`
-            const counter =
-              typeof event.attempt === 'number' && typeof event.maxAttempts === 'number'
-                ? ` (${event.attempt} of ${event.maxAttempts})`
-                : ''
-            items.push({
-              key: noticeKey,
-              kind: 'other',
-              node: (
-                <CompactMessageNotice
-                  key={noticeKey}
-                  kind='status'
-                  className='!p-0'
-                  title={`${noticeText}${counter}`}
-                  customTheme={customTheme}
-                  customThemeEnabled={customThemeEnabled}
-                  isDarkMode={isDarkMode}
-                  icon={<RotateCw size={14} className='shrink-0' aria-hidden='true' />}
-                >
-                  {noticeText}
-                  {counter}
-                </CompactMessageNotice>
-              ),
-            })
-          }
-          idx += 1
-          continue
-        }
-
-        // An in-order failure on a live stream, shown where the text stopped.
-        if (event.type === 'error' && event.errorEnvelope) {
-          items.push(renderErrorItem(`stream-error-${idx}`, event.errorEnvelope, false))
-          idx += 1
-          continue
-        }
-
-        if (event.type === 'text') {
-          let accumulatedText = event.delta || ''
-          let nextIdx = idx + 1
-          while (nextIdx < streamEvents.length) {
-            const nextEvent = streamEvents[nextIdx]
-            if (nextEvent?.type === 'text') {
-              accumulatedText += nextEvent.delta || ''
-              nextIdx += 1
-            } else {
-              break
-            }
-          }
-          if (accumulatedText.trim().length > 0) {
-            items.push(renderTextItem(`text-${idx}`, accumulatedText))
-          }
-          idx = nextIdx
-          continue
-        }
-
-        if (event.type === 'reasoning' && event.delta) {
-          if (getPreviousVisibleStreamType(idx) === 'reasoning') {
-            idx += 1
-            continue
-          }
-          let accumulatedReasoning = event.delta || ''
-          let nextIdx = idx + 1
-          while (nextIdx < streamEvents.length) {
-            const nextEvent = streamEvents[nextIdx]
-            if (nextEvent?.type === 'reasoning' && nextEvent.delta) {
-              accumulatedReasoning += nextEvent.delta
-              nextIdx += 1
-            } else if (nextEvent && isHiddenStreamSeparator(nextEvent, nextIdx)) {
-              nextIdx += 1
-            } else {
-              break
-            }
-          }
-          items.push(buildReasoningRenderItem(accumulatedReasoning, idx, `reasoning-${idx}`))
-          idx = nextIdx
-          continue
-        }
-
-        if (event.type === 'tool_call' && event.toolCall && event.complete) {
-          // Fallback path: if stream grouping did not produce an anchored group,
-          // still render via the shared tool-group card renderer.
-          const toolCall = event.toolCall
-          const fallbackGroup: ToolCallRenderGroup = {
-            id: toolCall.id,
-            name: toolCall.name,
-            args: toolCall.arguments,
-            results: toolCall.result ? [{ content: toolCall.result, is_error: false }] : [],
-            anchorIndex: idx,
-          }
-          const fallbackNode = renderToolCallGroupCard(fallbackGroup, `stream-fallback-${toolCall.id}-${idx}`)
-          if (fallbackNode) {
-            items.push({
-              key: `stream-fallback-tool-${toolCall.id}-${idx}`,
-              kind: isExcludedFromProcessRunGrouping(fallbackGroup.name, fallbackGroup.args) ? 'other' : 'process',
-              processType: 'tool',
-              node: fallbackNode,
-            })
-          }
-          idx += 1
-          continue
-        }
-
-        if (event.type === 'image' && event.url) {
-          const imageKey = `image-${idx}`
-          items.push({
-            key: imageKey,
-            kind: 'other',
-            node: renderImageNode({ key: imageKey, url: event.url, onClick: () => handleArtifactClick(event.url) }),
-          })
-        }
-
-        idx += 1
-      }
-
-      return items
-    }
+    const buildStreamNodes = (): MessageRenderItem[] => liveRenderItems.map(item => {
+      if (item.source === 'text') return { ...renderTextItem(item.key, item.text), ...item }
+      if (item.source === 'reasoning') return buildReasoningRenderItem(item.text, item.index, item.key)
+      if (item.source === 'tool') return { ...item, processType: 'tool', node: renderToolCallGroupCard(item.group, item.renderKey) }
+      const event = item.event
+      if (item.source === 'error') return renderErrorItem(item.key, event.errorEnvelope!, false)
+      if (item.source === 'image') return { ...item, node: renderImageNode({ key: item.key, url: event.url!, onClick: () => handleArtifactClick(event.url!) }) }
+      const counter = typeof event.attempt === 'number' && typeof event.maxAttempts === 'number'
+        ? ` (${event.attempt} of ${event.maxAttempts})` : ''
+      return { ...item, node: (
+        <CompactMessageNotice key={item.key} kind='status' className='!p-0' title={`${event.content}${counter}`}
+          customTheme={customTheme} customThemeEnabled={customThemeEnabled} isDarkMode={isDarkMode}
+          icon={<RotateCw size={14} className='shrink-0' aria-hidden='true' />}>
+          {event.content}{counter}
+        </CompactMessageNotice>
+      ) }
+    })
 
     const buildResponsesOutputItemsRenderItems = (responseItems: any[], baseIndex: number): MessageRenderItem[] => {
       const items: MessageRenderItem[] = []
@@ -1773,7 +1620,7 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
     // `contentToolGroupsByIndex` is keyed by index into `contentBlocks`. A user row never has tool
     // blocks and the fallback text block sits alone, so the map stays valid for `renderableBlocks`.
     const hookActivityItem = renderHookActivityItem()
-    const renderItems = editingState ? [] : hasStreamEvents ? buildStreamRenderItems() : buildContentBlockRenderItems(renderableBlocks)
+    const renderItems = editingState ? [] : hasStreamEvents ? buildStreamNodes() : buildContentBlockRenderItems(renderableBlocks)
     // Hook records have message ownership but no tool-call correlation. Attach them to the
     // last process segment before final prose; never invent a per-tool step number.
     if (hookActivityItem) {

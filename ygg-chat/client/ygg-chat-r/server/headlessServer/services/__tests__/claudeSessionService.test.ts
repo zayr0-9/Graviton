@@ -708,7 +708,7 @@ describe('ExitPlanMode escalation', () => {
     const persisted = f.sink.updateAssistantToolState.mock.calls.at(-1)![1]
     expect(persisted.contentBlocks.find((block: any) => block.id === 'exit').input).toMatchObject({ plan: expect.stringContaining('# Ship it'), planFilePath: planFile })
     expect(f.broker.resolve('stream', 'exit', 'switch_to_execute')).toBe(true)
-    await expect(decision).resolves.toMatchObject({ behavior: 'allow', updatedPermissions: [{ type: 'setMode', mode: 'default', destination: 'session' }] })
+    await expect(decision).resolves.toMatchObject({ behavior: 'allow', updatedPermissions: [{ type: 'setMode', mode: 'auto', destination: 'session' }] })
     // The run's shared control flips, so a queued successor run and the composer see Agent mode too.
     expect(control.mode).toBe('execute')
     // The Chat-mode guard reads the live mode, so edits unblock for the rest of this run.
@@ -850,7 +850,7 @@ describe('native plan mode', () => {
     await vi.waitFor(() => expect(f.broker.hasPending('stream', 'exit')).toBe(true))
     expect(f.emit.mock.calls.some(([event]) => event.type === 'operation_mode_upgrade_required' && event.toolName === 'ExitPlanMode')).toBe(true)
     f.broker.resolve('stream', 'exit', 'switch_to_execute')
-    await expect(decision).resolves.toMatchObject({ behavior: 'allow', updatedPermissions: [{ type: 'setMode', mode: 'default', destination: 'session' }] })
+    await expect(decision).resolves.toMatchObject({ behavior: 'allow', updatedPermissions: [{ type: 'setMode', mode: 'auto', destination: 'session' }] })
     expect(control.mode).toBe('execute')
     await expect(guard('Edit', { file_path: 'src/app.ts' })).resolves.toEqual({})
   })
@@ -870,8 +870,32 @@ describe('native plan mode', () => {
     })(), { close: vi.fn() }) as any)
     const final = await f.service.run(f.input)
     // The composer reads these back to restore plan mode per branch.
-    expect(f.rows[0].meta).toMatchObject({ claudePlanMode: true })
-    expect(final.meta).toMatchObject({ claudePlanMode: false })
+    expect(f.rows[0].meta).toMatchObject({ claudePlanMode: true, claudePermissionMode: 'default' })
+    // The approved plan runs in auto mode, and the branch keeps it for its next send.
+    expect(final.meta).toMatchObject({ claudePlanMode: false, claudePermissionMode: 'auto' })
+  })
+
+  it('keeps default mode after an approved plan when Allow all is on', async () => {
+    const { f, exit } = await nativePlanFixture('execute')
+    f.broker.initSession('stream', { autoApproveAll: true })
+    const decision = exit()
+    await vi.waitFor(() => expect(f.broker.hasPending('stream', 'exit')).toBe(true))
+    f.broker.resolve('stream', 'exit', 'switch_to_execute')
+    await expect(decision).resolves.toMatchObject({ behavior: 'allow', updatedPermissions: [{ type: 'setMode', mode: 'default', destination: 'session' }] })
+  })
+
+  it('shares the switch to auto mode with the orchestrator, so a queued successor run keeps it', async () => {
+    const f = fixture([assistant(), success])
+    f.input.request.claudePlanMode = true
+    const planControl: { active: boolean; auto?: boolean } = { active: true }
+    f.input.planControl = planControl
+    await f.service.run(f.input)
+    const options = f.sdk.query.mock.calls[0][0].options
+    const decision = options.canUseTool('ExitPlanMode', { plan: '# Plan' }, { signal: new AbortController().signal, toolUseID: 'exit' })
+    await vi.waitFor(() => expect(f.broker.hasPending('stream', 'exit')).toBe(true))
+    f.broker.resolve('stream', 'exit', 'switch_to_execute')
+    await expect(decision).resolves.toMatchObject({ behavior: 'allow' })
+    expect(planControl).toEqual({ active: false, auto: true })
   })
 
   it('switches Chat mode to Agent mode when the user approves the plan', async () => {

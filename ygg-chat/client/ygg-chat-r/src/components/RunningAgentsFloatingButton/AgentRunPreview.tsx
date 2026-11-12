@@ -8,6 +8,7 @@ import { BackgroundTasksIndicator } from '../StreamingThinkingIndicator/Backgrou
 import { buildAgentPreviewRows } from './agentPreviewContent'
 import { buildForkPreviewRows, createAgentPreviewRunsSelector } from './agentForkPreview'
 import { useCustomChatTheme, useHtmlDarkMode } from '../ThemeManager/themeConfig'
+import { ConversationLinkRootProvider } from '../MarkdownLink/markdownLinkRoot'
 
 export interface AgentPreviewScrollState { top: number; following: boolean }
 
@@ -45,6 +46,8 @@ export const AgentRunPreview = memo(function AgentRunPreview({ streamId, grouped
   if (!run) return <p className='p-4 text-sm text-neutral-500'>No captured transcript is available for this run. Use Open chat to view saved messages.</p>
 
   return (
+    // Relative file links in this run resolve against its conversation's working directory.
+    <ConversationLinkRootProvider conversationId={run.stream.conversationId}>
     <div className={fillHeight ? 'relative flex min-h-0 flex-1 flex-col' : 'relative min-h-0'}>
       <div ref={scrollRef} className={`${fillHeight ? 'min-h-0 flex-1' : 'h-[min(52vh,34rem)]'} overflow-y-auto overscroll-contain px-1 pb-3 thin-scrollbar`}
         aria-label={transcriptLabel} tabIndex={0}
@@ -85,5 +88,6 @@ export const AgentRunPreview = memo(function AgentRunPreview({ streamId, grouped
           if (element) element.scrollTop = element.scrollHeight
         }}>Jump to latest</button>}
     </div>
+    </ConversationLinkRootProvider>
   )
 })

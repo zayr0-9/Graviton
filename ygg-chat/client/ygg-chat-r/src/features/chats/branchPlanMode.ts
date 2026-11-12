@@ -45,7 +45,7 @@ export function saveClaudePlanModeDrafts(drafts: Record<string, boolean>): void 
   catch (error) { console.warn('Unable to save Claude plan mode selections', error) }
 }
 
-/** Records a plan mode choice at a branch point, newest last so the store drops the oldest. */
+/** Records a per-branch-point choice, newest last so the store drops the oldest. */
 export function withClaudePlanModeDraft(drafts: Record<string, boolean> | undefined, key: string, enabled: boolean): Record<string, boolean> {
   const next = { ...(drafts ?? {}) }
   delete next[key]

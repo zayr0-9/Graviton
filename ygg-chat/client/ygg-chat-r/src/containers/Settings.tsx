@@ -4,7 +4,7 @@ import { HOST_EXECUTION_CHANGED } from '../services/hostExecutionClient'
 import { buildSharedBrowserUrl } from '../helpers/remoteServerSettingsStorage'
 import React, { useEffect, useRef, useState } from 'react'
 import { ArrowLeft, ChevronDown, Moon, RefreshCw, Star, Sun, Trash2, X } from 'lucide-react'
-import ReactMarkdown from 'react-markdown'
+import { AppMarkdown } from '../components/MarkdownContent/AppMarkdown'
 import { SCROLLABLE_MARKDOWN_COMPONENTS } from '../components/MarkdownContent/MarkdownCodeBlock'
 import { useNavigate } from 'react-router-dom'
 import rehypeHighlight from 'rehype-highlight'
@@ -2513,9 +2513,9 @@ const Settings: React.FC = () => {
               </div>
               <div className='max-h-[calc(85vh-60px)] overflow-y-auto thin-scrollbar p-4'>
                 <div className='prose prose-sm max-w-none dark:prose-invert prose-headings:font-semibold prose-pre:rounded-lg'>
-                  <ReactMarkdown components={SCROLLABLE_MARKDOWN_COMPONENTS} remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[[rehypeHighlight, { detect: true }], rehypeKatex]}>
+                  <AppMarkdown components={SCROLLABLE_MARKDOWN_COMPONENTS} remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[[rehypeHighlight, { detect: true }], rehypeKatex]}>
                     {changelogMarkdown}
-                  </ReactMarkdown>
+                  </AppMarkdown>
                 </div>
               </div>
             </div>

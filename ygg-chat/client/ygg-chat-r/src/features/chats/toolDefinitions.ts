@@ -290,6 +290,7 @@ const OPENAI_LOCALLY_SUPPORTED_BUILTIN_TOOL_NAMES = new Set<string>([
   'subagent',
   'subagent_manager',
   'watcher',
+  'switch_mode',
 ])
 
 export const getToolsForOpenAIChatGPT = (): ToolDefinition[] => {

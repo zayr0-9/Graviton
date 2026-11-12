@@ -8,7 +8,7 @@ import 'boxicons/css/boxicons.min.css'
 import { ChevronRight, Flame, ListFilter, RotateCcw, ZoomIn, ZoomOut } from 'lucide-react'
 import type { JSX } from 'react'
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import ReactMarkdown from 'react-markdown'
+import { AppMarkdown } from '../MarkdownContent/AppMarkdown'
 import { SCROLLABLE_MARKDOWN_COMPONENTS } from '../MarkdownContent/MarkdownCodeBlock'
 import { useDispatch, useSelector } from 'react-redux'
 import { useChatNavigate as useNavigate } from '../ChatSelection/ChatSelectionProvider'
@@ -49,7 +49,6 @@ import type { RootState } from '../../store/store'
 import { parseId } from '../../utils/helpers'
 import stripMarkdownToText from '../../utils/markdownStripper'
 import { getCompactionPlaceholder } from '../../features/chats/summaryPresentation'
-// import { MarkdownLink } from '../MarkdownLink/MarkdownLink'
 import { localApi } from '../../utils/api'
 import { isNativeShell } from '../../platform/clientCapabilities'
 import { DeleteConfirmModal } from '../DeleteConfirmModal/DeleteConfirmModal'
@@ -4861,13 +4860,13 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                               key={`text-${idx}`}
                               className='prose prose-sm dark:prose-invert max-w-none text-sm break-words overflow-hidden'
                             >
-                              <ReactMarkdown
+                              <AppMarkdown
                                 components={SCROLLABLE_MARKDOWN_COMPONENTS}
                                 remarkPlugins={[remarkGfm]}
                                 rehypePlugins={[[rehypeHighlight, { detect: true }]]}
                               >
                                 {block.text}
-                              </ReactMarkdown>
+                              </AppMarkdown>
                             </div>
                           )
                         }
@@ -4938,13 +4937,13 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                         selectedNode.message.trim().length > 0 &&
                         !contentBlocks.some((b: any) => b.type === 'text' && b.text) && (
                           <div className='prose prose-sm dark:prose-invert max-w-none text-sm break-words overflow-hidden'>
-                            <ReactMarkdown
+                            <AppMarkdown
                               components={SCROLLABLE_MARKDOWN_COMPONENTS}
                               remarkPlugins={[remarkGfm]}
                               rehypePlugins={[[rehypeHighlight, { detect: true }]]}
                             >
                               {selectedNode.message}
-                            </ReactMarkdown>
+                            </AppMarkdown>
                           </div>
                         )}
                     </div>
@@ -4956,13 +4955,13 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                   <div
                     className='prose prose-sm dark:prose-invert max-w-none text-sm break-words overflow-x-hidden'
                   >
-                    <ReactMarkdown
+                    <AppMarkdown
                       components={SCROLLABLE_MARKDOWN_COMPONENTS}
                       remarkPlugins={[remarkGfm]}
                       rehypePlugins={[[rehypeHighlight, { detect: true }]]}
                     >
                       {selectedNode.message || '...'}
-                    </ReactMarkdown>
+                    </AppMarkdown>
                   </div>
                 )
               })()}
@@ -5004,9 +5003,9 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                   : 'Assistant Note'}
             </div>
             <div className='prose prose-sm dark:prose-invert max-w-none text-sm break-words overflow-y-auto thin-scrollbar'>
-              <ReactMarkdown components={SCROLLABLE_MARKDOWN_COMPONENTS} remarkPlugins={[remarkGfm]} rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
+              <AppMarkdown components={SCROLLABLE_MARKDOWN_COMPONENTS} remarkPlugins={[remarkGfm]} rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
                 {hoveredNote.note}
-              </ReactMarkdown>
+              </AppMarkdown>
             </div>
           </div>
         </div>
@@ -5070,9 +5069,9 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                       Parent Task
                     </div>
                     <div className='prose prose-sm dark:prose-invert max-w-none text-stone-700 dark:text-stone-300 prose-p:my-1 prose-headings:my-2 prose-pre:my-2 prose-pre:bg-stone-100 dark:prose-pre:bg-neutral-800 prose-code:text-orange-600 dark:prose-code:text-orange-400'>
-                      <ReactMarkdown components={SCROLLABLE_MARKDOWN_COMPONENTS} remarkPlugins={[remarkGfm]} rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
+                      <AppMarkdown components={SCROLLABLE_MARKDOWN_COMPONENTS} remarkPlugins={[remarkGfm]} rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
                         {parentMessage?.content || 'Parent Task'}
-                      </ReactMarkdown>
+                      </AppMarkdown>
                     </div>
                   </div>
 
@@ -5114,9 +5113,9 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                           {/* Show prompt/message first when it is not already present in content blocks */}
                           {shouldRenderNodeMessage && (
                             <div className='prose prose-sm dark:prose-invert max-w-none text-stone-800 dark:text-stone-200 prose-p:my-1 prose-headings:my-2 prose-pre:my-2 prose-pre:bg-stone-100 dark:prose-pre:bg-neutral-800 prose-code:text-orange-600 dark:prose-code:text-orange-400 prose-pre:text-xs prose-pre:overflow-x-auto mb-3'>
-                              <ReactMarkdown components={SCROLLABLE_MARKDOWN_COMPONENTS} remarkPlugins={[remarkGfm]} rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
+                              <AppMarkdown components={SCROLLABLE_MARKDOWN_COMPONENTS} remarkPlugins={[remarkGfm]} rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
                                 {node.message}
-                              </ReactMarkdown>
+                              </AppMarkdown>
                             </div>
                           )}
 
@@ -5133,9 +5132,9 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                                       key={blockIdx}
                                       className='prose prose-sm dark:prose-invert max-w-none text-stone-700 dark:text-stone-300 prose-p:my-1 prose-pre:my-2 prose-pre:bg-stone-100 dark:prose-pre:bg-neutral-800 prose-code:text-orange-600 dark:prose-code:text-orange-400 prose-pre:text-xs prose-pre:overflow-x-auto'
                                     >
-                                      <ReactMarkdown components={SCROLLABLE_MARKDOWN_COMPONENTS} remarkPlugins={[remarkGfm]} rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
+                                      <AppMarkdown components={SCROLLABLE_MARKDOWN_COMPONENTS} remarkPlugins={[remarkGfm]} rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
                                         {textContent}
-                                      </ReactMarkdown>
+                                      </AppMarkdown>
                                     </div>
                                   )
                                 }
@@ -5226,7 +5225,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                                         </span>
                                       </summary>
                                       <div className='mt-2 prose prose-sm dark:prose-invert max-w-none text-stone-600 dark:text-stone-400 prose-p:my-1'>
-                                        <ReactMarkdown components={SCROLLABLE_MARKDOWN_COMPONENTS} remarkPlugins={[remarkGfm]}>{block.content}</ReactMarkdown>
+                                        <AppMarkdown components={SCROLLABLE_MARKDOWN_COMPONENTS} remarkPlugins={[remarkGfm]}>{block.content}</AppMarkdown>
                                       </div>
                                     </details>
                                   )

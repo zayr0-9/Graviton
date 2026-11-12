@@ -176,7 +176,7 @@ The server loop pauses **mid-turn**, per tool call, to ask the renderer for a de
 - **Where it pauses**: `createChatPausingExecutor` (`chatOrchestrator.ts:95`) wraps the base
   executor. Before delegating it `await broker.requestDecision({ streamId, toolCallId, signal })`.
   Pause is skipped when `broker.isAutoApproveAll(streamId)` or `shouldBypassPermission(...)`
-  (`ALWAYS_BYPASS_TOOLS = skill_manager, multi_call, context_status`; manager discovery/management actions bypass, but `mcp_manager invoke` and `custom_tool_manager invoke` require ordinary approval). `plan_md` with `action==='clarify'` is intercepted here and routed
+  (`ALWAYS_BYPASS_TOOLS = skill_manager, multi_call, context_status, switch_mode`; manager discovery/management actions bypass, but `mcp_manager invoke` and `custom_tool_manager invoke` require ordinary approval). `plan_md` with `action==='clarify'` is intercepted here and routed
   through the broker's clarify channel (the base executor always throws on it).
 - **Broker** (`decisionBroker.ts`): key `${streamId}::${toolCallId}` (conversationId is NOT
   part of the key). Holds one pending promise per (stream, toolCall) + per-stream
@@ -377,6 +377,13 @@ resume resolver thunks, and the manual-compaction `compactBranch` thunk.
   Initial mode and post-compaction state must be present in model history too.
 - Chat button, Shift+Tab, and the error switch-mode action share `changeOperationMode`.
   Tool-triggered upgrades continue to require approval and use the same server mode state.
+- Native-loop models can request a switch with the `switch_mode` built-in
+  (`services/operationModeSwitchTool.ts`). `agent` reuses `requestOperationModeUpgrade`, so the
+  user approves it in the same upgrade dialog (which shows the model's `reason`); `chat` applies
+  immediately because it only narrows permissions. Both call `OperationModeControl.change`, so
+  notices and composer state match a manual toggle. After a decline the run refuses to re-prompt
+  until new user input is delivered. It is direct-only (rejected inside `multi_call`/`repl`),
+  excluded from subagents, and fails without live mode control. Claude runs do not have it yet.
 
 ## Queued user submissions during a run
 

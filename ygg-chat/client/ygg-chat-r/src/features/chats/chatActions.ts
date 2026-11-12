@@ -5,6 +5,7 @@ import { getClientId, newClientId } from '../../helpers/clientId'
 import { isCleanStartBranchEdit, isSummaryBranchEdit, isProviderHandoffEdit, resolveBranchModelSelection, resolveEditBranchModelSelection, resolveComposerSummaryHandoff } from './branchModelSelection'
 import { resolveBranchFastMode } from './branchFastMode'
 import { resolveBranchPlanMode } from './branchPlanMode'
+import { resolveAnchoredClaudeAutoMode, resolveBranchClaudeAutoMode } from './branchClaudeAutoMode'
 import { defaultToolApproval, resolveAnchoredToolApproval, resolveBranchToolApproval, resolveHandoffToolApproval } from './branchToolApproval'
 import { isCommittedCompaction } from '../../../../../shared/compaction'
 import { getPendingFullAccessNotification, isFullAccessEnabled } from '../../helpers/fullAccessSettings'
@@ -1096,7 +1097,8 @@ export const sendMessage = createAsyncThunk<
           toolAutoApprove: summaryHandoff ? resolveHandoffToolApproval(modelSelectionState, summaryHandoff.id, serverProvider)
             : isBranch ? resolveAnchoredToolApproval(modelSelectionState, parent, conversationId, serverProvider)
             : resolveBranchToolApproval(modelSelectionState, providedBranchPath ?? modelSelectionState.conversation.currentPath, conversationId, providedLineageId === undefined ? modelSelectionState.conversation.currentLineageId : providedLineageId, serverProvider),
-          claudeAutoMode: modelSelectionState.claudeAutoMode,
+          claudeAutoMode: isBranch ? resolveAnchoredClaudeAutoMode(modelSelectionState, parent, conversationId)
+            : resolveBranchClaudeAutoMode(modelSelectionState, providedBranchPath ?? modelSelectionState.conversation.currentPath, conversationId),
           claudeUltracode: modelSelectionState.claudeUltracode,
           claudePlanMode: resolveBranchPlanMode(modelSelectionState, providedBranchPath ?? modelSelectionState.conversation.currentPath, conversationId),
           hooksEnabled: isElectronMode,
@@ -1573,7 +1575,8 @@ export const editMessageWithBranching = createAsyncThunk<
           toolAutoApprove: (modelSelectionState.composition.editingBranch ? modelSelectionState.composition.branchEditModes?.toolAutoApprove : undefined)
             ?? (isProviderHandoffEdit(modelSelectionState, originalMessageId) ? defaultToolApproval(modelSelectionState, serverProvider)
               : resolveAnchoredToolApproval(modelSelectionState, parentMessageId, conversationId, serverProvider)),
-          claudeAutoMode: modelSelectionState.claudeAutoMode,
+          claudeAutoMode: (modelSelectionState.composition.editingBranch ? modelSelectionState.composition.branchEditModes?.claudeAutoMode : undefined)
+            ?? resolveAnchoredClaudeAutoMode(modelSelectionState, parentMessageId, conversationId),
           claudeUltracode: modelSelectionState.claudeUltracode,
           claudePlanMode: (modelSelectionState.composition.editingBranch ? modelSelectionState.composition.branchEditModes?.claudePlanMode : undefined)
             ?? resolveBranchPlanMode(modelSelectionState, providedBranchPath ?? modelSelectionState.conversation.currentPath, conversationId),
@@ -1828,7 +1831,7 @@ export const sendMessageToBranch = createAsyncThunk<
           currentLineageId: providedLineageId === undefined ? state.chat.conversation.currentLineageId : providedLineageId,
           toolAutoApprove: isSummaryBranchEdit(modelSelectionState, parentId) ? defaultToolApproval(modelSelectionState, serverProvider)
             : resolveAnchoredToolApproval(modelSelectionState, parentId, conversationId, serverProvider),
-          claudeAutoMode: modelSelectionState.claudeAutoMode,
+          claudeAutoMode: resolveAnchoredClaudeAutoMode(modelSelectionState, parentId, conversationId),
           claudeUltracode: modelSelectionState.claudeUltracode,
           claudePlanMode: resolveBranchPlanMode(modelSelectionState, providedBranchPath ?? modelSelectionState.conversation.currentPath, conversationId),
           hooksEnabled: isElectronMode,

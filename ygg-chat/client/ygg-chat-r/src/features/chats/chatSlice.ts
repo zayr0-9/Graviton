@@ -2,6 +2,7 @@ import { createSlice, current, PayloadAction } from '@reduxjs/toolkit'
 import { composerApprovalHandoff, composerProvider, loadBranchToolApprovalDrafts, resolveComposerToolApproval, saveBranchToolApprovalDrafts } from './branchToolApproval'
 import { loadBranchFastModeDrafts, saveBranchFastModeDrafts } from './branchFastMode'
 import { loadClaudePlanModeDrafts, saveClaudePlanModeDrafts, withClaudePlanModeDraft } from './branchPlanMode'
+import { loadClaudeAutoModeDrafts, saveClaudeAutoModeDrafts, withClaudeAutoModeDraft } from './branchClaudeAutoMode'
 import { branchModelKey, loadBranchModelDrafts, saveBranchModelDrafts, type BranchModelSelection } from './branchModelSelection'
 import { normalizeChatErrorEnvelope } from '../../../../../shared/chatErrors'
 import providersList from '../../../../../shared/providers.json'
@@ -277,6 +278,7 @@ const makeInitialState = (): ChatState => {
     ...claudeToolApprovalState(loadClaudeToolApprovalDefault()),
     claudeUltracode: loadClaudeUltracode(),
     claudePlanModeDrafts: loadClaudePlanModeDrafts(),
+    claudeAutoModeDrafts: loadClaudeAutoModeDrafts(),
     operationMode: 'plan',
     operationModeChanges: {},
     operationModeDrafts: {},
@@ -1935,9 +1937,23 @@ export const chatSlice = createSlice({
       state.toolAutoApprove = false
     },
 
-    // Session-only, like toolAutoApprove; the launch default is saved from Settings.
+    // Auto mode belongs to the branch, like plan mode: the choice is kept at the selected tip (or the
+    // edit being composed). With no conversation yet it sets the session's launch default, which a
+    // branch with no recorded choice follows (the saved default comes from Settings).
     claudeAutoModeSet: (state, action: PayloadAction<boolean>) => {
-      state.claudeAutoMode = action.payload
+      if (state.composition.editingBranch) {
+        state.composition.branchEditModes ??= {}
+        state.composition.branchEditModes.claudeAutoMode = action.payload
+        return
+      }
+      const { currentConversationId, currentPath } = state.conversation
+      if (!currentConversationId) {
+        state.claudeAutoMode = action.payload
+        return
+      }
+      state.claudeAutoModeDrafts = withClaudeAutoModeDraft(state.claudeAutoModeDrafts,
+        branchModelKey(currentConversationId, currentPath.at(-1) ?? null), action.payload)
+      saveClaudeAutoModeDrafts(state.claudeAutoModeDrafts)
     },
 
     claudeToolApprovalDefaultApplied: (state, action: PayloadAction<ClaudeToolApproval>) => {

@@ -2,6 +2,7 @@
 paths:
   - "client/ygg-chat-r/electron/main.ts"
   - "client/ygg-chat-r/electron/rendererRecovery.ts"
+  - "client/ygg-chat-r/electron/externalLinks.ts"
   - "client/ygg-chat-r/electron/preload.ts"
   - "client/ygg-chat-r/electron/electronHostAdapter.ts"
   - "client/ygg-chat-r/server/createYggServer.ts"
@@ -150,3 +151,7 @@ Recovery validation (2026-10-23): 35 recovery + 7 quit unit tests passed; full m
 `client-errors.ndjson` uses the same window through `electron/clientErrorLog.ts`: renderer telemetry (`logs:appendClientError`) and recovery records append through one main-process writer. That writer drops records older than today plus the two previous local days, at startup and on the first append of each new day. Records without a readable `ts` are dropped too. The prune is an atomic rewrite (temp file + rename). There is no per-day byte cap on this file. Both logs share `retentionCutoff` so their windows cannot drift. Tests: `server/__tests__/clientErrorLog.test.ts`.
 
 Ordinary-send admission rejections (`lineage_mismatch`, "The selected parent is not the current branch head") log `[LineageForkDebug][Main] admission-mismatch` in the main log with a `reason` (`AdmissionMismatchReason` in `shared/runAdmission.ts`) and the resolved lineage/head/path state. The reason is returned in the 409. The renderer then logs `[LineageForkDebug][Renderer] admission-rejected` to `client-errors.ndjson` with its selected lineage/path, selection revisions and the conversation's stream slots.
+
+### Link opening and navigation guards
+
+`electron/externalLinks.ts` is the only place main hands a renderer-supplied link to the OS. `installNavigationGuards` runs on the main and floating windows: `will-navigate` away from the app document is cancelled, and `setWindowOpenHandler` always denies. In both cases the URL is routed to `openExternalLink` (file URLs go to `shell.openPath`). Web, mail and editor schemes open directly. Other app schemes need a native confirmation. Dangerous schemes (`shared/linkPolicy.ts`) are refused. `isAppDocumentUrl` is shared with renderer recovery, so both agree on what counts as the app's own document. The renderer side is documented in `agent_md_renderer.md` under "Markdown links". Tests: `server/__tests__/externalLinks.test.ts`.

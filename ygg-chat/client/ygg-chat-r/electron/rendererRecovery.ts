@@ -1,7 +1,6 @@
 import type { BrowserWindow, MessageBoxOptions } from 'electron'
 import { randomUUID } from 'node:crypto'
-import { fileURLToPath } from 'node:url'
-import { win32 } from 'node:path'
+import { isAppDocumentUrl } from './externalLinks.js'
 
 interface RecoveryOptions {
   entryUrl: string
@@ -55,18 +54,7 @@ export function installRendererRecovery(window: BrowserWindow, options: Recovery
       console.error('[Electron recovery] Could not write diagnostic record:', event, failure.reason)
     }
   }
-  const trusted = (url: string) => {
-    try {
-      const candidate = new URL(url)
-      const filePath = (value: URL) => win32.normalize(fileURLToPath(value, { windows: true }))
-        .replace(/^[a-z]:/, drive => drive.toUpperCase())
-      const samePath = options.versions.platform === 'win32' && entry.protocol === 'file:' && candidate.protocol === 'file:'
-        ? filePath(candidate) === filePath(entry)
-        : candidate.pathname === entry.pathname
-      return candidate.protocol === entry.protocol && candidate.host === entry.host &&
-        samePath && candidate.search === entry.search && !candidate.username && !candidate.password
-    } catch { return false }
-  }
+  const trusted = (url: string) => isAppDocumentUrl(entry, url, options.versions.platform)
 
   async function prompt() {
     if (!alive() || !incident || loading || !window.isVisible() || window.isMinimized()) return

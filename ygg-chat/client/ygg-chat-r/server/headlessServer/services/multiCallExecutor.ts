@@ -4,7 +4,7 @@ import type { ToolExecutionContext, ToolExecutor } from './toolLoopService.js'
 
 const MAX_CALLS = 20
 const MAX_CONCURRENCY = 4
-const FORBIDDEN_NESTED_TOOLS = new Set(['multi_call', 'html_renderer'])
+const FORBIDDEN_NESTED_TOOLS = new Set(['multi_call', 'html_renderer', 'switch_mode'])
 
 type NestedCall = { tool?: unknown; toolName?: unknown; args?: unknown }
 

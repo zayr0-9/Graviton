@@ -69,6 +69,19 @@ export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
     inputSchema: { type: 'object', properties: {} },
   },
   {
+    name: 'switch_mode',
+    enabled: true,
+    description: 'Switch this conversation between Chat mode (read-only investigation and planning) and Agent mode (edits, commands, mutating tools). agent: asks the user to approve in a dialog and waits; use it when the user wants changes made and you are in Chat mode, not to bypass a decision the user already made. If the user declines, stay in Chat mode and do not ask again unless they request it. chat: switches immediately without approval; use it when the user asks you to stop making changes or to return to discussion/planning. Calls already running are not cancelled. Call directly, not inside multi_call or repl.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        mode: { type: 'string', enum: ['chat', 'agent'], description: 'Target mode.' },
+        reason: { type: 'string', minLength: 1, maxLength: 500, description: 'One short sentence shown to the user explaining why you are switching.' },
+      },
+      required: ['mode', 'reason'],
+    },
+  },
+  {
     name: 'watcher',
     enabled: true,
     description: 'Register branch-scoped asynchronous watches. start returns immediately. Completion submits an automated user message to the same branch at a safe boundary, continuing a live run or starting a successor after normal completion; also pushes a visible notification. Stopped/failed/unavailable branches report delivery failure. No shell conditions. Watches are memory-only; status/list do not wait.',

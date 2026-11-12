@@ -1,3 +1,4 @@
+import os from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { describe, expect, it } from 'vitest'
@@ -31,5 +32,11 @@ describe('normalizeShellPath', () => {
   it.skipIf(process.platform !== 'win32')('converts Windows drive and UNC URLs using native rules', () => {
     expect(normalizeShellPath('file:///C:/Users/test/notes%20one.md')).toBe('C:\\Users\\test\\notes one.md')
     expect(normalizeShellPath('file://server/share/notes.md')).toBe('\\\\server\\share\\notes.md')
+  })
+
+  it('expands home-relative paths from Markdown links', () => {
+    expect(normalizeShellPath('~/notes.md')).toBe(path.join(os.homedir(), 'notes.md'))
+    expect(normalizeShellPath('~')).toBe(os.homedir())
+    expect(normalizeShellPath('~user/notes.md')).toBe('~user/notes.md')
   })
 })
