@@ -227,6 +227,7 @@ export class CodexResponsesProvider {
       reader: streamOpen.reader,
       firstRead: streamOpen.firstRead,
       allowCommentaryFallbackText: input.allowCommentaryFallbackText,
+      registerPartialOutput: input.providerInput.registerPartialOutput,
     })
   }
 
@@ -239,6 +240,7 @@ export class CodexResponsesProvider {
       emit: input.emit,
       modelName: input.model,
       allowCommentaryFallbackText: input.allowCommentaryFallbackText,
+      registerPartialOutput: input.providerInput.registerPartialOutput,
     })
   }
 

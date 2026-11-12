@@ -1,4 +1,4 @@
-import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import React, { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import { useChatNavigate as useNavigate } from '../ChatSelection/ChatSelectionProvider'
 import { getChatSelectionHref } from '../../features/chats/chatSelection'
@@ -6,6 +6,7 @@ import { selectCurrentConversationId, selectCurrentPath, selectCurrentViewStream
 import type { Conversation } from '../../features/conversations/conversationTypes'
 import type { BranchDebugData, BranchDebugRow } from '../../features/chats/branchDebug'
 import { uiActions, type UiNotification } from '../../features/ui'
+import { runningAgentsUiActions } from '../../features/ui/runningAgentsUiSlice'
 import { useAppDispatch, useAppSelector } from '../../hooks/redux'
 import {
   buildAgentForkGroups,
@@ -21,9 +22,9 @@ import { getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from '../Theme
 import './agentsPillMotion.css'
 import { AgentRunPreview } from './AgentRunPreview'
 import { AgentMessageTooltip } from './AgentMessageTooltip'
-import { Expand, Layers } from 'lucide-react'
+import { Expand, EyeOff, Layers } from 'lucide-react'
 import { AgentsViewSwitch } from './AgentsViewSwitch'
-import { AgentsMonitorGrid } from './AgentsMonitorGrid'
+import { AgentsMonitorGrid, useAgentGridForks } from './AgentsMonitorGrid'
 import { useAgentsPillResize } from './useAgentsPillResize'
 import { getAgentNotificationPreview } from './agentNotificationTarget'
 import { createEmptyStreamState } from '../../features/chats/streamHelpers'
@@ -398,6 +399,8 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
     [activeStreams, streamHistory]
   )
   const notifications = useAppSelector(state => state.ui.notifications)
+  const hiddenForks = useAppSelector(state => state.runningAgentsUi.hiddenForks)
+  const collapsedForks = useAppSelector(state => state.runningAgentsUi.collapsedForks)
   const currentConversationId = useAppSelector(selectCurrentConversationId)
   const currentPath = useAppSelector(selectCurrentPath)
   const branchDebugQuery = useConversationBranchDebugData(codexDevLogsEnabled ? currentConversationId : null)
@@ -426,6 +429,11 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
   const [branchDebugOpen, setBranchDebugOpen] = useState(false)
   const [inlineNotification, setInlineNotification] = useState<UiNotification | null>(null)
   const gridBody = gridView && !selectedItem
+  const { hiddenList: hiddenGridForks } = useAgentGridForks(activeStreams, streamHistory, hiddenForks)
+  const [hiddenListOpen, setHiddenListOpen] = useState(false)
+  const hiddenListId = useId()
+  const hiddenToggleRef = useRef<HTMLButtonElement>(null)
+  const showHiddenToggle = expanded && gridBody && hiddenGridForks.length > 0
   const contentRef = useRef<HTMLDivElement>(null)
   const [shellSize, setShellSize] = useState<{ width: number; height: number } | null>(null)
 
@@ -830,6 +838,22 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
                   key='expanded-actions'
                   className='flex shrink-0 items-center gap-1.5'
                 >
+                  {showHiddenToggle && <button ref={hiddenToggleRef} type='button' aria-expanded={hiddenListOpen} aria-controls={hiddenListId}
+                    title='Hidden from grid'
+                    onClick={event => {
+                      event.stopPropagation()
+                      setHiddenListOpen(open => !open)
+                    }}
+                    className={`flex h-10 shrink-0 items-center gap-1.5 rounded-full px-3 text-sm font-semibold transition-[background-color,color] duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 ${hiddenListOpen
+                      ? 'bg-blue-50 text-blue-700 dark:bg-orange-500/15 dark:text-orange-100'
+                      : 'text-neutral-500 hover:bg-white/70 dark:text-neutral-400 dark:hover:bg-white/10'}`}
+                    style={customThemeEnabled ? hiddenListOpen ? {
+                      backgroundColor: getThemeModeColor(customTheme.colors.composerToggleActiveBg, isDarkMode),
+                      color: getThemeModeColor(customTheme.colors.composerToggleActiveText, isDarkMode),
+                    } : { color: floatingButtonText } : undefined}>
+                    <EyeOff size={18} strokeWidth={2.25} aria-hidden='true' />
+                    {hiddenGridForks.length} hidden
+                  </button>}
                   <button type='button' aria-label='Group steps' title='Group steps' aria-pressed={groupPreviewSteps}
                     onClick={event => {
                       event.stopPropagation()
@@ -914,6 +938,18 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
                     grouped={groupPreviewSteps}
                     onOpenFork={stream => openPreview(stream, true)}
                     onOpenChat={navigateToStream}
+                    hiddenForks={hiddenForks}
+                    onHideFork={fork => dispatch(runningAgentsUiActions.forkHidden({ key: fork.key,
+                      streamIds: [...fork.activeStreams, ...fork.completedStreams].map(stream => stream.streamId) }))}
+                    onShowFork={key => dispatch(runningAgentsUiActions.forkShown(key))}
+                    onShowAllForks={() => dispatch(runningAgentsUiActions.allForksShown())}
+                    hiddenListOpen={hiddenListOpen}
+                    hiddenListId={hiddenListId}
+                    onHiddenListOpenChange={setHiddenListOpen}
+                    hiddenToggleRef={hiddenToggleRef}
+                    collapsedForks={collapsedForks}
+                    onToggleForkCollapsed={(key, collapsed) => dispatch(collapsed
+                      ? runningAgentsUiActions.forkCollapsed(key) : runningAgentsUiActions.forkExpanded(key))}
                   />
                 ) : selectedItem ? (
                   <section className={pillResize.size ? 'flex min-h-0 flex-1 flex-col' : undefined} aria-label='Agent run preview' onKeyDown={event => {

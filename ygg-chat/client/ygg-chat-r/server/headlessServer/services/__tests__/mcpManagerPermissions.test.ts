@@ -46,6 +46,21 @@ describe('MCP manager permissions', () => {
     expect(() => assertToolAllowedWithoutAutoApprove(call)).toThrow('requires auto-approve')
   })
 
+  it('requires approval for credential reset, permits approval and blocks unattended reset', async () => {
+    const broker = new DecisionBroker()
+    broker.initSession('reauth-run', { autoApproveAll: false })
+    const base = vi.fn().mockResolvedValue({ success: true })
+    const emit = vi.fn()
+    const execute = createChatPausingExecutor({ broker, streamId: 'reauth-run', base, emit })
+    const call = { id: 'reauth', name: 'mcp_manager', arguments: { action: 'reauthenticate', name: 'demo' } }
+    const pending = execute(call, context)
+    expect(emit).toHaveBeenCalledWith(expect.objectContaining({ type: 'permission_required' }))
+    expect(base).not.toHaveBeenCalled()
+    broker.resolve('reauth-run', 'reauth', 'allow_once')
+    await expect(pending).resolves.toEqual({ success: true })
+    expect(() => assertToolAllowedWithoutAutoApprove(call)).toThrow('requires auto-approve')
+  })
+
   it('allows invoke after a live switch to Chat mode during approval', async () => {
     const broker = new DecisionBroker()
     broker.initSession('mcp-run', { autoApproveAll: false })

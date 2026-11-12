@@ -26,7 +26,7 @@ vi.mock('../../features/chats', () => ({
 }))
 vi.mock('../../hooks/redux', () => ({
   useAppDispatch: () => vi.fn(),
-  useAppSelector: (selector: (state: any) => unknown) => selector({ ui: { notifications: [] } }),
+  useAppSelector: (selector: (state: any) => unknown) => selector({ ui: { notifications: [] }, runningAgentsUi: { expandedSize: null, hiddenForks: {}, collapsedForks: [] } }),
 }))
 vi.mock('../../hooks/useRunningAgentStreams', () => ({
   useRunningAgentStreams: () => ({ activeStreams: [], streamHistory: [], streamingRoot: { byId: {} } }),
@@ -38,7 +38,7 @@ vi.mock('./useAgentsPillResize', () => ({
   useAgentsPillResize: () => ({ size: null, limits: { width: 1000 }, dragging: false }),
 }))
 vi.mock('./AgentRunPreview', () => ({ AgentRunPreview: () => null }))
-vi.mock('./AgentsMonitorGrid', () => ({ AgentsMonitorGrid: () => null }))
+vi.mock('./AgentsMonitorGrid', () => ({ AgentsMonitorGrid: () => null, useAgentGridForks: () => ({ forks: [], hiddenList: [] }) }))
 
 const render = () => renderToStaticMarkup(<RunningAgentsFloatingButton onOpenApps={() => {}} />)
 

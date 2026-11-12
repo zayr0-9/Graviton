@@ -25,6 +25,24 @@ function createSseStream(events: any[]) {
 }
 
 describe('OpenAiChatgptProvider', () => {
+  it('keeps commentary in display blocks on a failed response without inventing a final answer', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue({ ok: true, status: 200,
+      headers: new Headers({ 'content-type': 'text/event-stream' }), body: createSseStream([
+        { type: 'response.output_item.added', item: { id: 'progress', type: 'message', role: 'assistant', phase: 'commentary' } },
+        { type: 'response.output_text.delta', item_id: 'progress', delta: 'Checking files.' },
+        { type: 'response.failed', response: { error: { message: 'Connection failed' } } },
+      ]), text: async () => '',
+    } as any)
+    const events: any[] = []
+    let failure: any
+    try {
+      await new OpenAiChatgptProvider().generate({ modelName: 'gpt-5.5', history: [], userContent: 'Inspect' }, event => events.push(event))
+    } catch (error) { failure = error }
+    expect(failure).toBeDefined()
+    expect(failure.partialOutput.contentBlocks).toEqual([{ type: 'text', content: 'Checking files.', index: 0 }])
+    expect(events).toContainEqual({ type: 'chunk', part: 'text', delta: 'Checking files.' })
+  })
+
   it.each([
     ['gpt-5.5', 'priority'],
     ['gpt-5.5', undefined],
@@ -431,14 +449,14 @@ describe('OpenAiChatgptProvider', () => {
         expect.objectContaining({ type: 'function_call', call_id: 'call-1', output_index: 2 }),
       ])
     )
-    expect(events).toContainEqual({ type: 'chunk', part: 'text', delta: 'Final safe answer' })
-    expect(events).not.toContainEqual(
-      expect.objectContaining({
-        type: 'chunk',
-        part: 'text',
-        delta: expect.stringContaining('assistant to=functions.read_file'),
-      })
+    expect(events).toContainEqual({ type: 'chunk', part: 'text', delta: '\n\nFinal safe answer' })
+    // Commentary is displayed verbatim, but is neither the selected final answer
+    // nor a tool invocation (only the structured function_call is executed).
+    expect(events).toContainEqual(
+      expect.objectContaining({ type: 'chunk', part: 'text', delta: expect.stringContaining('assistant to=functions.read_file') })
     )
+    expect(result.contentBlocks?.filter((block: any) => block.type === 'text').map((block: any) => block.content))
+      .toEqual(['assistant to=functions.read_file {"path":"/tmp/localServer.ts"}', 'Final safe answer'])
     expect(infoSpy).toHaveBeenCalledWith(
       '[Codex Usage]',
       expect.objectContaining({
@@ -524,7 +542,7 @@ describe('OpenAiChatgptProvider', () => {
 
     const thinkingBlocks = (result.contentBlocks || []).filter((block: any) => block?.type === 'thinking')
     expect(thinkingBlocks).toHaveLength(1)
-    expect(thinkingBlocks[0]).toEqual({ type: 'thinking', content: fullReasoning })
+    expect(thinkingBlocks[0]).toEqual({ type: 'thinking', content: fullReasoning, index: 0 })
 
     const responsesBlock = (result.contentBlocks || []).find((block: any) => block?.type === 'responses_output_items') as any
     const reasoningItem = responsesBlock?.items?.find((item: any) => item?.type === 'reasoning')

@@ -77,7 +77,7 @@ class HookDiagnosticsTest(unittest.TestCase):
 
     def test_generation_shape_and_model_json_failures(self):
         for response, code in (([], 'invalid_response_shape'), ({'text': 'private non-JSON model output'}, 'invalid_model_json')):
-            exit_code, result, stderr = self.run_main([self.branches(), response])
+            exit_code, result, stderr = self.run_main([self.branches(), response, response])
             self.assertEqual(exit_code, 1)
             self.assertEqual(result['outcomeCode'], code)
             self.assertEqual(result['diagnostic']['stage'], 'parse_generation')
@@ -121,6 +121,97 @@ class HookDiagnosticsTest(unittest.TestCase):
         for secret in ('two word secret', 'user:pass', 'token=abc', 'sk-privatekey', 'note text'):
             self.assertNotIn(secret, detail)
         self.assertLessEqual(len(hook._safe_error_detail('x' * 1000)), 400)
+
+
+class BranchAnchorTest(unittest.TestCase):
+    @staticmethod
+    def row(id, parent=None, kind=None, role='user', **fields):
+        return dict(id=id, parent_id=parent, role=role, content=id,
+                    meta=json.dumps({'kind': kind}) if kind else None, **fields)
+
+    def anchor(self, rows, tip):
+        by_id = {row['id']: row for row in rows}
+        chain, seen = [], set()
+        while tip in by_id and tip not in seen:
+            seen.add(tip)
+            chain.append(by_id[tip])
+            tip = by_id[tip]['parent_id']
+        result = hook._find_branch_anchor(rows, chain)
+        return result['id'] if result else None
+
+    def test_injected_prefix_at_nested_fork_targets_human_not_reminder(self):
+        r = self.row
+        rows = [r('root'), r('reply', 'root', role='assistant'), r('other', 'reply'),
+                r('prefix', 'reply', 'context_injection'), r('mode', 'prefix', 'operation_mode_change'),
+                r('human', 'mode'), r('answer', 'human', role='assistant'), r('followup', 'answer')]
+        self.assertEqual(self.anchor(rows, 'followup'), 'human')
+
+    def test_root_branches_with_separate_and_shared_prefixes(self):
+        r = self.row
+        for rows in ([r('prefix', kind='context_injection'), r('human', 'prefix'), r('other')],
+                     [r('prefix', kind='context_injection'), r('human', 'prefix'), r('other', 'prefix')],
+                     [r('prefix', kind='context_injection'), r('human', 'prefix'),
+                      r('prefix2', kind='context_injection'), r('other', 'prefix2')]):
+            with self.subTest(rows=rows):
+                self.assertEqual(self.anchor(rows, 'human'), 'human')
+                self.assertEqual(self.anchor(rows, 'other'), 'other')
+
+    def test_linear_branch_and_dangling_generated_sibling_do_not_create_note(self):
+        r = self.row
+        rows = [r('prefix', kind='context_injection'), r('human', 'prefix'),
+                r('answer', 'human', role='assistant'), r('followup', 'answer')]
+        self.assertIsNone(self.anchor(rows, 'followup'))
+        rows.append(r('unused', kind='context_injection'))
+        self.assertIsNone(self.anchor(rows, 'followup'))
+
+    def test_nearest_nested_fork_and_route_isolation(self):
+        r = self.row
+        rows = [r('root'), r('other'), r('answer', 'root', role='assistant'),
+                r('prefixA', 'answer', 'context_injection'), r('a', 'prefixA'),
+                r('prefixB', 'answer', 'context_injection'), r('b', 'prefixB')]
+        self.assertEqual(self.anchor(rows, 'a'), 'a')
+        self.assertEqual(self.anchor(rows, 'b'), 'b')
+
+    def test_generated_rows_cannot_own_notes_but_human_quotes_and_blocks_can(self):
+        for kind in ('context_injection', 'operation_mode_change', 'full_access_change',
+                     'watcher_completion', 'compaction_instruction', 'compaction_resume', 'compaction_summary'):
+            for meta in ({'kind': kind}, json.dumps({'kind': kind})):
+                row = self.row('generated')
+                row['meta'] = meta
+                self.assertFalse(hook._is_human_message(row))
+        for meta in (None, '', '{broken', '[]', [], {'kind': 'ordinary'}):
+            row = self.row('human')
+            row.update(meta=meta, content='<system-reminder>quoted by a human</system-reminder>',
+                       content_blocks=[{'type': 'context_injection'}])
+            self.assertTrue(hook._is_human_message(row))
+
+    def test_generated_tip_does_not_choose_a_sibling_or_later_prompt(self):
+        r = self.row
+        rows = [r('prefix', kind='context_injection'), r('human', 'prefix'), r('other')]
+        self.assertIsNone(self.anchor(rows, 'prefix'))
+
+    def test_cycle_and_missing_parent_fail_closed(self):
+        r = self.row
+        self.assertIsNone(self.anchor([r('human', 'prefix'), r('prefix', 'human', 'context_injection')], 'human'))
+        self.assertIsNone(self.anchor([r('human', 'missing'), r('other', 'missing')], 'human'))
+
+    def test_main_puts_note_on_human_prompt_and_preserves_color(self):
+        r = self.row
+        rows = [r('prefix', kind='context_injection', note='hidden old note'),
+                r('branch', 'prefix', note='existing human note', note_color='#ef4444'), r('other')]
+        payload = {'hook_event_name': 'Stop', 'conversation_id': 'conversation', 'message_id': 'branch',
+                   'lookup': {'local_api_base': 'http://localhost:3002/api'}, 'turn': {'last_user_message_id': 'branch'}}
+        output = io.StringIO()
+        with patch.object(hook.sys, 'stdin', io.StringIO(json.dumps(payload))), contextlib.redirect_stdout(output), patch.object(
+            hook, '_json_request', side_effect=[rows, {'text': json.dumps({'updated': True, 'note': 'updated human note', 'note_color': '#22c55e'})}, {}]
+        ) as request:
+            hook.main()
+        self.assertEqual(request.call_args.args[0], 'http://localhost:3002/api/app/messages/branch')
+        self.assertEqual(request.call_args.kwargs['payload'], {'note': 'updated human note'})
+        model_input = request.call_args_list[1].kwargs['payload']['content']
+        self.assertIn('Existing branch note:\nexisting human note', model_input)
+        self.assertNotIn('hidden old note', model_input)
+        self.assertEqual(json.loads(output.getvalue())['outcomeCode'], 'updated')
 
 
 if __name__ == '__main__':

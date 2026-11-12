@@ -5,7 +5,7 @@ import type { Server } from 'node:http'
 const fixture = vi.hoisted(() => {
   const manager = {
     initialize: vi.fn(async () => {}), getConfigs: vi.fn(), getStatus: vi.fn(), getServerStatus: vi.fn(),
-    getAllTools: vi.fn(), startServer: vi.fn(), restartServer: vi.fn(), getStartPhase: vi.fn(), callTool: vi.fn(),
+    getAllTools: vi.fn(), startServer: vi.fn(), restartServer: vi.fn(), reauthenticateServer: vi.fn(), getStartPhase: vi.fn(), callTool: vi.fn(),
   }
   return { manager, registerTool: vi.fn() }
 })
@@ -96,6 +96,28 @@ describe('MCP start routes never hold a request for a sign-in', () => {
     const response = await post(await start(), '/api/mcp/servers/remote/restart')
     expect(response.status).toBe(202)
     expect(await response.json()).toMatchObject({ success: true, pending: true, phase: 'connecting' })
+  })
+
+  it('returns pending for reauthentication and registers tools after sign-in', async () => {
+    let finish!: () => void
+    manager.reauthenticateServer.mockReturnValue(new Promise<void>(resolve => { finish = resolve }))
+    manager.getStartPhase.mockReturnValue('authorizing')
+    const response = await post(await start(), '/api/mcp/servers/remote/reauthenticate')
+    expect(response.status).toBe(202)
+    expect(await response.json()).toMatchObject({ success: true, pending: true, phase: 'authorizing' })
+    expect(manager.reauthenticateServer).toHaveBeenCalledWith('remote')
+    finish()
+    await vi.waitFor(() => expect(registerTool).toHaveBeenCalled())
+  })
+
+  it('reports successful and failed reauthentication accurately', async () => {
+    const origin = await start(1000)
+    manager.reauthenticateServer.mockResolvedValue(undefined)
+    expect((await post(origin, '/api/mcp/servers/remote/reauthenticate')).status).toBe(200)
+    manager.reauthenticateServer.mockRejectedValue(new Error('Sign-in denied'))
+    const response = await post(origin, '/api/mcp/servers/remote/reauthenticate')
+    expect(response.status).toBe(400)
+    expect(await response.json()).toMatchObject({ success: false, error: 'Sign-in denied' })
   })
 
   it('lists what each connecting server is waiting on', async () => {

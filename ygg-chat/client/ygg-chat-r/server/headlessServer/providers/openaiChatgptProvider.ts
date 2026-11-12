@@ -2007,9 +2007,8 @@ async function readCodexSseOutputLegacy_DISABLED(params: {
 
 /**
  * R1(a): the Codex transports attach the text/reasoning/tool calls they accumulated,
- * but only this provider knows how those become content blocks. Build them from the
- * partial in the SAME order the success path uses (thinking, text, tool_use) so a
- * persisted partial row renders exactly like a completed one.
+ * including ordered display blocks with commentary. Preserve those blocks on
+ * failure; legacy partials without blocks retain the original fallback mapping.
  *
  * `contextUsage` and `responses_output_items` are intentionally left out: neither
  * exists for a run that never completed.
@@ -2017,6 +2016,7 @@ async function readCodexSseOutputLegacy_DISABLED(params: {
 function contentBlocksFromPartialOutput(error: unknown): any[] {
   const partial = (error as any)?.partialOutput as ProviderPartialOutput | undefined
   if (!partial || typeof partial !== 'object') return []
+  if (partial.contentBlocks?.length) return partial.contentBlocks
 
   const blocks: any[] = []
   if (partial.reasoning) blocks.push({ type: 'thinking', content: partial.reasoning })
@@ -2146,8 +2146,15 @@ export class OpenAiChatgptProvider implements HeadlessProvider {
     const responseOutputItems = stripDuplicateReasoningTextFromResponseItems(parsed.outputItems || [], normalizedReasoning)
     const contentBlocks: any[] = []
     if (contextUsage) contentBlocks.push(contextUsageBlock(contextUsage))
-    if (normalizedReasoning) contentBlocks.push({ type: 'thinking', content: normalizedReasoning })
-    if (parsed.content) contentBlocks.push({ type: 'text', content: parsed.content })
+    // Display all assistant text (including commentary) in provider order. The
+    // selected parsed.content remains separate for empty/final-answer decisions.
+    contentBlocks.push(...parsed.contentBlocks)
+    if (normalizedReasoning && !contentBlocks.some(block => block.type === 'thinking')) {
+      contentBlocks.unshift({ type: 'thinking', content: normalizedReasoning })
+    }
+    if (parsed.content && !contentBlocks.some(block => block.type === 'text')) {
+      contentBlocks.push({ type: 'text', content: parsed.content })
+    }
 
     const imageBlocks = extractImageBlocksFromResponseItems(responseOutputItems)
     for (const imageBlock of imageBlocks) {
@@ -2156,13 +2163,16 @@ export class OpenAiChatgptProvider implements HeadlessProvider {
     }
 
     for (const toolCall of parsed.toolCalls) {
-      contentBlocks.push({ type: 'tool_use', id: toolCall.id, name: toolCall.name, input: toolCall.arguments })
+      if (!contentBlocks.some(block => block.type === 'tool_use' && block.id === toolCall.id)) {
+        contentBlocks.push({ type: 'tool_use', id: toolCall.id, name: toolCall.name, input: toolCall.arguments })
+      }
     }
 
     if (responseOutputItems.length > 0) {
       contentBlocks.push({ type: 'responses_output_items', items: responseOutputItems })
     }
 
+    contentBlocks.forEach((block, index) => { block.index = index })
     const output: ProviderGenerateOutput = {
       content: parsed.content,
       reasoning: normalizedReasoning || undefined,

@@ -4,6 +4,7 @@ import { ChatMessage } from '../ChatMessage/ChatMessage'
 import { SummarisedMessage } from '../ChatMessage/SummarisedMessage'
 import { WatcherCompletionNotice } from '../ChatMessage/WatcherCompletionNotice'
 import { StreamingThinkingIndicator } from '../StreamingThinkingIndicator'
+import { BackgroundTasksIndicator } from '../StreamingThinkingIndicator/BackgroundTasksIndicator'
 import { buildAgentPreviewRows } from './agentPreviewContent'
 import { buildForkPreviewRows, createAgentPreviewRunsSelector } from './agentForkPreview'
 import { useCustomChatTheme, useHtmlDarkMode } from '../ThemeManager/themeConfig'
@@ -17,8 +18,15 @@ export const AgentRunPreview = memo(function AgentRunPreview({ streamId, grouped
   const rows = useMemo(() => wholeFork ? buildForkPreviewRows(runs) : run ? buildAgentPreviewRows(run).map(row => ({ ...row, streamId, firstInRun: false, runStartedAt: run.stream.createdAt })) : [], [runs, run, wholeFork, streamId])
   // Read run-scoped state, not Chat's currently selected branch. A whole-fork
   // preview may include a compacting run other than its representative.
-  const compacting = runs.some(preview => preview.stream.active && preview.stream.compactionStatus === 'started')
-  const showActivity = isStreaming || compacting
+  const activeRuns = runs.filter(preview => preview.stream.active)
+  const compacting = activeRuns.some(preview => preview.stream.compactionStatus === 'started')
+  const backgroundRuns = activeRuns.filter(preview => preview.stream.conversationId && preview.stream.backgroundTasks?.length)
+  // Suppress thinking only when every live run is waiting on background work.
+  // Another same-fork run may still be composing, and compaction takes precedence.
+  const backgroundOnly = activeRuns.length > 0 && activeRuns.every(preview =>
+    preview.stream.conversationId && preview.stream.backgroundTasks?.length && preview.stream.backgroundTurnIdle)
+  const showThinking = compacting || (isStreaming && !backgroundOnly)
+  const showActivity = showThinking || backgroundRuns.length > 0
   const scrollRef = useRef<HTMLDivElement>(null)
   const followRef = useRef(scrollState?.following ?? true)
   const [following, setFollowing] = useState(followRef.current)
@@ -61,7 +69,10 @@ export const AgentRunPreview = memo(function AgentRunPreview({ streamId, grouped
         ))}
         {showActivity && (
           <div className={`${rows.length > 0 ? 'pt-2' : 'pt-1'} px-0 sm:px-2`}>
-            <StreamingThinkingIndicator compacting={compacting} />
+            {showThinking && <StreamingThinkingIndicator compacting={compacting} />}
+            {backgroundRuns.map(preview => <BackgroundTasksIndicator key={preview.streamId}
+              conversationId={String(preview.stream.conversationId)} streamId={preview.streamId}
+              tasks={preview.stream.backgroundTasks!} idle={Boolean(preview.stream.backgroundTurnIdle) && !compacting} />)}
           </div>
         )}
       </div>

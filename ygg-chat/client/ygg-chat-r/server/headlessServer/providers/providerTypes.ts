@@ -50,6 +50,8 @@ export interface ProviderGenerateInput {
   contextLength?: number
   turnContext?: ProviderTurnContext | null
   signal?: AbortSignal
+  /** In-process authoritative snapshot for immediate abort/timeout persistence. */
+  registerPartialOutput?: (read: () => ProviderPartialOutput) => void
 }
 
 export interface ProviderToolCall {

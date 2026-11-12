@@ -1,10 +1,16 @@
 import { Children, useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react'
 import { getAgentGridTracks, resizeAgentGridSplit } from './agentGridSplit'
 
-/** Each row owns its split ratios; no shared grid tracks can move other rows. */
-export function AgentGridRow({ children, label }: { children: ReactNode; label: string }) {
+const NOT_COLLAPSED: readonly boolean[] = []
+
+/**
+ * Each row owns its split ratios; no shared grid tracks can move other rows.
+ * Collapsed cells are fixed strips: they get no splitter and do not count toward split width.
+ */
+export function AgentGridRow({ children, label, collapsed = NOT_COLLAPSED }: { children: ReactNode; label: string; collapsed?: readonly boolean[] }) {
   const cells = Children.toArray(children)
-  const identity = JSON.stringify(cells.map(cell => typeof cell === 'object' && cell !== null && 'key' in cell ? cell.key : null))
+  // Collapsing or expanding a cell changes the row's shape, so it re-equalizes like membership does.
+  const identity = JSON.stringify(cells.map((cell, index) => [typeof cell === 'object' && cell !== null && 'key' in cell ? cell.key : null, Boolean(collapsed[index])]))
   const equal = () => cells.map(() => 1 / cells.length)
   const [ratios, setRatios] = useState(equal)
   const [previousIdentity, setPreviousIdentity] = useState(identity)
@@ -35,7 +41,8 @@ export function AgentGridRow({ children, label }: { children: ReactNode; label: 
     const row = rowRef.current
     if (!row) return 0
     const gap = parseFloat(getComputedStyle(row).columnGap) || 0
-    return row.getBoundingClientRect().width - gap * (cells.length - 1)
+    const fixed = Array.from(row.children).reduce((sum, cell, index) => sum + (collapsed[index] ? cell.getBoundingClientRect().width : 0), 0)
+    return row.getBoundingClientRect().width - gap * (cells.length - 1) - fixed
   }
   const finish = (event: PointerEvent<HTMLDivElement>, save: boolean) => {
     const drag = dragRef.current
@@ -53,7 +60,7 @@ export function AgentGridRow({ children, label }: { children: ReactNode; label: 
     const width = availableWidth()
     if (!row || width <= 0) return resolvedRatios
     // CSS enforces minimums on shell shrink; start from the actual painted sizes.
-    return Array.from(row.children).map(cell => cell.getBoundingClientRect().width / width)
+    return Array.from(row.children).map((cell, index) => collapsed[index] ? resolvedRatios[index] : cell.getBoundingClientRect().width / width)
   }
   const onPointerDown = (event: PointerEvent<HTMLDivElement>, divider: number) => {
     if (event.button !== 0 || !event.isPrimary || dragRef.current) return
@@ -94,11 +101,11 @@ export function AgentGridRow({ children, label }: { children: ReactNode; label: 
   }
 
   return (
-    <div ref={rowRef} className='grid min-w-0 gap-x-3' style={{ gridTemplateColumns: getAgentGridTracks(resolvedRatios) }}>
+    <div ref={rowRef} className='grid min-w-0 gap-x-3' style={{ gridTemplateColumns: getAgentGridTracks(resolvedRatios, collapsed) }}>
       {cells.map((cell, index) => (
         <div key={typeof cell === 'object' && cell !== null && 'key' in cell ? cell.key : index} className='relative min-w-0'>
           {cell}
-          {index < cells.length - 1 && <div role='separator' tabIndex={0} aria-orientation='vertical'
+          {index < cells.length - 1 && !collapsed[index] && !collapsed[index + 1] && <div role='separator' tabIndex={0} aria-orientation='vertical'
             aria-label={`${label}: resize cells ${index + 1} and ${index + 2}`}
             aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(resolvedRatios[index] / (resolvedRatios[index] + resolvedRatios[index + 1]) * 100)}
             title='Drag to resize · Double-click to reset row'

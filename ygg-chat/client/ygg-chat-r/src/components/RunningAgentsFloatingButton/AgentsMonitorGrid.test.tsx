@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import type { ReactNode } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { buildAgentForkGroups, type AgentStreamListItem } from '../../hooks/useRunningAgentStreams'
-import { AgentsMonitorGrid, getAgentGridCardHeight } from './AgentsMonitorGrid'
+import { AgentsMonitorGrid, getAgentGridCardHeight, getEffectiveCollapsedCells } from './AgentsMonitorGrid'
 import { AgentRunPreview as AgentRunPreviewComponent } from './AgentRunPreview'
 import { createEmptyStreamState } from '../../features/chats/streamHelpers'
 import type { AgentRunPreview } from '../../features/chats/agentRunPreviewSlice'
@@ -277,6 +277,91 @@ describe('fork grid', () => {
     expect(html).toContain('Transcript a')
   })
   it('has an empty state', () => { expect(render([])).toContain('No captured agent forks yet.') })
+
+  const rerender = (active: AgentStreamListItem[], history: AgentStreamListItem[], hiddenForks?: Record<string, string[]>, hiddenListOpen = false) =>
+    renderToStaticMarkup(<AgentsMonitorGrid activeStreams={active} streamHistory={history} grouped={false}
+      onOpenFork={() => {}} onOpenChat={() => {}} hiddenForks={hiddenForks} onHideFork={() => {}} hiddenListOpen={hiddenListOpen} />)
+  // Production previews are immutable (Immer); replace objects so identity caches see the change.
+  const replaceRun = (id: string, edit: (run: AgentRunPreview) => void) => {
+    const next = structuredClone(capture.byStreamId[id])
+    edit(next)
+    capture.byStreamId = { ...capture.byStreamId, [id]: next }
+  }
+  const emptyRun = (id: string, text = '') => replaceRun(id, preview => {
+    preview.stream.buffer = text
+    preview.entries[0].stream!.buffer = text
+  })
+
+  it('omits finished forks with nothing captured but keeps live ones waiting for output', () => {
+    const history = [run('empty', { lineageId: 'empty-fork', status: 'completed' }), run('old', { lineageId: 'old-fork', status: 'completed' })]
+    render([run('live')], history)
+    emptyRun('empty')
+    emptyRun('live')
+    const html = rerender([run('live')], history)
+    expect(html.match(/aria-label="Preview /g)).toHaveLength(2)
+    expect(html).toContain('Assistant is working')
+    expect(html).toContain('Transcript old')
+    expect(html).not.toContain('Waiting for run output')
+  })
+
+  it('omits finished forks whose transcript was released and treats whitespace as empty', () => {
+    const history = [run('released', { lineageId: 'a', status: 'completed' }), run('blank', { lineageId: 'b', status: 'completed' })]
+    render([], history)
+    const { released: _released, ...rest } = capture.byStreamId
+    capture.byStreamId = rest
+    emptyRun('blank', '  \n')
+    const html = rerender([], history)
+    expect(html).not.toContain('No captured transcript')
+    expect(html).toContain('No captured agent forks yet.')
+  })
+
+  it('keeps a finished fork whose output is only a tool call', () => {
+    const history = [run('tool', { status: 'completed' })]
+    render([], history)
+    emptyRun('tool')
+    replaceRun('tool', preview => { preview.entries[0].stream!.events = [{ type: 'tool_call', toolCall: { id: 't1', name: 'bash', arguments: {} } } as any] })
+    expect(rerender([], history)).toContain('aria-label="Preview First chat · fork sam"')
+  })
+
+  it('hides user-hidden forks behind a restore list until a new run starts', () => {
+    const key = JSON.stringify(['fork', 'chat-1', 'same-fork'])
+    const history = [run('old', { status: 'completed' })]
+    render([], history)
+    const hidden = rerender([], history, { [key]: ['old'] })
+    expect(hidden).not.toContain('aria-label="Preview ')
+    expect(hidden).not.toContain('Hidden from grid')
+    const listed = rerender([], history, { [key]: ['old'] }, true)
+    expect(listed).toContain('aria-label="Hidden agent forks"')
+    expect(listed).toContain('aria-label="Show First chat · fork sam"')
+    expect(listed).toContain('Show all')
+    expect(hidden).toContain('All agent forks are hidden.')
+    render([run('new')], history)
+    const resurfaced = rerender([run('new')], history, { [key]: ['old'] })
+    expect(resurfaced).toContain('aria-label="Preview First chat · fork sam"')
+    expect(rerender([run('new')], history, { [key]: ['old'] }, true)).not.toContain('Hidden agent forks')
+  })
+
+  it('only collapses a card while a row neighbour stays expanded', () => {
+    expect(getEffectiveCollapsedCells(['a', 'b', 'c'], new Set(['a']))).toEqual([true, false, false])
+    expect(getEffectiveCollapsedCells(['a', 'b'], new Set(['a', 'b']))).toEqual([false, false])
+    expect(getEffectiveCollapsedCells(['a'], new Set(['a']))).toEqual([false])
+  })
+
+  it('offers no collapse control on a single-card row', () => {
+    render([run('a')])
+    const html = renderToStaticMarkup(<AgentsMonitorGrid activeStreams={[run('a')]} streamHistory={[]} grouped={false}
+      onOpenFork={() => {}} onOpenChat={() => {}} collapsedForks={[JSON.stringify(['fork', 'chat-1', 'same-fork'])]} onToggleForkCollapsed={() => {}} />)
+    expect(html).not.toContain('Collapse First chat')
+    expect(html).not.toContain('(collapsed)')
+    expect(html).toContain('Transcript a')
+  })
+
+  it('offers a hide control on each card without nesting buttons', () => {
+    render([run('a')])
+    const html = rerender([run('a')], [])
+    expect(html).toContain('aria-label="Hide First chat · fork sam"')
+    expect(html).not.toMatch(/<button\b[^>]*>(?:(?!<\/button>)[\s\S])*<button\b/)
+  })
 })
 
 describe('deferred grid transcripts', () => {

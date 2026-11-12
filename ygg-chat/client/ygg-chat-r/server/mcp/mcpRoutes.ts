@@ -460,6 +460,26 @@ export function registerMcpRoutes(app: Express, options: { startResponseBudgetMs
     }
   })
 
+  // Explicit token reset and fresh browser sign-in, shared with mcp_manager.
+  app.post('/api/mcp/servers/:name/reauthenticate', async (req, res) => {
+    try {
+      await mcpManager.initialize()
+      const start = mcpManager.reauthenticateServer(req.params.name)
+      const outcome = await settleWithin(start, startResponseBudgetMs)
+      if (!outcome.settled) {
+        void start.then(() => refreshMcpToolsWithOrchestrator()).catch(() => undefined)
+        const phase = mcpManager.getStartPhase(req.params.name) ?? 'connecting'
+        res.status(202).json({ success: true, pending: true, phase, message: MCP_START_PHASE_MESSAGE[phase] })
+        return
+      }
+      const toolCount = await refreshMcpToolsWithOrchestrator()
+      res.json({ success: true, message: `Server '${req.params.name}' signed in`, toolsRegistered: toolCount })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to sign in to MCP server'
+      res.status(400).json({ success: false, error: message })
+    }
+  })
+
   // POST /api/mcp/servers/:name/stop - Stop an MCP server
   app.post('/api/mcp/servers/:name/stop', async (req, res) => {
     try {

@@ -975,6 +975,7 @@ export class ToolLoopService {
         contentBlocks: [],
         toolCalls: [],
       }
+      let readProviderPartial: (() => ProviderPartialOutput) | undefined
       let output: ProviderGenerateOutput
       let requestStartedAt: number | undefined
       const recordRequest = (outputTokens: number | null) => {
@@ -986,7 +987,11 @@ export class ToolLoopService {
         output = await withIdleTimeoutAndAbort(
           ({ signal: attemptSignal, touch, isActive }) => {
             requestStartedAt = performance.now()
-            return this.providerRouter.generate(input.provider, { ...providerInput, signal: attemptSignal }, event => {
+            return this.providerRouter.generate(input.provider, {
+              ...providerInput,
+              signal: attemptSignal,
+              registerPartialOutput: read => { readProviderPartial = read },
+            }, event => {
               if (!isActive()) return
               touch()
 
@@ -1038,7 +1043,7 @@ export class ToolLoopService {
           this.providerTurnIdleTimeoutMs,
           'The model provider',
           input.signal,
-          () => streamedPartial
+          () => readProviderPartial ? readProviderPartial() : streamedPartial
         )
         const outputTokens = output.raw?.usage?.output_tokens
         recordRequest(typeof outputTokens === 'number' && Number.isFinite(outputTokens) && outputTokens >= 0 ? outputTokens : null)

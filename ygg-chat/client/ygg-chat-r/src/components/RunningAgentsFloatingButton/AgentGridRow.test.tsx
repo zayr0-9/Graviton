@@ -24,6 +24,11 @@ const render = () => {
   return AgentGridRow({ label: 'Agent row 1', children: [<section key='a'>A</section>, <section key='b'>B</section>, <section key='c'>C</section>] })
 }
 const separator = (tree: ReturnType<typeof render>, index = 0) => tree.props.children[index].props.children[1]
+const renderCollapsed = (collapsed: boolean[]) => {
+  host.stateIndex = 0
+  host.refIndex = 0
+  return AgentGridRow({ label: 'Agent row 1', collapsed, children: [<section key='a'>A</section>, <section key='b'>B</section>, <section key='c'>C</section>] })
+}
 let width = 1024
 let handle: { focus: ReturnType<typeof vi.fn>; setPointerCapture: ReturnType<typeof vi.fn>; hasPointerCapture: ReturnType<typeof vi.fn>; releasePointerCapture: ReturnType<typeof vi.fn> }
 const pointer = (x: number, pointerId = 1) => ({ clientX: x, pointerId, button: 0, isPrimary: true, currentTarget: handle, preventDefault: vi.fn(), stopPropagation: vi.fn() })
@@ -129,5 +134,17 @@ describe('agent row splitters', () => {
     props.onPointerDown(pointer(100)); props.onPointerMove(pointer(200)); host.cleanup?.()
     expect(handle.releasePointerCapture).toHaveBeenCalledWith(1)
     expect(cancelAnimationFrame).toHaveBeenCalledWith(1)
+  })
+})
+
+describe('collapsed cells', () => {
+  it('uses a fixed strip track and omits splitters touching a collapsed cell', () => {
+    const tree = renderCollapsed([true, false, false])
+    expect(tree.props.style.gridTemplateColumns).toBe('3rem minmax(min(160px, 100%), 1fr) minmax(min(160px, 100%), 1fr)')
+    expect(separator(tree, 0)).toBeFalsy()
+    expect(separator(tree, 1)).toBeTruthy()
+    const middle = renderCollapsed([false, true, false])
+    expect(separator(middle, 0)).toBeFalsy()
+    expect(separator(middle, 1)).toBeFalsy()
   })
 })

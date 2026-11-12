@@ -11,7 +11,7 @@ import { attachChatErrorCode } from '../headlessServer/providers/providerErrorFo
 import { searchDiscovery, validateDiscoverySearch, type DiscoverySearchArgs } from './discoverySearch.js'
 
 interface McpManagerArgs extends DiscoverySearchArgs {
-  action: 'search' | 'list' | 'get' | 'stop' | 'list_tools' | 'invoke'
+  action: 'search' | 'list' | 'get' | 'stop' | 'reauthenticate' | 'list_tools' | 'invoke'
   name?: string
   tool?: string
   args?: Record<string, unknown>
@@ -164,6 +164,23 @@ export async function execute(
     await mcpManager.stopServer(name)
     const status = mcpManager.getServerStatus(name)
     return { success: true, server: toServerSummary(config, status) }
+  }
+
+  if (action === 'reauthenticate') {
+    try {
+      const outcome = await settleWithin(mcpManager.reauthenticateServer(name), options.startWaitBudgetMs ?? START_WAIT_BUDGET_MS)
+      if (!outcome.settled) {
+        const phase = mcpManager.getStartPhase(name) ?? 'connecting'
+        return {
+          success: false, pending: true, phase,
+          error: `Sign-in for MCP server "${name}" is still pending. ${MCP_START_PHASE_MESSAGE[phase]} ` +
+            'Tell the user to complete sign-in. Use get to check status, then list_tools or invoke when connected; do not repeatedly reset authentication.',
+        }
+      }
+      return { success: true, server: toServerSummary(config, mcpManager.getServerStatus(name)) }
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) }
+    }
   }
 
   if (action === 'invoke') {

@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3'
+import { createCodexResponseParseState, processCodexResponsePayload } from '../../providers/codex/codexResponseEvents.js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MessageRepo } from '../../persistence/messageRepo.js'
 import { createModelThroughput, recordModelRequest, readModelThroughput } from '../../../../../../shared/runStatistics.js'
@@ -843,6 +844,58 @@ const baseRunInput = {
 }
 
 describe('ToolLoopService signal + robustness (in-memory sink)', () => {
+  it.each(['abort', 'timeout', 'failure'])('preserves authoritative Codex commentary blocks on %s without replaying them as an answer', async kind => {
+    vi.useFakeTimers()
+    try {
+      const controller = new AbortController()
+      const sink = new FakeSink()
+      const router = { generate: async (_provider: string, input: any, emit: any) => {
+        const state = createCodexResponseParseState({ emit, registerPartialOutput: input.registerPartialOutput })
+        processCodexResponsePayload({ type: 'response.output_item.added', item: { id: 'p', type: 'message', phase: 'commentary' } }, state)
+        processCodexResponsePayload({ type: 'response.output_text.delta', item_id: 'p', delta: 'Still ' }, state)
+        processCodexResponsePayload({ type: 'response.output_text.delta', item_id: 'p', delta: 'working.' }, state)
+        if (kind === 'abort') controller.abort()
+        if (kind === 'failure') throw new Error('Provider disconnected')
+        return new Promise(() => {})
+      } }
+      const service = new ToolLoopService({ sink, providerRouter: router as any, providerTurnTimeoutMs: 5000 })
+      const run = service.run({ ...baseRunInput, signal: controller.signal }, () => {}).catch(error => error)
+      await vi.advanceTimersByTimeAsync(5100)
+      expect(await run).toBeInstanceOf(Error)
+      const partial = sink.persisted.find(row => JSON.parse(row.content_blocks || '[]').some((block: any) => block.type === 'text'))
+      expect(partial).toBeDefined()
+      expect(partial.content).toBe('')
+      expect(JSON.parse(partial.content_blocks)).toEqual([{ type: 'text', content: 'Still working.', index: 0 }])
+    } finally { vi.useRealTimers() }
+  })
+
+  it('persists commentary blocks through tool continuation without treating them as the final answer', async () => {
+    const providerRouter = new FakeProviderRouter()
+    providerRouter.enqueue({ content: '', contentBlocks: [{ type: 'text', content: 'Checking the files.', index: 0 }],
+      toolCalls: [{ id: 'read', name: 'read_file', arguments: { path: 'README.md' } }] })
+    providerRouter.enqueue({ content: 'Done.', contentBlocks: [{ type: 'text', content: 'Done.', index: 0 }] })
+    const sink = new FakeSink()
+    const executeTool = vi.fn(async () => 'File contents')
+    const service = new ToolLoopService({ sink, providerRouter: providerRouter as any, executeTool })
+    const result = await service.run(baseRunInput, () => {})
+    expect(executeTool).toHaveBeenCalledOnce()
+    expect(result.finalAssistantMessage.content).toBe('Done.')
+    expect(sink.persisted[0].content).toBe('')
+    expect(JSON.parse(sink.persisted[0].content_blocks)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'text', content: 'Checking the files.' }),
+      expect.objectContaining({ type: 'tool_result', tool_use_id: 'read' }),
+    ]))
+  })
+
+  it('does not let display-only commentary bypass empty-answer recovery', async () => {
+    const providerRouter = new FakeProviderRouter()
+    providerRouter.enqueue({ content: '', contentBlocks: [{ type: 'text', content: 'Still working.', index: 0 }] })
+    providerRouter.enqueue({ content: 'Recovered answer.' })
+    const service = new ToolLoopService({ sink: new FakeSink(), providerRouter: providerRouter as any })
+    const result = await service.run({ ...baseRunInput, robustness: { retryEmptyTurn: true, emptyTurnRetryDelayMs: 0 } }, () => {})
+    expect(providerRouter.calls).toHaveLength(2)
+    expect(result.finalAssistantMessage.content).toBe('Recovered answer.')
+  })
   it('keeps MCP discovery out of model definitions even with a legacy refresh hook', async () => {
     const providerRouter = new FakeProviderRouter()
     providerRouter.enqueue({

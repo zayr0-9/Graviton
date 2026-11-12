@@ -209,6 +209,78 @@ def _safe_text(value):
     return value if isinstance(value, str) else ''
 
 
+def _is_scaffolding_message(message):
+    # Match persisted provenance, not prose: a human may quote a system reminder
+    # or carry context_injection blocks alongside their own prompt.
+    meta = message.get('meta') if isinstance(message, dict) else None
+    if isinstance(meta, str):
+        try:
+            meta = json.loads(meta)
+        except (ValueError, TypeError):
+            meta = None
+    kind = meta.get('kind') if isinstance(meta, dict) else None
+    return kind in (
+        'context_injection', 'operation_mode_change', 'full_access_change',
+        'watcher_completion', 'compaction_instruction', 'compaction_resume',
+        'compaction_summary',
+    ) or message.get('note') == '__auto_compaction_summary__'
+
+
+def _is_human_message(message):
+    return isinstance(message, dict) and _safe_text(message.get('role')).lower() == 'user' and not _is_scaffolding_message(message)
+
+
+def _find_branch_anchor(messages, chain):
+    """Find the nearest human branch prompt in the scaffold-free tree.
+
+    Simply skipping injected candidates is insufficient: a fork can be on the
+    injected prefix's parent, rather than on the human prompt's direct parent.
+    Collapse only generated scaffolding, never ordinary assistant/user turns.
+    The ancestor chain selects the route; never choose a sibling's prompt.
+    """
+    by_id = {str(m['id']): m for m in messages if isinstance(m, dict) and m.get('id') is not None}
+    by_id.update({str(m['id']): m for m in chain})
+    children = {}
+    for message in by_id.values():
+        children.setdefault(message.get('parent_id'), []).append(message)
+
+    def visible_children(parent_id):
+        pending = list(children.get(parent_id, []))
+        seen = set()
+        visible = []
+        while pending:
+            child = pending.pop()
+            child_id = str(child['id'])
+            if child_id in seen:
+                continue
+            seen.add(child_id)
+            if _is_scaffolding_message(child):
+                pending.extend(children.get(child_id, []))
+            else:
+                visible.append(child)
+        return visible
+
+    for candidate in chain:
+        if not _is_human_message(candidate):
+            continue
+        parent_id = candidate.get('parent_id')
+        seen = {str(candidate['id'])}
+        while parent_id is not None:
+            if parent_id in seen or parent_id not in by_id:
+                return None  # Broken ancestry is not evidence of a branch.
+            seen.add(parent_id)
+            parent = by_id[parent_id]
+            if not _is_scaffolding_message(parent):
+                break
+            parent_id = parent.get('parent_id')
+        siblings = visible_children(parent_id)
+        if parent_id is None:
+            siblings = [message for message in siblings if _is_human_message(message)]
+        if len(siblings) > 1:
+            return candidate
+    return None  # Ordinary linear sends still do not create branch notes.
+
+
 def _parse_model_json(text):
     text = (text or '').strip()
     if not text:
@@ -376,44 +448,9 @@ def main():
                 current = _hydrate_message(parent_id)
             return chain
 
-        def _is_user_message(message):
-            return isinstance(message, dict) and _safe_text(message.get('role')).lower() == 'user'
-
-        def _child_count(parent_message_id):
-            parent_message_id = _safe_text(parent_message_id)
-            if not parent_message_id:
-                return 0
-            return sum(1 for item in messages if isinstance(item, dict) and _safe_text(item.get('parent_id')) == parent_message_id)
-
         def _branch_anchor_from(message_id):
             chain = _ancestor_chain_from(message_id)
-
-            # Walk latest -> older and attach the note to the first user message whose
-            # parent already has multiple children. This treats the nearest branch point
-            # on the current route as the note anchor.
-            for candidate in chain:
-                if not _is_user_message(candidate):
-                    continue
-                parent_id = candidate.get('parent_id')
-                if parent_id is None:
-                    # Root-level branches have no parent to count children from.
-                    # Treat multiple root user messages in the same conversation as
-                    # a branch set and allow the current root user message to be the
-                    # note anchor.
-                    root_user_count = sum(
-                        1
-                        for item in messages
-                        if _is_user_message(item) and item.get('parent_id') is None
-                    )
-                    if root_user_count > 1:
-                        return candidate
-                    continue
-                if _child_count(parent_id) > 1:
-                    return candidate
-
-            # No branch point on this path. Do not create/update notes for normal
-            # linear sends; this hook should only do work after branching.
-            return None
+            return _find_branch_anchor(list(message_by_id.values()), chain)
 
         stage = 'resolve_branch_anchor'
         path_anchor_id = last_user_message_id or current_parent_id or current_message_id or last_assistant_message_id
