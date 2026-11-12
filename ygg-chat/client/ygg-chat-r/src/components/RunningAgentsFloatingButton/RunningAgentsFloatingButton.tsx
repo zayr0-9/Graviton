@@ -20,9 +20,10 @@ import {
 import { useConversationBranchDebugData, type ResearchNoteItem } from '../../hooks/useQueries'
 import { getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from '../ThemeManager/themeConfig'
 import './agentsPillMotion.css'
-import { AgentRunPreview } from './AgentRunPreview'
+import type { AgentPreviewScrollState } from './AgentRunPreview'
+import { AgentForkCard, cardIconButtonClass, resolvePreviewFork } from './AgentForkCard'
 import { AgentMessageTooltip } from './AgentMessageTooltip'
-import { Expand, EyeOff, Layers } from 'lucide-react'
+import { ArrowLeft, Expand, EyeOff, Layers } from 'lucide-react'
 import { AgentsViewSwitch } from './AgentsViewSwitch'
 import { AgentsMonitorGrid, useAgentGridForks } from './AgentsMonitorGrid'
 import { useAgentsPillResize } from './useAgentsPillResize'
@@ -415,6 +416,13 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
   const selectedItem = selectedRun
     ? [...allActiveStreams, ...allStreamHistory].find(item => item.streamId === selectedRun.streamId) ?? selectedRun
     : null
+  // Same fork group as the grid card (from the unfiltered lists, like the other preview lookups).
+  const previewFork = useMemo(
+    () => selectedItem ? resolvePreviewFork(selectedItem, allActiveStreams, allStreamHistory) : null,
+    [selectedItem, allActiveStreams, allStreamHistory]
+  )
+  // Grid reading positions outlive the grid, which unmounts while a preview is open.
+  const gridScrollStates = useRef(new Map<string, AgentPreviewScrollState>())
   const previewTriggerRef = useRef<HTMLElement | null>(null)
   const openPreview = (stream: AgentStreamListItem, wholeFork = false) => {
     setPreviewWholeFork(wholeFork)
@@ -950,19 +958,22 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
                     collapsedForks={collapsedForks}
                     onToggleForkCollapsed={(key, collapsed) => dispatch(collapsed
                       ? runningAgentsUiActions.forkCollapsed(key) : runningAgentsUiActions.forkExpanded(key))}
+                    scrollStates={gridScrollStates.current}
                   />
-                ) : selectedItem ? (
-                  <section className={pillResize.size ? 'flex min-h-0 flex-1 flex-col' : undefined} aria-label='Agent run preview' onKeyDown={event => {
+                ) : selectedItem && previewFork ? (
+                  // The same card as the grid cell, so status, request text and the working indicator match.
+                  <div className={pillResize.size ? 'flex min-h-0 flex-1 flex-col' : undefined} onKeyDown={event => {
                     if (event.key === 'Escape') { event.stopPropagation(); closePreview() }
                   }}>
-                    <div className='flex shrink-0 flex-wrap items-center gap-2 px-2 py-2 text-xs'>
-                      <button autoFocus type='button' onClick={closePreview} className='rounded-full px-2 py-1.5 hover:bg-black/5 dark:hover:bg-white/5'>← Back</button>
-                      <span className='min-w-0 flex-1 truncate font-semibold'>{selectedItem.conversationTitle || 'Run preview'}</span>
-                      <button type='button' disabled={!getStreamHref(selectedItem)} onClick={() => navigateToStream(selectedItem)}
-                        className='rounded-full bg-emerald-600 px-3 py-1.5 font-semibold text-white disabled:opacity-50'>Open chat ↗</button>
-                    </div>
-                    <AgentRunPreview key={`${selectedItem.streamId}:${previewWholeFork}`} streamId={selectedItem.streamId} grouped={groupPreviewSteps} wholeFork={previewWholeFork} transcriptLabel={previewWholeFork ? 'Full fork transcript' : 'Run transcript'} fillHeight={Boolean(pillResize.size)} />
-                  </section>
+                    <AgentForkCard key={`${previewFork.key}:${previewWholeFork ? 'fork' : selectedItem.streamId}`}
+                      fork={previewFork} run={previewWholeFork ? undefined : selectedItem}
+                      grouped={groupPreviewSteps} onOpenChat={navigateToStream}
+                      fillHeight={Boolean(pillResize.size)} className={pillResize.size ? 'min-h-0 flex-1' : ''}
+                      leading={<button autoFocus type='button' onClick={closePreview} aria-label='Back to agents' title='Back'
+                        className={`${cardIconButtonClass} -ml-1 h-8 w-8`} style={floatingMutedTextStyle}>
+                        <ArrowLeft size={18} strokeWidth={2.25} aria-hidden='true' />
+                      </button>} />
+                  </div>
                 ) : <>
                 <div className='flex items-center justify-between px-2 py-2'>
                   <div className='flex items-center gap-2'>

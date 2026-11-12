@@ -4,9 +4,8 @@ import { useAppSelector } from '../../hooks/redux'
 import { buildAgentForkGroups, type AgentForkGroup, type AgentStreamListItem } from '../../hooks/useRunningAgentStreams'
 import { isAgentForkHidden } from '../../features/ui/runningAgentsUiSlice'
 import { forkHasPreviewContent } from './agentForkPreview'
-import { getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from '../ThemeManager/themeConfig'
-import { AgentMessageTooltip } from './AgentMessageTooltip'
-import { AgentRunPreview, type AgentPreviewScrollState } from './AgentRunPreview'
+import type { AgentPreviewScrollState } from './AgentRunPreview'
+import { AgentForkCard, agentCardToneClass, agentStatusDotClass, cardIconButtonClass, forkName, getAgentCardStatus, useAgentCardTheme } from './AgentForkCard'
 import { AgentGridRow } from './AgentGridRow'
 import { getAgentGridColumns } from './agentGridSplit'
 import { useVisibleAgentGridRows } from './useVisibleAgentGridRows'
@@ -32,6 +31,8 @@ interface AgentsMonitorGridProps {
   /** Session-only: forks narrowed to a strip so their row neighbours take the width. */
   collapsedForks?: readonly string[]
   onToggleForkCollapsed?: (key: string, collapsed: boolean) => void
+  /** Owned by the pill so reading positions survive opening a preview and coming back. */
+  scrollStates?: Map<string, AgentPreviewScrollState>
 }
 
 const NO_COLLAPSED_FORKS: readonly string[] = []
@@ -44,7 +45,6 @@ export function getEffectiveCollapsedCells(rowKeys: readonly string[], collapsed
 
 const NO_HIDDEN_FORKS: Record<string, string[]> = {}
 const forkStreamIds = (fork: AgentForkGroup) => [...fork.activeStreams, ...fork.completedStreams].map(stream => stream.streamId)
-const forkName = (fork: AgentForkGroup) => fork.representative.conversationTitle || `Conversation ${fork.representative.conversationId || 'Unknown'}`
 
 /**
  * Grid membership shared by the grid and the pill header's hidden toggle. A finished fork with
@@ -74,8 +74,6 @@ export function useAgentGridForks(activeStreams: AgentStreamListItem[], streamHi
   }, [allForks, emptyIdsKey, hiddenForks])
 }
 
-const cardIconButtonClass = 'flex shrink-0 items-center justify-center rounded-full text-neutral-500 transition-[background-color,color,transform] duration-150 hover:bg-black/5 hover:text-neutral-900 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 dark:text-neutral-400 dark:hover:bg-white/10 dark:hover:text-white'
-
 const MIN_CARD_REM = 16
 const VIEWPORT_SETTLE_MS = 150
 
@@ -93,7 +91,7 @@ export function getAgentGridCardHeight(columns: number, viewportPx?: number | nu
 export function AgentsMonitorGrid({ activeStreams, streamHistory, grouped, onOpenFork, onOpenChat, resizing = false,
   hiddenForks = NO_HIDDEN_FORKS, onHideFork, onShowFork, onShowAllForks,
   hiddenListOpen = false, hiddenListId, onHiddenListOpenChange, hiddenToggleRef,
-  collapsedForks = NO_COLLAPSED_FORKS, onToggleForkCollapsed }: AgentsMonitorGridProps) {
+  collapsedForks = NO_COLLAPSED_FORKS, onToggleForkCollapsed, scrollStates: sharedScrollStates }: AgentsMonitorGridProps) {
   const gridRef = useRef<HTMLDivElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const [viewportHeight, setViewportHeight] = useState<number | null>(null)
@@ -101,10 +99,10 @@ export function AgentsMonitorGrid({ activeStreams, streamHistory, grouped, onOpe
   resizingRef.current = resizing
   const measureViewportRef = useRef<() => void>(() => {})
   // View state only: transcript data stays in Redux, even while offscreen.
-  const scrollStates = useRef(new Map<string, AgentPreviewScrollState>())
+  const ownScrollStates = useRef(new Map<string, AgentPreviewScrollState>())
+  const scrollStates = sharedScrollStates ?? ownScrollStates.current
   const [columns, setColumns] = useState(1)
-  const { theme, enabled } = useCustomChatTheme()
-  const dark = useHtmlDarkMode()
+  const { color, mutedStyle, secondaryStyle, panelStyle, cardStyle, statusDotStyle } = useAgentCardTheme()
   const { forks, hiddenList } = useAgentGridForks(activeStreams, streamHistory, hiddenForks)
   const hiddenOpen = hiddenListOpen && hiddenList.length > 0
   const closeHiddenList = () => onHiddenListOpenChange?.(false)
@@ -133,23 +131,15 @@ export function AgentsMonitorGrid({ activeStreams, streamHistory, grouped, onOpe
   }
   useEffect(() => {
     const keys = new Set(forks.map(fork => fork.key))
-    for (const key of scrollStates.current.keys()) if (!keys.has(key)) scrollStates.current.delete(key)
-  }, [forks])
+    for (const key of scrollStates.keys()) if (!keys.has(key)) scrollStates.delete(key)
+  }, [forks, scrollStates])
   const rowCount = Math.ceil(forks.length / columns)
   const visibleRows = useVisibleAgentGridRows(gridRef, scrollRef, rowCount, columns)
   const textStyle: CSSProperties & Record<'--agents-grid-streaming-bg' | '--agents-grid-idle-bg', string | undefined> = {
-    color: enabled ? getThemeModeColor(theme.colors.toolJobsPrimaryText, dark) : undefined,
-    '--agents-grid-streaming-bg': enabled ? getThemeModeColor(theme.colors.composerToggleActiveBg, dark) : undefined,
-    '--agents-grid-idle-bg': enabled ? getThemeModeColor(theme.colors.settingsCustomThemesInnerCardBg, dark) : undefined,
+    color: color('toolJobsPrimaryText'),
+    '--agents-grid-streaming-bg': color('composerToggleActiveBg'),
+    '--agents-grid-idle-bg': color('settingsCustomThemesInnerCardBg'),
   }
-  const mutedStyle = { color: enabled ? getThemeModeColor(theme.colors.toolJobsMutedText, dark) : undefined }
-  const secondaryStyle = enabled ? { backgroundColor: getThemeModeColor(theme.colors.settingsCustomThemesButtonBg, dark),
-    color: getThemeModeColor(theme.colors.settingsCustomThemesButtonText, dark) } : undefined
-  const panelStyle = enabled ? { backgroundColor: getThemeModeColor(theme.colors.settingsCustomThemesInnerCardBg, dark) } : undefined
-  const statusDotStyle = (fork: AgentForkGroup) => ({ backgroundColor: enabled ? getThemeModeColor(theme.colors[fork.hasError
-    ? 'toolJobsProgressFailed' : fork.activeStreams.length > 0 ? 'toolJobsProgressRunning' : 'toolJobsProgressCompleted'], dark) : undefined })
-  const statusDotClass = (fork: AgentForkGroup) => fork.hasError ? 'bg-rose-500' : fork.activeStreams.length > 0 ? 'bg-emerald-500' : 'bg-neutral-400'
-  const statusLabel = (fork: AgentForkGroup) => fork.hasError ? 'Ended with error' : fork.activeStreams.length > 0 ? fork.representative.activityLabel : 'Completed'
 
   useLayoutEffect(() => {
     const grid = gridRef.current
@@ -217,11 +207,12 @@ export function AgentsMonitorGrid({ activeStreams, streamHistory, grouped, onOpe
         <ul className='min-h-0 overflow-y-auto overscroll-contain thin-scrollbar'>
           {hiddenList.map(fork => {
             const name = forkName(fork)
+            const status = getAgentCardStatus(fork)
             return (
               <li key={fork.key} className='flex min-w-0 items-center gap-2 rounded-xl px-2 py-1.5 text-xs'>
-                <span className={`h-2 w-2 shrink-0 rounded-full ${statusDotClass(fork)}`} style={statusDotStyle(fork)} aria-hidden='true' />
+                <span className={`h-2 w-2 shrink-0 rounded-full ${agentStatusDotClass(status)}`} style={statusDotStyle(status)} aria-hidden='true' />
                 <span className='min-w-0 flex-1 truncate font-medium' title={name}>{name}</span>
-                <span className='shrink-0 text-neutral-500 dark:text-neutral-400' style={mutedStyle}>{fork.displayName} · {statusLabel(fork)}</span>
+                <span className='shrink-0 text-neutral-500 dark:text-neutral-400' style={mutedStyle}>{fork.displayName} · {status.label}</span>
                 <button type='button' onClick={() => showFork(fork)} aria-label={`Show ${name} · ${fork.displayName}`} title='Show in grid'
                   className='flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-[background-color,color,opacity,transform] duration-150 hover:opacity-90 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 bg-white/70 text-neutral-700 dark:bg-white/10 dark:text-neutral-200'
                   style={secondaryStyle}>
@@ -245,25 +236,24 @@ export function AgentsMonitorGrid({ activeStreams, streamHistory, grouped, onOpe
               <AgentGridRow label={`Agent row ${rowIndex + 1}`} collapsed={collapsedCells}>
           {row.map((fork, cellIndex) => {
             const stream = fork.representative
-            let scrollState = scrollStates.current.get(fork.key)
+            let scrollState = scrollStates.get(fork.key)
             if (!scrollState) {
               scrollState = { top: 0, following: true }
-              scrollStates.current.set(fork.key, scrollState)
+              scrollStates.set(fork.key, scrollState)
             }
-            const active = fork.activeStreams.length > 0
-            const cardStyle = { backgroundColor: enabled ? getThemeModeColor(theme.colors[active ? 'agentsGridStreamingCardBg' : 'agentsGridIdleCardBg'], dark) : undefined }
+            const status = getAgentCardStatus(fork)
             const name = forkName(fork)
             const cardHeight = getAgentGridCardHeight(columns, viewportHeight)
-            const cardTone = active ? 'bg-orange-50 dark:bg-orange-900/20' : 'bg-black/[0.035] dark:bg-white/5'
             if (collapsedCells[cellIndex]) return (
               <section key={fork.key} data-agent-fork-key={fork.key} aria-label={`${name} · ${fork.displayName} (collapsed)`}
-                className={`flex min-w-0 flex-col items-center gap-2 overflow-hidden rounded-2xl py-2 ${cardTone}`} style={{ ...cardStyle, height: cardHeight }}>
+                className={`flex min-w-0 flex-col items-center gap-2 overflow-hidden rounded-2xl py-2 ${agentCardToneClass(status.active)}`}
+                style={{ ...cardStyle(status.active), height: cardHeight }}>
                 <button type='button' data-card-collapse-toggle onClick={() => toggleCollapsed(fork.key, false)} aria-expanded={false}
                   aria-label={`Expand ${name} · ${fork.displayName}`} title='Expand card'
                   className={`${cardIconButtonClass} h-8 w-8`} style={mutedStyle}>
                   <ChevronsLeftRight size={16} strokeWidth={2.25} aria-hidden='true' />
                 </button>
-                <span className={`h-2 w-2 shrink-0 rounded-full ${statusDotClass(fork)}`} style={statusDotStyle(fork)} title={statusLabel(fork)} aria-hidden='true' />
+                <span className={`h-2 w-2 shrink-0 rounded-full ${agentStatusDotClass(status)}`} style={statusDotStyle(status)} title={status.label} aria-hidden='true' />
                 <button type='button' onClick={() => onOpenFork(stream)} aria-label={`Preview ${name} · ${fork.displayName}`} title={`${name} · ${fork.displayName}`}
                   className='min-h-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap rounded-lg px-1 py-1 text-xs font-semibold [writing-mode:vertical-rl] hover:bg-black/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 dark:hover:bg-white/5'>
                   {name} <span className='font-normal text-neutral-500 dark:text-neutral-400' style={mutedStyle}>· {fork.displayName}</span>
@@ -271,46 +261,20 @@ export function AgentsMonitorGrid({ activeStreams, streamHistory, grouped, onOpe
               </section>
             )
             return (
-              <section key={fork.key} data-agent-fork-key={fork.key} aria-label={`${name} · ${fork.displayName}`} className={`flex min-w-0 flex-col overflow-hidden rounded-2xl ${cardTone}`} style={{ ...cardStyle, height: cardHeight }}>
-                <div className='flex w-full min-w-0 shrink-0 flex-col gap-1 px-3 py-2'>
-                  <div className='flex min-w-0 items-center gap-1'>
-                    <button type='button' onClick={() => onOpenFork(stream)} aria-label={`Preview ${name} · ${fork.displayName}`}
-                      className='flex min-w-0 flex-1 items-center gap-2 rounded-lg text-left hover:bg-black/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 dark:hover:bg-white/5'>
-                      <span className='min-w-0 flex-1 truncate text-sm font-semibold' title={name}>{name}</span>
-                      <span className='shrink-0 text-xs text-neutral-500 dark:text-neutral-400' style={mutedStyle}>{fork.displayName}</span>
-                    </button>
-                    {onToggleForkCollapsed && expandedCount > 1 && <button type='button' data-card-collapse-toggle onClick={() => toggleCollapsed(fork.key, true)}
-                      aria-expanded aria-label={`Collapse ${name} · ${fork.displayName}`} title='Collapse card'
-                      className={`${cardIconButtonClass} h-7 w-7`} style={mutedStyle}>
-                      <ChevronsRightLeft size={16} strokeWidth={2.25} aria-hidden='true' />
-                    </button>}
-                    {onHideFork && <button type='button' onClick={() => hideFork(fork)} aria-label={`Hide ${name} · ${fork.displayName}`} title='Hide from grid'
-                      className={`${cardIconButtonClass} h-7 w-7`} style={mutedStyle}>
-                      <EyeOff size={16} strokeWidth={2.25} aria-hidden='true' />
-                    </button>}
-                  </div>
-                  <div className='flex min-w-0 items-center gap-2 text-xs'>
-                    <span className='flex shrink-0 items-center gap-2 whitespace-nowrap'>
-                      <span className={`h-2 w-2 shrink-0 rounded-full ${statusDotClass(fork)}`} style={statusDotStyle(fork)} aria-hidden='true' />
-                      {statusLabel(fork)}
-                    </span>
-                    <span className='min-w-0 flex-1 truncate text-neutral-500 dark:text-neutral-400' style={mutedStyle}
-                      title={`${fork.activeStreams.length} running · ${fork.completedStreams.length} completed runs`}>
-                      {fork.activeStreams.length} running · {fork.completedStreams.length} completed runs
-                    </span>
-                    <button type='button' disabled={!stream.conversationId} onClick={() => onOpenChat(stream)} aria-label={`Open chat for ${name} · ${fork.displayName}`}
-                      className='shrink-0 rounded-full px-2 py-1 font-medium hover:bg-black/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 disabled:opacity-50 dark:hover:bg-white/5'>
-                      Open chat ↗
-                    </button>
-                  </div>
-                </div>
-                {stream.parentMessageText && <div className='shrink-0 px-3 pb-1'>
-                  <AgentMessageTooltip text={stream.parentMessageText}>
-                    <p className='truncate text-xs text-neutral-500 dark:text-neutral-400' style={mutedStyle}>{stream.parentMessageText}</p>
-                  </AgentMessageTooltip>
-                </div>}
-                {(visibleRows === null || visibleRows.has(rowIndex)) && <AgentRunPreview scrollState={scrollState} streamId={stream.streamId} grouped={grouped} isStreaming={active} wholeFork fillHeight transcriptLabel={`${name} · ${fork.displayName} transcript`} />}
-              </section>
+              <AgentForkCard key={fork.key} fork={fork} grouped={grouped} onOpen={onOpenFork} onOpenChat={onOpenChat}
+                scrollState={scrollState} mountTranscript={visibleRows === null || visibleRows.has(rowIndex)}
+                style={{ height: cardHeight }}
+                actions={<>
+                  {onToggleForkCollapsed && expandedCount > 1 && <button type='button' data-card-collapse-toggle onClick={() => toggleCollapsed(fork.key, true)}
+                    aria-expanded aria-label={`Collapse ${name} · ${fork.displayName}`} title='Collapse card'
+                    className={`${cardIconButtonClass} h-7 w-7`} style={mutedStyle}>
+                    <ChevronsRightLeft size={16} strokeWidth={2.25} aria-hidden='true' />
+                  </button>}
+                  {onHideFork && <button type='button' onClick={() => hideFork(fork)} aria-label={`Hide ${name} · ${fork.displayName}`} title='Hide from grid'
+                    className={`${cardIconButtonClass} h-7 w-7`} style={mutedStyle}>
+                    <EyeOff size={16} strokeWidth={2.25} aria-hidden='true' />
+                  </button>}
+                </>} />
             )
           })}
               </AgentGridRow>
