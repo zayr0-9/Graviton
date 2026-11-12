@@ -1,9 +1,16 @@
 import { HOST_SKILLS_CHANGED } from '../../services/hostCatalogClient'
 import { useActivityStepLabels, saveActivityStepLabels } from '../../helpers/activityStepLabelsSettings'
+import {
+  MCP_APP_MAX_HEIGHT,
+  MCP_APP_MIN_HEIGHT,
+  saveMcpAppConstraintsEnabled,
+  useMcpAppConstraintsEnabled,
+} from '../McpAppIframe/mcpAppSizing'
 import { useQueryClient } from '@tanstack/react-query'
 import mammoth from 'mammoth'
 import {
   AlertCircle,
+  AppWindow,
   Brain,
   Check,
   CheckCircle,
@@ -400,6 +407,7 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
   })
 
   const showActivityStepLabels = useActivityStepLabels()
+  const mcpAppConstraintsEnabled = useMcpAppConstraintsEnabled()
 
   const [truncateToolOutput, setTruncateToolOutput] = useState<boolean>(loadToolOutputTruncationEnabled)
 
@@ -2104,6 +2112,72 @@ ${block}`
                           aria-pressed={editDiffAnimationsEnabled}
                         >
                           {editDiffAnimationsEnabled ? (
+                            <Check
+                              {...lucideIconProps}
+                              style={
+                                savedCustomThemesColors ? { color: savedCustomThemesColors.primaryButtonBg } : undefined
+                              }
+                            />
+                          ) : (
+                            <X {...lucideIconProps} />
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* MCP App Native Size Constraints Section */}
+                  <div className='space-y-2'>
+                    <div
+                      className='overflow-hidden rounded-2xl bg-neutral-50/70 dark:bg-neutral-900/10'
+                      style={settingsSectionCardStyle}
+                    >
+                      <div className='flex items-start justify-between gap-3 px-3 py-3'>
+                        <div className='flex min-w-0 items-start gap-3'>
+                          <div
+                            className='mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-sky-100 text-sky-600 dark:bg-sky-500/15 dark:text-sky-300'
+                            style={settingsSectionIconStyle}
+                          >
+                            <AppWindow {...lucideIconProps} />
+                          </div>
+                          <div className='min-w-0 pr-3'>
+                            <p
+                              id='mcp-app-constraints-label'
+                              className='text-sm font-medium text-stone-700 dark:text-neutral-100'
+                              style={settingsSectionTitleStyle}
+                            >
+                              Apply Graviton size constraints to MCP apps
+                            </p>
+                            <p
+                              className='mt-0.5 text-xs text-neutral-500 dark:text-neutral-100'
+                              style={settingsSectionBodyStyle}
+                            >
+                              Keep inline MCP app viewers between {MCP_APP_MIN_HEIGHT}px and {MCP_APP_MAX_HEIGHT}px
+                              tall. Turn off to use the height each app requests.
+                            </p>
+                          </div>
+                        </div>
+                        <button
+                          type='button'
+                          onClick={() => saveMcpAppConstraintsEnabled(!mcpAppConstraintsEnabled)}
+                          className={iconButtonClass}
+                          style={
+                            savedCustomThemesColors
+                              ? {
+                                  backgroundColor: savedCustomThemesColors.buttonBg,
+                                  color: savedCustomThemesColors.buttonText,
+                                }
+                              : undefined
+                          }
+                          title={
+                            mcpAppConstraintsEnabled
+                              ? 'Let MCP apps choose their own height'
+                              : 'Apply Graviton size constraints to MCP apps'
+                          }
+                          aria-labelledby='mcp-app-constraints-label'
+                          aria-pressed={mcpAppConstraintsEnabled}
+                        >
+                          {mcpAppConstraintsEnabled ? (
                             <Check
                               {...lucideIconProps}
                               style={

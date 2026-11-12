@@ -8,40 +8,142 @@ Historical gaps have been reconstructed from Git tags, app-version changes, and 
 
 ## [Unreleased]
 
+## [0.3.28]
+
+Pending release. Includes current work on `feat/heimdall-edge-resize` after the 0.3.27 checkpoint.
+
+### Added
+
+- Added a Chat Settings toggle for native MCP app height constraints. Constraints stay enabled by default at 240–600px; disabling them uses each app's requested height within safety bounds. Requested heights are retained so mounted viewers can resize immediately when the setting changes.
+- Added an agent-facing operation-mode switch tool, with branch state and chat notices reflecting Chat/Agent transitions.
+- Added branch-aware Claude auto-mode selection and persistence.
+- Added explicit MCP reauthentication through `mcp_manager`, with fresh browser sign-in, saved-token clearing, and pending connection status.
+
+### Changed
+
+- Unified agent grid cards and focused fork previews around the same header, request text, working indicator, transcript, and Open chat action; returning to the grid preserves scroll position.
+- Improved agent-monitor grid sizing, focused previews, and fork request selection.
+- Centralized Markdown and external-link handling across chat, previews, diffs, and permission dialogs. Relative file links resolve against the originating conversation's working directory, with shared URL policy and Electron handling.
+- Preserved Codex commentary separately from final answers through provider events and the tool loop.
+- Improved root-note hook handling and added a utility for recovering notes from hidden branches.
+
+### Fixed
+
+- Kept MCP authentication recovery and pending starts from leaving stale connection state or blocking other requests.
+- Hardened Electron shell-path setup and renderer recovery handling.
+- Kept MCP app host-context size limits aligned with the selected constraint setting, including updates to already-mounted viewers.
+
+## [0.3.27] - 2026-11-12
+
+### Added
+
+- Added a DeepSeek provider through Hyper Router (`deepseek-flash`, `deepseek-v4-pro`), with API-key setup in Settings. The thinking toggle maps to DeepSeek thinking mode, and earlier reasoning is replayed as DeepSeek requires on tool turns. Text only for now.
+- Added resizable Heimdall message previews with viewport-aware sizing and positioning.
+
+### Fixed
+
+- Kept stream catch-up and snapshot projection aligned with persisted branch ancestry so returning to a running chat does not lose its continuation.
+- Updated provider routing, ephemeral generation, and subagent support for DeepSeek.
+
+## [0.3.26] - 2026-11-10
+
+### Added
+
+- Added opt-in native Claude plan mode through the composer and `/plan`. File writes are restricted to Markdown plans under `.ygg/plans`, and exiting plan mode requires explicit user approval.
+- Added provider-reported context usage beyond the OpenAI-only path.
+
+### Fixed
+
+- Restored Claude plan-mode choices per conversation and branch after navigation and reload, including state recorded on responses and compaction summaries.
+- Hid asynchronous completion rows from normal Heimdall turns and rendered compact completion notices in agent previews instead of treating them as new requests. This follow-up landed on November 11 while the app version remained 0.3.26.
+
+## [0.3.25] - 2026-11-10
+
+### Added
+
+- Added Fable 5.2 to the Claude provider model list.
+
+### Changed
+
+- Replaced the composer provider-lock text with a compact lock icon and kept the settings button usable at narrow widths.
+- Hid the currently viewed live fork from the floating agents pill to avoid showing the same run twice.
+
+### Fixed
+
+- Reconciled live chat streams after navigation and snapshot application without advancing sibling branches or parallel panes; returning to a chat restores the branch previously on screen.
+- Preserved active runs, decisions, queues, and error notices when leaving the chat view.
+- Returned pending MCP start/restart status after a short wait instead of holding local-server connections open during sign-in. Settings and tools report whether a server is waiting on credentials, authorization, or connection.
+
+## [0.3.24] - 2026-11-10
+
+Includes the native Claude MCP and warm-session follow-up merged while the app version remained 0.3.24.
+
+### Added
+
+- Added opt-in use of Claude Code's own MCP configuration in Claude chats, with per-server toggles, search, status, and in-app sign-in, reconnect, and sign-out controls. Server headers and environment configuration remain on the host.
+- Added warm Claude CLI sessions for consecutive sends at the exact branch head, with bounded idle lifetime, capacity, configuration checks, and shutdown cleanup.
+- Added background Claude task progress, last-tool information, and usage metrics to the composer task list and launching tool cards.
+
+### Fixed
+
+- Drove the main Claude compaction indicator from main-thread status events instead of background-agent hooks, and cleared unfinished compaction state when a turn ends.
+- Prevented reuse of stopped, interrupted, incompatible, or still-busy Claude sessions, and surfaced unavailable MCP state on affected CLI resumes.
+
+## [0.3.23] - 2026-11-10
+
+Changes accumulated after 0.3.20 are grouped under the next recorded version bump; no separate 0.3.21 or 0.3.22 releases are inferred.
+
 ### Added
 
 - Added an experimental attached-browser build of the shared Electron UI, with shared host identity/settings, multi-observer run recovery, queue/decision controls, independent host terminals and a phone workspace panel. This trusted-network preview has no device authentication; physical-device acceptance and legacy-mobile retirement remain pending.
 - Added draggable dividers for resizing agent-monitor grid cards within each row.
 - Added a server route that copies a whole conversation locally in one transaction (sidebar Copy).
-- Added a DeepSeek provider through Hyper Router (`deepseek-flash`, `deepseek-v4-pro`), with API-key setup in Settings. The thinking toggle maps to DeepSeek thinking mode, and earlier reasoning is replayed as DeepSeek requires on tool turns. Text only for now.
+- Added Claude Code as a chat provider with native tools, provider-locked branches, model changes within Claude, session handling, background-task indicators, compaction, and live Chat/Agent mode changes.
+- Added automatic delivery of detached subagent completions back into the originating chat, with improved hook diagnostics.
+- Added bundled Matrix live wallpapers with reduced-motion support, visibility pausing, and graphics recovery.
+- Added explicit saved HTML document export and improved tool discovery.
 
 ### Changed
 
-- **Graviton is now fully local.** There is no Graviton account, sign-in, cloud sync or hosted backend. All data stays in local SQLite under one local identity, and existing rows from a signed-in profile are moved to it on first start.
+- **Graviton is now fully local.** There is no Graviton account, sign-in, cloud sync or hosted backend. Chat data stays in local SQLite under one local identity, and existing rows from a signed-in profile are moved to it on first start. Configured model providers and external services still receive requests needed to perform their work.
 - Building from source no longer needs a `.env` file. The runtime mode comes from the build target, and `npm run dev` starts the Electron app.
-- Auto-updates now come from GitHub Releases on `zayr0-9/Graviton`.
+- Auto-update checks now use GitHub Releases on `zayr0-9/Graviton`; unsigned macOS builds link to the release for installation.
 - OpenRouter now always uses your own API key. Saved `OpenRouter` selections keep working through an alias, and unknown provider names are rejected with a clear error.
+- Updated Hyper Router to 0.1.10 and standardized provider-owned history and canonical content blocks.
 - The app store stays available without an account: browse and install are anonymous. Publishing to the community store is hidden for now.
 - The usage dashboard shows local cost data only.
-
-- Refreshed searchable select dropdowns and the sign-in screen with theme-aware styling.
-- Matched the floating agent monitor's accent to the theme's streaming color.
+- Refreshed searchable select dropdowns with theme-aware styling and matched the floating agent monitor's accent to the theme's streaming color.
+- Unified the composer and streaming/background-task tab outline and capped retained finished agent forks.
 
 ### Fixed
 
+- Made deep conversation-tree handling stack-safe.
 - Cleared both local and stored composer drafts after sending so submitted text does not reappear, while preserving attached images for the request.
 - Restored focus to select controls after selection or dismissal and prevented keyboard selection of disabled options.
-- Kept Heimdall selection and visibility highlights readable when zoomed out.
-- Rendered compaction summaries consistently in agent previews.
+- Kept Heimdall selection and visibility highlights readable when zoomed out, rendered branch-local compaction dividers, and displayed compaction summaries consistently in agent previews.
+- Hardened renderer recovery and expired stream reattachment against trusted host run outcomes.
+- Kept Explain selection anchored to persisted responses and isolated queued work on pending forks.
+- Improved summary handoff branches, file metadata serialization, hook tracking, tool path/access checks, and MCP HTTP error details.
 
 ### Removed
 
 - Removed the cloud layer: Supabase sign-in and sessions, the Railway gateway and cloud proxy, cloud mirroring and storage modes, the hosted OpenRouter free tier, Stripe payments, the web, landing and payment pages, Vercel analytics and Google Drive sign-in.
 - Removed the `@supabase/supabase-js`, `@stripe/stripe-js`, `@vercel/analytics`, `dexie` and `gsap` dependencies.
 
-## [0.3.19]
+## [0.3.20] - 2026-10-18
 
-Pending release.
+### Added
+
+- Expanded `claude_bridge` with local Claude Code conversation discovery, exact-name/session lookup, resume and independent fork operations, pagination, and original-working-directory recovery.
+- Added Heimdall transfer-scope controls and keyboard/selection improvements.
+
+### Fixed
+
+- Made deep conversation-tree traversal stack-safe.
+- Hardened watcher completion delivery, selected-branch continuations, and operation-mode prompt handling.
+- Improved Mermaid rendering and caching, Markdown code blocks, composer submission, and chat selection recovery.
+
+## [0.3.19] - 2026-10-15
 
 ### Added
 

@@ -35,7 +35,7 @@ import {
 } from '../../utils/mcpApps'
 import { normalizeMcpAppToolResult } from '../../utils/mcpAppToolResult'
 import { McpAppIframe } from '../McpAppIframe/McpAppIframe'
-import { MCP_APP_MAX_HEIGHT } from '../McpAppIframe/mcpAppSizing'
+import { buildMcpAppContainerDimensions } from '../McpAppIframe/mcpAppSizing'
 
 type HtmlIframeEntryBase = {
   key: string
@@ -285,10 +285,7 @@ const buildHostContext = (toolDefinition?: ToolDefinition, fallbackToolName?: st
     timeZone,
     userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : undefined,
     displayMode: 'inline',
-    containerDimensions: {
-      width: typeof window !== 'undefined' ? window.innerWidth : undefined,
-      maxHeight: MCP_APP_MAX_HEIGHT,
-    },
+    containerDimensions: buildMcpAppContainerDimensions(),
   }
 }
 
