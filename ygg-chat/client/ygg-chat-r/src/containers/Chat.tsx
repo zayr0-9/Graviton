@@ -2770,6 +2770,21 @@ function Chat() {
     streamState.status === 'active' ||
     streamState.status === 'waiting_for_tool' ||
     streamState.status === 'aborting'
+  const errorRecoveryStreamRef = useRef<string | null>(null)
+  useEffect(() => {
+    const recoveringStreamId = streamLifecycleActive ? streamState.id : null
+    if (errorRecoveryStreamRef.current === recoveringStreamId) return
+    errorRecoveryStreamRef.current = recoveringStreamId
+    if (!recoveringStreamId || !currentConversationId || chatErrorRecords.length === 0) return
+
+    dispatch(chatSliceActions.chatErrorsSuperseded({
+      conversationId: currentConversationId,
+      streamId: recoveringStreamId,
+      lineageId: modeLineageId ?? null,
+      path: selectedPath,
+    }))
+  }, [dispatch, streamLifecycleActive, streamState.id, currentConversationId, chatErrorRecords, modeLineageId, selectedPath])
+
   const showGenerationLoadingAnimation =
     selection.status !== 'pending' && selection.status !== 'error' && (showCompactionStatus || streamLifecycleActive || hasRunningToolJobForCurrentBranch)
   // A Claude run whose turn ended stays open only for its background tasks: name them instead of "Composing".

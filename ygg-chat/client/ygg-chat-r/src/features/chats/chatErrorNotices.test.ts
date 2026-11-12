@@ -34,6 +34,28 @@ const startedStream = (streamId: string): ChatState =>
   chatReducer(undefined, chatSliceActions.sendingStarted({ streamId, conversationId: 'c1' }))
 
 describe('errorNotices state', () => {
+  it('dismisses superseded errors on the continued path without clearing other branches', () => {
+    let state = chatReducer(undefined, chatSliceActions.chatErrorRecorded(record()))
+    for (const entry of [
+      record({ id: 'ancestor', streamId: 'old', parentMessageId: 'ancestor' }),
+      record({ id: 'lineage', streamId: 'old2', parentMessageId: 'missing', lineageId: 'l1' }),
+      record({ id: 'unanchored', streamId: null, parentMessageId: null }),
+      record({ id: 'sibling', streamId: 'other', parentMessageId: 'sibling', lineageId: 'l2' }),
+      record({ id: 'foreign', conversationId: 'c2' }),
+    ]) state = chatReducer(state, chatSliceActions.chatErrorRecorded(entry))
+
+    state = chatReducer(state, chatSliceActions.chatErrorsSuperseded({
+      conversationId: 'c1', streamId: 's1', lineageId: 'l1', path: ['ancestor', 'continue'],
+    }))
+    expect(selectChatErrorsForConversation(asRoot(state), 'c1').map(entry => entry.id)).toEqual(['sibling'])
+    expect(selectChatErrorsForConversation(asRoot(state), 'c2')).toHaveLength(1)
+
+    // A delayed duplicate cannot revive the old error; a genuinely new failure still shows.
+    state = chatReducer(state, chatSliceActions.chatErrorRecorded(record({ id: 'duplicate' })))
+    state = chatReducer(state, chatSliceActions.chatErrorRecorded(record({ id: 'fresh', streamId: 'new' })))
+    expect(selectChatErrorsForConversation(asRoot(state), 'c1').map(entry => entry.id)).toEqual(['sibling', 'fresh'])
+  })
+
   it('starts empty', () => {
     const state = chatReducer(undefined, { type: '@@init' })
     expect(state.errorNotices).toEqual({ byConversationId: {} })

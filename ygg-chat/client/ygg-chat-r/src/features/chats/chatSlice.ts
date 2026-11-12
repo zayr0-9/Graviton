@@ -2184,6 +2184,29 @@ export const chatSlice = createSlice({
       else state.errorNotices.byConversationId[key] = remaining
     },
 
+    chatErrorsSuperseded: (state, action: PayloadAction<{
+      conversationId: ConversationId
+      streamId: string
+      lineageId: string | null
+      path: MessageId[]
+    }>) => {
+      const { conversationId, streamId, lineageId, path } = action.payload
+      const bucket = state.errorNotices.byConversationId[String(conversationId)]
+      if (!bucket) return
+      const pathIds = new Set(path.map(String))
+      for (const record of bucket) {
+        if (
+          record.streamId === streamId ||
+          (lineageId != null && record.lineageId === lineageId) ||
+          (record.parentMessageId != null && pathIds.has(String(record.parentMessageId))) ||
+          (record.parentMessageId == null && record.lineageId == null)
+        ) {
+          // Keep the dedupe tombstone so delayed reattach failures cannot revive the notice.
+          record.dismissed = true
+        }
+      }
+    },
+
     chatReattachErrorCleared: (state, action: PayloadAction<{ conversationId: ConversationId; streamId: string }>) => {
       const key = String(action.payload.conversationId)
       const bucket = state.errorNotices.byConversationId[key]
