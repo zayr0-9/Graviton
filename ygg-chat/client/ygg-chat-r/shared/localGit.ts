@@ -37,6 +37,8 @@ export interface LocalGitRepoSummary {
 }
 
 export interface LocalGitCommit {
+  /** Absent when connected to an older server. */
+  parents?: string[]
   hash: string
   shortHash: string
   author: string

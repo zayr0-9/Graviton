@@ -6,6 +6,7 @@ import { AgentForkCard, getAgentCardStatus, resolvePreviewFork } from './AgentFo
 import { createEmptyStreamState } from '../../features/chats/streamHelpers'
 import type { AgentRunPreview } from '../../features/chats/agentRunPreviewSlice'
 
+vi.mock('./AgentFollowUpComposer', () => ({ AgentFollowUpComposer: () => <textarea aria-label='Card follow-up' /> }))
 const capture = vi.hoisted(() => ({ byStreamId: {} as Record<string, AgentRunPreview> }))
 vi.mock('../../hooks/redux', () => ({ useAppSelector: (selector: (state: any) => unknown) => selector({ agentRunPreviews: capture }) }))
 vi.mock('../ChatMessage/ChatMessage', () => ({ ChatMessage: ({ contentBlocks }: any) => <p>{contentBlocks.filter((block: any) => block.type === 'text').map((block: any) => block.content).join(' ')}</p> }))

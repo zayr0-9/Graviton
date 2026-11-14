@@ -7,7 +7,7 @@ import type { MessageId } from '../../../../../shared/types'
 import type { RootState } from '@/store/store'
 import 'katex/dist/katex.min.css'
 import { isClaudeTranscriptMessage } from '../../../../../shared/claudeProvider'
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createSelector } from '@reduxjs/toolkit'
 import { createPortal } from 'react-dom'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
@@ -53,6 +53,8 @@ import { HookActivityCard } from './HookActivityCard'
 import { AgentSteps } from './AgentSteps'
 import { partitionAgentItems, isProcessRunSeparatorText, getAgentProgress, buildStreamRenderItems, trailingAgentGroupKey, type StreamRenderItem } from './agentActivity'
 import { MessageActions } from './MessageActions'
+import { placeTouchSelectionMenu, type SelectionRect, type SettledSelection } from './touchSelectionMenu'
+import { useTouchSelectionMenu } from './useTouchSelectionMenu'
 import { submitMessageDraft } from './messageSubmission'
 import { DisclosurePanel, DisclosureRow } from './messagePrimitives'
 import { getCompactionPlaceholder, isHiddenCompactionMessage } from '../../features/chats/summaryPresentation'
@@ -516,6 +518,30 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
     const [contextMenuPosition, setContextMenuPosition] = useState<{ x: number; y: number } | null>(null)
     const [selectedText, setSelectedText] = useState<string>('')
     const floatingActionsRef = useRef<HTMLDivElement | null>(null)
+    // Touch selection menus anchor to the settled selection, not the long-press point.
+    const [touchMenuAnchor, setTouchMenuAnchor] = useState<SelectionRect | null>(null)
+    const [touchMenuPlacement, setTouchMenuPlacement] = useState<{ left: number; top: number } | null>(null)
+    const showTouchSelectionMenu = useCallback((selection: SettledSelection) => {
+      setSelectedText(selection.text)
+      setTouchMenuAnchor(selection.rect)
+      setTouchMenuPlacement(null)
+      setContextMenuOpen(true)
+    }, [])
+    const hideTouchSelectionMenu = useCallback(() => setContextMenuOpen(false), [])
+    const {
+      noteTouchStart,
+      armFromContextMenu: armTouchSelectionMenu,
+      disarm: disarmTouchSelectionMenu,
+    } = useTouchSelectionMenu({
+      containerRef: messageRef,
+      menuRef: floatingActionsRef,
+      onShow: showTouchSelectionMenu,
+      onHide: hideTouchSelectionMenu,
+    })
+    const handleRowTouchStart = useCallback(() => {
+      noteTouchStart()
+      handleMobileMessageActivate()
+    }, [noteTouchStart, handleMobileMessageActivate])
     const [selectedArtifactUrl, setSelectedArtifactUrl] = useState<string | null>(null)
     const liveRenderItems = useMemo(() => streamRenderItems ?? buildStreamRenderItems(streamEvents ?? [], keepTextOutsideGroups), [streamRenderItems, streamEvents, keepTextOutsideGroups])
     const contentToolGroupsByIndex = useMemo(() => buildToolCallGroupsFromBlocks(contentBlocks), [contentBlocks])
@@ -800,6 +826,10 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
     const handleContextMenu = (e: React.MouseEvent) => {
       if (readOnly) return
       e.preventDefault()
+      // Long-press over text starts a selection the user is about to drag. The touch session
+      // shows the menu after they let go, so it never covers the handles mid-drag.
+      if (armTouchSelectionMenu(e)) return
+      setTouchMenuAnchor(null)
       const selection = window.getSelection()
       const rawText = selection?.toString() || ''
       const container = messageRef.current
@@ -1010,7 +1040,28 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
     }, [contextMenuOpen])
 
     // Click outside / Escape handler for floating MessageActions
-    const closeFloatingActions = useCallback(() => setContextMenuOpen(false), [])
+    const closeFloatingActions = useCallback(() => {
+      setContextMenuOpen(false)
+      disarmTouchSelectionMenu()
+    }, [disarmTouchSelectionMenu])
+
+    // Measure the rendered touch menu, then place it beside the selection.
+    useLayoutEffect(() => {
+      if (!contextMenuOpen || !touchMenuAnchor) return
+      const menu = floatingActionsRef.current
+      if (!menu) return
+      const size = { width: menu.offsetWidth, height: menu.offsetHeight }
+      const placement = placeTouchSelectionMenu(touchMenuAnchor, size, {
+        width: window.innerWidth,
+        height: window.innerHeight,
+      })
+      setTouchMenuPlacement(placement)
+      if (placement) {
+        const center = { x: placement.left + size.width / 2, y: placement.top + size.height / 2 }
+        setContextMenuPosition(center)
+        explainInputPosition.current = center
+      }
+    }, [contextMenuOpen, touchMenuAnchor])
     useEffect(() => {
       if (!contextMenuOpen) return
       const handleClickOutside = (event: MouseEvent) => {
@@ -1642,7 +1693,7 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
         onMouseEnter={() => setIsHovering(true)}
         onMouseLeave={() => setIsHovering(false)}
         onClick={handleMobileMessageActivate}
-        onTouchStart={handleMobileMessageActivate}
+        onTouchStart={handleRowTouchStart}
       >
         <div
           className={`min-w-0 rounded-2xl ${drawSurface ? 'pt-2 pb-1' : ''} ${surfaceClass} ${contextHighlightClass} ${FAST_COLOR_TRANSITION_CLASS}`}
@@ -1834,16 +1885,25 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
 
         {/* Floating MessageActions on right-click */}
         {contextMenuOpen &&
-          contextMenuPosition &&
+          (touchMenuAnchor || contextMenuPosition) &&
           createPortal(
             <div
               ref={floatingActionsRef}
               className='fixed z-[400]'
-              style={{
-                left: `${contextMenuPosition.x}px`,
-                top: `${contextMenuPosition.y}px`,
-                transform: 'translate(-50%, -50%)',
-              }}
+              style={
+                touchMenuAnchor
+                  ? {
+                      left: `${touchMenuPlacement?.left ?? 0}px`,
+                      top: `${touchMenuPlacement?.top ?? 0}px`,
+                      // Hidden until measured, or while the selection is scrolled out of view.
+                      visibility: touchMenuPlacement ? 'visible' : 'hidden',
+                    }
+                  : {
+                      left: `${contextMenuPosition!.x}px`,
+                      top: `${contextMenuPosition!.y}px`,
+                      transform: 'translate(-50%, -50%)',
+                    }
+              }
             >
               <MessageActions
                 onEdit={

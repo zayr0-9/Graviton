@@ -15,7 +15,7 @@ describe('runningAgentsUi hidden forks', () => {
   it('keeps hidden forks across size resets but clears them on sign-out', () => {
     let state = reducer(undefined, actions.forkHidden({ key: 'f', streamIds: ['a'] }))
     state = reducer(reducer(state, actions.sizeChanged({ width: 400, height: 300 })), actions.sizeReset())
-    expect(state).toEqual({ expandedSize: null, hiddenForks: { f: ['a'] }, collapsedForks: [] })
+    expect(state).toEqual({ followUps: {}, expandedSize: null, hiddenForks: { f: ['a'] }, collapsedForks: [] })
     expect(reducer(state, { type: 'users/clearUser' }).hiddenForks).toEqual({})
     expect(reducer(state, actions.allForksShown()).hiddenForks).toEqual({})
   })

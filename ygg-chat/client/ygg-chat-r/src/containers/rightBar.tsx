@@ -14,6 +14,7 @@ import {
   loadMonacoWorkspace,
   whenMonacoWorkspaceLoaded,
 } from '../components/Monaco/monacoWorkspace'
+import { CommitGraph } from '../components/CommitGraph/CommitGraph'
 import { TextArea } from '../components/TextArea/TextArea'
 import { useHtmlDarkMode } from '../components/ThemeManager/themeConfig'
 import { updateResearchNote } from '../features/conversations/conversationActions'
@@ -2129,10 +2130,7 @@ const RightBar: React.FC<RightBarProps> = ({
     [gitOverviewData]
   )
   const displayedGitCommits = useMemo(() => (gitOverviewData?.commits || []).slice(0, 8), [gitOverviewData?.commits])
-  const displayedCommitGraphLines = useMemo(
-    () => (gitOverviewData?.commitGraphLines || []).slice(0, 18),
-    [gitOverviewData?.commitGraphLines]
-  )
+  const graphCommits = useMemo(() => gitOverviewData?.commits || [], [gitOverviewData?.commits])
   const displayedLocalBranches = useMemo(
     () => (gitOverviewData?.branches.local || []).slice(0, 8),
     [gitOverviewData?.branches.local]
@@ -3345,22 +3343,14 @@ const RightBar: React.FC<RightBarProps> = ({
 
                   <div className='border-t border-neutral-200/70 px-2 pt-4 dark:border-neutral-800/70'>
                     <div className='mb-2 flex items-center justify-between gap-2'>
-                      <h3 className='text-[11px] font-semibold uppercase tracking-[0.16em] text-neutral-500 dark:text-neutral-400'>
+                      <h3 className='text-xs font-semibold text-neutral-500 dark:text-neutral-400'>
                         Commit Graph
                       </h3>
                       <span className='text-[11px] text-neutral-500 dark:text-neutral-400'>
-                        last {displayedCommitGraphLines.length}
+                        last {graphCommits.length}
                       </span>
                     </div>
-                    {displayedCommitGraphLines.length === 0 ? (
-                      <div className='text-xs text-neutral-500 dark:text-neutral-400'>No commit graph available.</div>
-                    ) : (
-                      <div className='overflow-hidden rounded-lg bg-neutral-950/95'>
-                        <pre className='max-h-72 overflow-auto px-3 py-3 font-mono text-[11px] leading-5 text-emerald-100 no-scrollbar whitespace-pre-wrap break-words'>
-                          {displayedCommitGraphLines.join('\n')}
-                        </pre>
-                      </div>
-                    )}
+                    <CommitGraph commits={graphCommits} />
                   </div>
 
                   <div className='border-t border-neutral-200/70 px-2 pt-4 dark:border-neutral-800/70'>

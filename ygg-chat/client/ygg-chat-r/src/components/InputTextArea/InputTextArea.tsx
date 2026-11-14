@@ -21,6 +21,7 @@ import { getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from '../Theme
 import { readLocalMentionFile } from '../../utils/readLocalMentionFile'
 import { rankFileMatches } from '../../../shared/fileMatchRanking'
 import { CHAT_NORMAL_TEXT_SIZE_CLASS, getChatFontSizeOffsetStyle } from '../ChatMessage/chatMessageShared'
+import { getPastedImageFiles } from '../../helpers/clipboardImages'
 
 type textAreaState = 'default' | 'error' | 'disabled'
 // Accept any Tailwind width/max-width class combination (e.g. "w-full max-w-3xl").
@@ -440,8 +441,7 @@ export const InputTextArea: React.FC<TextAreaProps> = ({
   const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
     onPaste?.(e)
     if (e.defaultPrevented || state === 'disabled' || !enableImageAttachments) return
-    const images = Array.from(e.clipboardData?.items || [])
-      .filter(item => item.type.startsWith('image/')).map(item => item.getAsFile()).filter((file): file is File => !!file)
+    const images = getPastedImageFiles(e.clipboardData)
     if (!images.length) return
     e.preventDefault()
     void dispatch(prepareImageFiles(images, imageDraftTarget))

@@ -57,7 +57,7 @@ import {
 } from '../components'
 import { ChatErrorBubble } from '../components/ChatErrorBubble/ChatErrorBubble'
 import { ActionPopoverButton, ActionPopoverDisclosure, ActionPopoverSwitch } from '../components/ActionPopover/ActionPopoverControls'
-import { ClipboardCheck, CodeXml, MessageSquare, Plus, ShieldCheck, ShieldHalf, ShieldQuestion, X } from 'lucide-react'
+import { ClipboardCheck, ClipboardPaste, CodeXml, MessageSquare, Plus, ShieldCheck, ShieldHalf, ShieldQuestion, X } from 'lucide-react'
 import { useConversationRunStatistics } from '../hooks/useConversationRunStatistics'
 import { deriveRunStatistics, placeRunFooters, interleaveRunFooters, type RunStatisticsFooterData } from '../features/chats/runStatistics'
 import { RunStatisticsFooter } from '../components/ChatMessage/RunStatisticsFooter'
@@ -247,7 +247,8 @@ import {
 import { useAppDispatch, useAppSelector } from '../hooks/redux'
 import { useAuth } from '../hooks/useAuth'
 import { useIdeContext } from '../hooks/useIdeContext'
-import { useIsMobile } from '../hooks/useMediaQuery'
+import { useIsMobile, useIsTouchPrimary } from '../hooks/useMediaQuery'
+import { canReadClipboardImages, readClipboardImageFiles } from '../helpers/clipboardImages'
 import { useRunningJobs } from '../hooks/useToolJobs'
 import {
   ResearchNoteItem,
@@ -6367,6 +6368,33 @@ function Chat() {
     [dispatch, activeBranchEditingMessageId, updateLocalInput, focusLocalInput]
   )
 
+  // Touch browsers may never deliver an image-only clipboard to the textarea's paste event,
+  // so phones get an explicit button that reads the clipboard (secure origins only).
+  const isTouchPrimary = useIsTouchPrimary()
+  const showClipboardImageButton = isTouchPrimary && canReadClipboardImages()
+  const [clipboardImageNotice, setClipboardImageNotice] = useState<string | null>(null)
+  useEffect(() => {
+    if (!clipboardImageNotice) return
+    const timer = window.setTimeout(() => setClipboardImageNotice(null), 2500)
+    return () => window.clearTimeout(timer)
+  }, [clipboardImageNotice])
+  const handlePasteClipboardImage = useCallback(async () => {
+    let files: File[]
+    try {
+      files = await readClipboardImageFiles()
+    } catch {
+      setClipboardImageNotice('Clipboard access was blocked')
+      return
+    }
+    if (files.length === 0) {
+      setClipboardImageNotice('No image on the clipboard')
+      return
+    }
+    const target: ImageDraftTarget = activeBranchEditingMessageId != null
+      ? { kind: 'branch', messageId: parseId(activeBranchEditingMessageId) } : { kind: 'composer' }
+    void dispatch(prepareImageFiles(files, target))
+  }, [dispatch, activeBranchEditingMessageId])
+
   // const handleMultiReplyCountChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
   //   const value = e.target.value
   //   if (value === '' || !isNaN(Number(value))) {
@@ -8001,6 +8029,22 @@ function Chat() {
                       <path d='m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.51a2 2 0 0 1-2.83-2.83l8.49-8.48' />
                     </svg>
                   </button>
+                  {showClipboardImageButton && (
+                    <button
+                      type='button'
+                      className='p-2 rounded-full text-neutral-500 dark:text-neutral-400 hover:text-neutral-800 dark:hover:text-neutral-200 hover:bg-white/10 dark:hover:bg-white/5 transition-[background-color,color] duration-200'
+                      onClick={() => void handlePasteClipboardImage()}
+                      title={clipboardImageNotice ?? 'Paste image'}
+                      aria-label='Paste image from clipboard'
+                    >
+                      <ClipboardPaste size={18} strokeWidth={2} />
+                    </button>
+                  )}
+                  {clipboardImageNotice && (
+                    <span role='status' className='text-xs text-neutral-500 dark:text-neutral-400 whitespace-nowrap'>
+                      {clipboardImageNotice}
+                    </span>
+                  )}
                   {streamState.active && hasLocalInput && (
                     <button type='button' onClick={() => handleSend(1)} disabled={!canQueueLocal}
                       title='Queue message' aria-label='Queue message'

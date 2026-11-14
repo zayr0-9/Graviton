@@ -9,6 +9,7 @@ import {
 import { getThemeModeColor, useCustomChatTheme, useHtmlDarkMode, type CustomChatTheme, type ThemeColorPair } from '../ThemeManager/themeConfig'
 import { AgentMessageTooltip } from './AgentMessageTooltip'
 import { AgentRunPreview, type AgentPreviewScrollState } from './AgentRunPreview'
+import { AgentFollowUpComposer } from './AgentFollowUpComposer'
 
 export const forkName = (fork: AgentForkGroup) =>
   fork.representative.conversationTitle || `Conversation ${fork.representative.conversationId || 'Unknown'}`
@@ -138,6 +139,8 @@ export function AgentForkCard({ fork, run, grouped, onOpenChat, onOpen, leading,
       {mountTranscript && <AgentRunPreview scrollState={scrollState} streamId={stream.streamId} grouped={grouped}
         isStreaming={status.active} wholeFork={!run} fillHeight={fillHeight}
         transcriptLabel={run ? `${name} · run ${summarizeAgentStreamId(run.streamId)} transcript` : `${label} transcript`} />}
+      {!run && (stream.streamType === 'primary' || stream.streamType === 'branch') &&
+        <AgentFollowUpComposer fork={fork} onOpenChat={onOpenChat} />}
     </section>
   )
 }

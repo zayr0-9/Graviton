@@ -12,6 +12,7 @@ import { ClaudeWarmProcess, ClaudeWarmRegistry, claudeIdleEvent, claudeLaunchKey
 import type { HookInput, Options, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
 import type { HeadlessBackgroundTask, HeadlessBackgroundTaskOutput, HeadlessMessageRequest, HeadlessStreamEvent } from '../../../../../shared/headlessApi.js'
 import { ClaudeSessionRepo } from '../persistence/claudeSessionRepo.js'
+import { claudeWorkspaceChangedError } from './claudeWorkspaceError.js'
 import type { MessageRepo } from '../persistence/messageRepo.js'
 import type { MessageSink } from './messageSink.js'
 import { OperationModeControl } from './operationModeControl.js'
@@ -568,7 +569,7 @@ export class ClaudeSessionService {
       } else if (input.sourceMessageId) {
         const checkpoint = this.deps.sessions.checkpoint(input.sourceMessageId)
         if (!checkpoint?.resumable) throw new Error('This node is not a completed Claude checkpoint. Choose a completed Claude response to fork or continue.')
-        if (checkpoint.cwd !== cwd) throw new Error('Claude branch workspace is locked. Start a new conversation to change it.')
+        if (checkpoint.cwd !== cwd) throw claudeWorkspaceChangedError(checkpoint.cwd, cwd)
         // Verify the exact source is still available. Never silently start over.
         const transcript = await sdk.getSessionMessages(checkpoint.session_id, { dir: cwd })
         // getSessionMessages projects only the compacted live chain. Native forkSession

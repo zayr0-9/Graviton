@@ -114,3 +114,17 @@ export const handleChatToggleShortcut = (
   if (!event.repeat) toggle()
   return true
 }
+
+/**
+ * Whether Enter in the composer should send. On a hardware keyboard plain Enter sends and
+ * Shift+Enter adds a line. On-screen keyboards have no Shift+Enter, so on touch-primary devices
+ * Enter adds a line and the send button sends; Ctrl/Cmd+Enter still sends from a paired keyboard.
+ */
+export const shouldComposerEnterSubmit = (
+  event: { key: string; shiftKey: boolean; ctrlKey: boolean; metaKey: boolean },
+  touchPrimary: boolean
+): boolean => {
+  if (event.key !== 'Enter' || event.shiftKey) return false
+  if (touchPrimary) return event.ctrlKey || event.metaKey
+  return true
+}

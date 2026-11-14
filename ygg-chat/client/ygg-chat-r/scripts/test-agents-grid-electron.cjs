@@ -28,14 +28,24 @@ if (!process.versions.electron) {
       plugins: [{ name: 'isolated-grid', setup(builder) {
         // Keep real grid, row, preview, Redux and browser observers. Stub only
         // the heavyweight message presentation and unrelated app dependencies.
+        builder.onLoad({ filter: /[/\\]chatActions\.ts$/ }, () => ({ contents: `
+          import { createAsyncThunk } from '@reduxjs/toolkit';
+          export const enqueueUserMessage = createAsyncThunk('fixture/queue', async (params, {rejectWithValue}) => {
+            (window.__followUpSubmissions ||= []).push(params);
+            return window.__followUpFailure ? rejectWithValue({message:'Run unavailable', uncertain:false}) : {streamId:params.streamId};
+          });
+          export const cancelQueuedMessage = createAsyncThunk('fixture/cancel', async () => {});
+        `, loader: 'ts' }))
+        builder.onLoad({ filter: /[/\\]runAdmissionClient\.ts$/ }, () => ({ contents: 'export const getAdmissionEpoch = async () => "fixture-epoch";' }))
         builder.onLoad({ filter: /[/\\]useRunningAgentStreams\.ts$/ }, async args => {
           const source = fs.readFileSync(args.path, 'utf8')
           const start = source.indexOf('export const getAgentForkKey')
-          const end = source.indexOf('\nexport ', source.indexOf('export const buildAgentForkGroups') + 10)
+          const end = source.indexOf('\nexport ', source.indexOf('export const summarizeAgentStreamId') + 10)
           return { contents: source.slice(start, end), loader: 'ts' }
         })
         builder.onLoad({ filter: /[/\\]ThemeManager[/\\]themeConfig\.ts$/ }, () => ({ contents: 'export const useCustomChatTheme = () => ({theme: {colors: {}}, enabled: false}); export const useHtmlDarkMode = () => false; export const getThemeModeColor = color => color;' }))
         builder.onLoad({ filter: /[/\\]ChatMessage[/\\]ChatMessage\.tsx$/ }, () => ({ contents: 'export function ChatMessage({contentBlocks}) { window.__messageRenders = (window.__messageRenders || 0) + 1; return <p data-fixture-message style={{minHeight: 1400}}>{contentBlocks.filter(b => b.type === "text").map(b => b.content).join(" ")}</p> }', loader: 'tsx' }))
+        builder.onLoad({ filter: /[/\\]ChatMessage[/\\]WatcherCompletionNotice\.tsx$/ }, () => ({ contents: 'export const WatcherCompletionNotice = () => null' }))
         builder.onLoad({ filter: /[/\\]ChatMessage[/\\]SummarisedMessage\.tsx$/ }, () => ({ contents: 'export const SummarisedMessage = () => null' }))
         builder.onLoad({ filter: /[/\\]ChatMessage[/\\]chatMessageShared\.tsx?$/ }, () => ({ contents: 'export const MESSAGE_BLOCK_INSET_CLASS = ""; export const extractAssistantTextsFromResponsesOutputItems = () => []; export const extractReasoningTextsFromResponsesOutputItems = () => [];' }))
         builder.onLoad({ filter: /[/\\]AgentMessageTooltip\.tsx$/ }, () => ({ contents: 'export const AgentMessageTooltip = ({children}) => children' }))

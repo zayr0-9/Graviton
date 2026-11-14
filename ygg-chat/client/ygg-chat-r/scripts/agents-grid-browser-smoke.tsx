@@ -8,6 +8,8 @@ import { createEmptyStreamState } from '../src/features/chats/streamHelpers'
 import type { AgentRunPreviewState } from '../src/features/chats/agentRunPreviewSlice'
 import type { AgentStreamListItem } from '../src/hooks/useRunningAgentStreams'
 
+import runningAgentsUiReducer from '../src/features/ui/runningAgentsUiSlice'
+
 const previews: AgentRunPreviewState = { byStreamId: {}, latestByFork: {} }
 const streams = Array.from({ length: 120 }, (_, index): AgentStreamListItem => {
   const streamId = `run-${index}`
@@ -23,12 +25,16 @@ const streams = Array.from({ length: 120 }, (_, index): AgentStreamListItem => {
     finalMessageId: null, messageId: null, originMessageId: null, rootMessageId: null, parentMessageId: null,
     parentMessageText: null, activityKind: 'text', activityLabel: 'Writing', completedAt: null, displayName: streamId }
 })
-const store = configureStore({ reducer: (state = { agentRunPreviews: previews }, action) => {
+const foreground = { composition: { input: { content: 'Foreground draft' }, imageDrafts: ['foreground-image'] },
+  conversation: { currentConversationId: 'foreground', currentPath: ['foreground-head'] }, messageQueues: {} }
+const store = configureStore({ reducer: (state = { agentRunPreviews: previews,
+  runningAgentsUi: runningAgentsUiReducer(undefined, { type: 'init' }), chat: foreground }, action) => {
+  state = { ...state, runningAgentsUi: runningAgentsUiReducer(state.runningAgentsUi, action) }
   if (action.type !== 'fixture/update') return state
   const streamId = action.payload as string
   const run = state.agentRunPreviews.byStreamId[streamId]
   const stream = { ...run.stream, buffer: `${run.stream.buffer}!` }
-  return { agentRunPreviews: { ...state.agentRunPreviews, byStreamId: { ...state.agentRunPreviews.byStreamId,
+  return { ...state, agentRunPreviews: { ...state.agentRunPreviews, byStreamId: { ...state.agentRunPreviews.byStreamId,
     [streamId]: { ...run, stream, entries: [{ key: streamId, stream }] } } } }
 } })
 const history: AgentStreamListItem[] = []
@@ -109,5 +115,46 @@ const scroller = () => document.querySelector('[aria-label="Agent forks"] > div'
   check(document.body.textContent?.includes('Transcript run-0!'), 'Reopen lost retained output')
   check(transcripts().length <= 9, 'Reopen eagerly mounted all transcripts')
   results.push('StrictMode collapse/reopen defers transcripts again')
+
+  const input = () => document.querySelector('textarea') as HTMLTextAreaElement
+  const type = (value: string) => {
+    const textarea = input()
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(textarea, value)
+    textarea.dispatchEvent(new Event('input', { bubbles: true }))
+  }
+  type('Card follow-up')
+  await wait()
+  input().focus()
+  await wait()
+  const queueButton = () => Array.from(input().parentElement!.querySelectorAll('button')).find(button => button.textContent?.trim() === 'Queue')!
+  check(!input().className.includes('ring-'), 'Textarea still draws a focus ring')
+  check(queueButton().classList.contains('bg-black/10'), 'Focused input did not highlight Queue')
+  input().blur()
+  await wait()
+  check(!queueButton().classList.contains('bg-black/10'), 'Queue highlight remained after input blur')
+  input().focus()
+  input().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, isComposing: true }))
+  await wait()
+  check(!(window as any).__followUpSubmissions?.length, 'IME Enter submitted the draft')
+  flushSync(() => toggle())
+  flushSync(() => toggle())
+  await wait()
+  check(input().value === 'Card follow-up', 'Pill remount lost card draft')
+  input().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+  await wait()
+  check((window as any).__followUpSubmissions?.length === 1, 'Enter did not submit exactly once')
+  check(input().value === '', 'Acknowledged card draft was not cleared')
+  check(store.getState().chat === foreground, 'Card submission changed the foreground composer or path')
+  const submitted = (window as any).__followUpSubmissions[0]
+  check(submitted.conversationId === 'chat' && submitted.streamId === 'run-0' && submitted.updatePath === false &&
+    submitted.includeGlobalComposerContext === false, 'Card targeted foreground/global context')
+  type('Preserve on rejection')
+  await wait()
+  ;(window as any).__followUpFailure = true
+  input().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+  await wait()
+  check(input().value === 'Preserve on rejection', 'Rejection discarded text')
+  check(document.body.textContent?.includes('Run unavailable'), 'Rejection was not surfaced')
+  results.push('Card draft survives remount; IME is safe; accepted/rejected follow-ups preserve foreground state')
   return results
 }

@@ -2,6 +2,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { RunningAgentsFloatingButton } from './RunningAgentsFloatingButton'
 
+vi.mock('./AgentFollowUpComposer', () => ({ AgentFollowUpComposer: () => null }))
 const themeState = vi.hoisted(() => ({ enabled: true, dark: false, tint: { light: '#aabbcc', dark: '#112233' } }))
 vi.mock('../ThemeManager/themeConfig', async importOriginal => {
   const actual = await importOriginal<typeof import('../ThemeManager/themeConfig')>()

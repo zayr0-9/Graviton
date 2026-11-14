@@ -390,3 +390,7 @@ Main enforces the policy (`electron/externalLinks.ts`, scheme lists in `shared/l
 - `shell:openExternal` accepts calls from the main frame of the main or floating window.
 
 Tests: `src/helpers/linkTargets.test.ts`, `src/components/MarkdownLink/MarkdownLink.test.tsx`, `src/components/MarkdownContent/AppMarkdown.test.tsx`, `server/__tests__/externalLinks.test.ts`, `server/__tests__/shellPath.test.ts`.
+
+## Touch selection menu
+
+On touch, Android Chrome fires `contextmenu` on the long-press that *starts* a selection. `ChatMessage` therefore does not open the selection menu there: `useTouchSelectionMenu` arms a session (`touchSelectionMenu.ts`) and shows the menu only once the selection settles. "Settled" means the page touch lifted (`touchend`), or no `selectionchange`/scroll for the idle delay. The idle case covers browser-owned handle drags, which send the page no touch events, and `touchcancel` after the browser takes over the gesture. The menu hides while the selection changes and is placed above the selection, or below the drag handles, from the measured menu size. Taps inside the menu do not count as selection changes. Only one message owns a session at a time. Long-press without selected text and mouse right-click keep the immediate menu. Tests: `touchSelectionMenu.test.ts`.

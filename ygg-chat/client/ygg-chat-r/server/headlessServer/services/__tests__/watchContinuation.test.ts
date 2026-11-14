@@ -189,3 +189,33 @@ describe('watcher branch continuation', () => {
     expect(deliver).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('card text follow-up retained configuration', () => {
+  it('continues the exact completed run configuration, replacing turn-only context', () => {
+    const h = harness()
+    const run = h.add('card-run', 'completed')
+    Object.assign(run.request, { rootPath: '/workspace/b', fullAccess: false, think: true,
+      reasoningConfig: { effort: 'high' }, tools: [{ name: 'read_file' }], projectContext: 'project B',
+      conversationContext: 'chat B', imageConfig: { aspectRatio: '16:9' }, autoMemoryEnabled: false,
+      attachmentsBase64: [{ dataUrl: 'old' }], selectedFiles: [{ path: 'old' }] })
+    const result = h.orchestrator.submitQueuedMessage('chat', 'card-run', { requestId: 'card-q', content: 'continue', fullAccess: false })
+    expect(result.restart).toMatchObject({ provider: 'openaichatgpt', modelName: 'test', rootPath: '/workspace/b',
+      operationMode: 'plan', think: true, reasoningConfig: { effort: 'high' }, tools: [{ name: 'read_file' }],
+      projectContext: 'project B', conversationContext: 'chat B', autoMemoryEnabled: false,
+      toolAutoApprove: false, hooksEnabled: true, fullAccess: false, content: 'continue',
+      parentId: 'final', lineageId: 'branch', attachmentsBase64: null, selectedFiles: [] })
+    expect(h.orchestrator.submitQueuedMessage('chat', 'card-run', { requestId: 'card-q', content: 'continue', fullAccess: false }))
+      .toEqual({ restartStreamId: result.restart.streamId })
+  })
+  it('rejects stale, failed, missing, and wrong-conversation targets without a successor', () => {
+    const h = harness()
+    const stale = h.add('stale', 'completed')
+    h.setHead('advanced')
+    expect(() => h.orchestrator.submitQueuedMessage('chat', 'stale', { requestId: 'q', content: 'next' })).toThrow('Branch advanced')
+    expect(stale.successor).toBeUndefined()
+    h.add('failed', 'failed')
+    expect(() => h.orchestrator.submitQueuedMessage('chat', 'failed', { requestId: 'q', content: 'next' })).toThrow('stopped or failed')
+    expect(() => h.orchestrator.submitQueuedMessage('chat', 'missing', { requestId: 'q', content: 'next' })).toThrow()
+    expect(() => h.orchestrator.submitQueuedMessage('wrong', 'stale', { requestId: 'q', content: 'next' })).toThrow()
+  })
+})

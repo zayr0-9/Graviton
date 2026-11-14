@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3'
 import { describe, it, expect } from 'vitest'
 import { CLAUDE_SESSION_SCHEMA, ClaudeSessionRepo } from '../../persistence/claudeSessionRepo.js'
+import { classifyChatError } from '../../providers/providerErrorFormatter.js'
 import { claudeProcessEnvironment } from '../claudeProcessConfig.js'
 import { isClaudeTranscriptMessage } from '../../../../../../shared/claudeProvider.js'
 
@@ -16,6 +17,13 @@ describe('Claude durable session state', () => {
       repo.reserve('l', 'c', 'model', '/workspace')
       repo.reserve('l', 'c', 'other', '/workspace')
       expect(() => repo.reserve('l', 'c', 'third', '/other')).toThrow('workspace is locked')
+      try { repo.reserve('l', 'c', 'third', '/other') } catch (error) {
+        const envelope = classifyChatError(error)
+        expect(envelope.code).toBe('claude_workspace_changed')
+        expect(envelope.action).toBeUndefined()
+        expect(envelope.detail).toContain('Original folder: /workspace')
+        expect(envelope.detail).toContain('Selected folder: /other')
+      }
       repo.session('l', 'session', 'ready')
       repo.record('m', 'session', 'uuid', '/workspace', true)
       expect(repo.branch('l')).toMatchObject({ session_id: 'session', model: 'other', cwd: '/workspace', state: 'ready' })

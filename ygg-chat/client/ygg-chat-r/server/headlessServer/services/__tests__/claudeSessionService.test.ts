@@ -5,6 +5,7 @@ import path from 'node:path'
 import { CHAT_MODE_NOTE, ClaudeSessionService, PLAN_MODE_NOTE, claudeAnswersFromClarify, claudeQuestionsForClarify, isClaudePlanFile, claudeModeSwitchNotice, interruptedResumePoint, parseClaudeSlashCommand, safeResumePoint, type ClaudeTaskControl } from '../claudeSessionService.js'
 import { OperationModeControl } from '../operationModeControl.js'
 import { assertClaudeBranchSelection } from '../../persistence/claudeSessionRepo.js'
+import { classifyChatError } from '../../providers/providerErrorFormatter.js'
 import { DecisionBroker } from '../decisionBroker.js'
 import { createChatHookSession } from '../chatHookService.js'
 
@@ -37,6 +38,24 @@ const assistant = (uuid = 'a', content: any[] = [{ type: 'text', text: 'answer' 
 const success = { type: 'result', subtype: 'success', is_error: false, session_id: 's' }
 
 describe('Claude native session backend', () => {
+  it('explains a changed workspace before resuming or forking the native session', async () => {
+    const f = fixture()
+    f.input.sourceMessageId = 'previous'
+    f.input.cwd = '/new-workspace'
+    f.state.checkpoint = { session_id: 'source', message_uuid: 'checkpoint', cwd: '/workspace', resumable: 1 }
+    const error = await f.service.run(f.input).catch(error => error)
+    expect(error).toBeInstanceOf(Error)
+    const envelope = classifyChatError(error)
+    expect(envelope).toMatchObject({ code: 'claude_workspace_changed', recoverability: 'user_action' })
+    expect(envelope.userMessage).toContain('Switch back to continue')
+    expect(envelope.detail).toContain('Original folder: /workspace')
+    expect(envelope.detail).toContain('Selected folder: /new-workspace')
+    expect(envelope.action).toBeUndefined()
+    expect(f.sdk.query).not.toHaveBeenCalled()
+    expect(f.sdk.forkSession).not.toHaveBeenCalled()
+    expect(f.sessions.reserve).not.toHaveBeenCalled()
+  })
+
   it('uses Claude tools and transcript, projects a completed response and records checkpoint', async () => {
     const f = fixture([assistant(), success])
     const final = await f.service.run(f.input)
