@@ -1,5 +1,6 @@
 import React from 'react'
-import ReactMarkdown, { type ExtraProps } from 'react-markdown'
+import { type ExtraProps } from 'react-markdown'
+import { AppMarkdown } from './AppMarkdown'
 import rehypeHighlight from 'rehype-highlight'
 import remarkGfm from 'remark-gfm'
 import { SHARED_TEXT_MARKDOWN_CLASS } from '../ChatMessage/chatMessageShared'
@@ -38,13 +39,13 @@ export const MarkdownContent: React.FC<MarkdownContentProps> = ({ content, class
       className={`${SHARED_TEXT_MARKDOWN_CLASS} !pb-0 !text-[0.8125em] sm:!text-[0.8125em] xl:!text-[0.8125em] 2xl:!text-[0.8125em] 3xl:!text-[0.8125em] ${className}`}
       style={{ ...themeStyle, ...style }}
     >
-      <ReactMarkdown
+      <AppMarkdown
         remarkPlugins={[remarkGfm]}
         rehypePlugins={[[rehypeHighlight, { detect: true }]]}
         components={MARKDOWN_COMPONENTS}
       >
         {prepareMermaidMarkdown(content)}
-      </ReactMarkdown>
+      </AppMarkdown>
     </div>
   )
 }

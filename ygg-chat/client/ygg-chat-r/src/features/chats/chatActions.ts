@@ -5,6 +5,7 @@ import { getClientId, newClientId } from '../../helpers/clientId'
 import { isCleanStartBranchEdit, isSummaryBranchEdit, isProviderHandoffEdit, resolveBranchModelSelection, resolveEditBranchModelSelection, resolveComposerSummaryHandoff } from './branchModelSelection'
 import { resolveBranchFastMode } from './branchFastMode'
 import { resolveBranchPlanMode } from './branchPlanMode'
+import { resolveAnchoredClaudeAutoMode, resolveBranchClaudeAutoMode } from './branchClaudeAutoMode'
 import { defaultToolApproval, resolveAnchoredToolApproval, resolveBranchToolApproval, resolveHandoffToolApproval } from './branchToolApproval'
 import { isCommittedCompaction } from '../../../../../shared/compaction'
 import { getPendingFullAccessNotification, isFullAccessEnabled } from '../../helpers/fullAccessSettings'
@@ -1096,7 +1097,8 @@ export const sendMessage = createAsyncThunk<
           toolAutoApprove: summaryHandoff ? resolveHandoffToolApproval(modelSelectionState, summaryHandoff.id, serverProvider)
             : isBranch ? resolveAnchoredToolApproval(modelSelectionState, parent, conversationId, serverProvider)
             : resolveBranchToolApproval(modelSelectionState, providedBranchPath ?? modelSelectionState.conversation.currentPath, conversationId, providedLineageId === undefined ? modelSelectionState.conversation.currentLineageId : providedLineageId, serverProvider),
-          claudeAutoMode: modelSelectionState.claudeAutoMode,
+          claudeAutoMode: isBranch ? resolveAnchoredClaudeAutoMode(modelSelectionState, parent, conversationId)
+            : resolveBranchClaudeAutoMode(modelSelectionState, providedBranchPath ?? modelSelectionState.conversation.currentPath, conversationId),
           claudeUltracode: modelSelectionState.claudeUltracode,
           claudePlanMode: resolveBranchPlanMode(modelSelectionState, providedBranchPath ?? modelSelectionState.conversation.currentPath, conversationId),
           hooksEnabled: isElectronMode,
@@ -1573,7 +1575,8 @@ export const editMessageWithBranching = createAsyncThunk<
           toolAutoApprove: (modelSelectionState.composition.editingBranch ? modelSelectionState.composition.branchEditModes?.toolAutoApprove : undefined)
             ?? (isProviderHandoffEdit(modelSelectionState, originalMessageId) ? defaultToolApproval(modelSelectionState, serverProvider)
               : resolveAnchoredToolApproval(modelSelectionState, parentMessageId, conversationId, serverProvider)),
-          claudeAutoMode: modelSelectionState.claudeAutoMode,
+          claudeAutoMode: (modelSelectionState.composition.editingBranch ? modelSelectionState.composition.branchEditModes?.claudeAutoMode : undefined)
+            ?? resolveAnchoredClaudeAutoMode(modelSelectionState, parentMessageId, conversationId),
           claudeUltracode: modelSelectionState.claudeUltracode,
           claudePlanMode: (modelSelectionState.composition.editingBranch ? modelSelectionState.composition.branchEditModes?.claudePlanMode : undefined)
             ?? resolveBranchPlanMode(modelSelectionState, providedBranchPath ?? modelSelectionState.conversation.currentPath, conversationId),
@@ -1828,7 +1831,7 @@ export const sendMessageToBranch = createAsyncThunk<
           currentLineageId: providedLineageId === undefined ? state.chat.conversation.currentLineageId : providedLineageId,
           toolAutoApprove: isSummaryBranchEdit(modelSelectionState, parentId) ? defaultToolApproval(modelSelectionState, serverProvider)
             : resolveAnchoredToolApproval(modelSelectionState, parentId, conversationId, serverProvider),
-          claudeAutoMode: modelSelectionState.claudeAutoMode,
+          claudeAutoMode: resolveAnchoredClaudeAutoMode(modelSelectionState, parentId, conversationId),
           claudeUltracode: modelSelectionState.claudeUltracode,
           claudePlanMode: resolveBranchPlanMode(modelSelectionState, providedBranchPath ?? modelSelectionState.conversation.currentPath, conversationId),
           hooksEnabled: isElectronMode,
@@ -2810,10 +2813,15 @@ export const cancelQueuedMessage = createAsyncThunk<void, { conversationId: stri
   }
 )
 
-export const enqueueUserMessage = createAsyncThunk<void, {
+export interface QueueAcceptance { streamId: string; restarted: boolean; requestId: string }
+export interface QueueRejection { message: string; uncertain: boolean; code?: string; fullAccess?: boolean }
+
+export const enqueueUserMessage = createAsyncThunk<QueueAcceptance, {
   conversationId: string; streamId: string; content: string; requestId: string
   includeGlobalComposerContext?: boolean; updatePath?: boolean
-}, { state: RootState; extra: ThunkExtraArgument }>('chat/enqueueUserMessage', async (params, { dispatch, getState }) => {
+  /** Card retries retain this exact prepared text-only payload, including access expectation. */
+  preparedTextSubmission?: { epoch: string; fullAccess: boolean; fullAccessNotificationId?: string }
+}, { state: RootState; extra: ThunkExtraArgument; rejectValue: QueueRejection }>('chat/enqueueUserMessage', async (params, { dispatch, getState, rejectWithValue }) => {
   if (params.includeGlobalComposerContext !== false) await waitForDraftImages(dispatch, getState, { kind: 'composer' })
   const draftOwner = getState()
   const drafts = params.includeGlobalComposerContext === false ? [] : getDraftsForTarget(draftOwner, { kind: 'composer' })
@@ -2821,19 +2829,26 @@ export const enqueueUserMessage = createAsyncThunk<void, {
   const selectedFiles = params.includeGlobalComposerContext === false ? [] : structuredClone(draftOwner.ideContext.selectedFilesForChat || [])
   const attachmentsBase64 = await prepareLocalAttachmentsForModel(attachments.length ? attachments : null, 'queued message attachments')
   const url = await buildLocalApiUrl(`/conversations/${encodeURIComponent(params.conversationId)}/streams/${encodeURIComponent(params.streamId)}/queue`)
-  const epoch = await getAdmissionEpoch()
+  const epoch = params.preparedTextSubmission?.epoch ?? await getAdmissionEpoch()
   let body = JSON.stringify({ epoch, requestId: params.requestId, content: params.content, attachmentsBase64, selectedFiles,
-    fullAccess: isFullAccessEnabled(),
-    fullAccessNotificationId: getPendingFullAccessNotification(params.conversationId) })
+    fullAccess: params.preparedTextSubmission?.fullAccess ?? isFullAccessEnabled(),
+    fullAccessNotificationId: params.preparedTextSubmission
+      ? params.preparedTextSubmission.fullAccessNotificationId : getPendingFullAccessNotification(params.conversationId) })
   // A lost HTTP acknowledgement is safe to retry with the SAME immutable id/payload.
   let response: Response
+  let result: any
   try {
-    response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body })
+    try {
+      response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body })
+    } catch {
+      response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body })
+    }
+    result = await response.json()
+    if (!result || typeof result !== 'object') throw new Error('Invalid queue response')
   } catch {
-    response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body })
+    return rejectWithValue({ message: 'Delivery is unknown. Retry to reconcile the same instruction.', uncertain: true })
   }
-  let result = await response.json()
-  if (!response.ok && result.code === 'configuration_mismatch' && typeof result.fullAccess === 'boolean' &&
+  if (!params.preparedTextSubmission && !response.ok && result.code === 'configuration_mismatch' && typeof result.fullAccess === 'boolean' &&
     window.confirm(`This run uses ${result.fullAccess ? 'Full access' : 'restricted workspace access'}. Queue this input under that existing policy? Your current setting will not change.`)) {
     // A rejected ID is a durable tombstone. The explicit acknowledgement is a
     // new intent with its own identity; never mutate/reuse the rejected payload.
@@ -2843,20 +2858,31 @@ export const enqueueUserMessage = createAsyncThunk<void, {
   }
   if (!response.ok) {
     if (result.code === 'epoch_mismatch') resetAdmissionEpoch()
-    throw new Error(result.error || 'Could not queue message')
+    return rejectWithValue({ message: result.error || 'Could not queue message', uncertain: response.status >= 500,
+      code: result.code, fullAccess: result.fullAccess })
   }
-  if (result.receipt?.outcome === 'failed' || result.receipt?.outcome === 'cancelled') {
-    throw new Error(`This queued message was ${result.receipt.outcome}. Your draft has been preserved.`)
+  // A restarted receipt tracks the successor's outcome, not whether its user turn
+  // was delivered. A later Stop/failure must never invite duplicate submission.
+  if (!result.restarted && result.receipt?.disposition !== 'restarted' &&
+      (result.receipt?.outcome === 'failed' || result.receipt?.outcome === 'cancelled')) {
+    return rejectWithValue({ message: 'This queued message was not delivered. Your draft has been preserved.', uncertain: false })
+  }
+  if (typeof result.streamId !== 'string' || !result.streamId) {
+    return rejectWithValue({ message: 'Delivery is unknown. Retry to reconcile the same instruction.', uncertain: true })
   }
   if (result.snapshot) dispatch(chatSliceActions.messageQueueUpdated(result.snapshot))
   // Do not erase images added while attachment preparation/the POST was pending.
-  consumeImageDrafts(dispatch, getState, { kind: 'composer' }, drafts, draftOwner)
-  if ((result.restarted || result.streamId !== params.streamId) && result.streamId) {
-    addInflightStream({ streamId: result.streamId, conversationId: params.conversationId,
-      streamType: params.updatePath === false ? 'branch' : 'primary',
-      parentMessageId: result.parentId ?? null, updatePath: params.updatePath !== false })
-    void dispatch(resumeInFlightStreams({ conversationId: params.conversationId }))
+  if (params.includeGlobalComposerContext !== false) consumeImageDrafts(dispatch, getState, { kind: 'composer' }, drafts, draftOwner)
+  if ((params.preparedTextSubmission || result.restarted || result.streamId !== params.streamId) && !hasGenerationReader(result.streamId)) {
+    // Observation is separate from acceptance. Never replace a resident reader's ownership.
+    try {
+      addInflightStream({ streamId: result.streamId, conversationId: params.conversationId,
+        streamType: params.updatePath === false ? 'branch' : 'primary',
+        parentMessageId: result.parentId ?? null, updatePath: params.updatePath !== false })
+      void dispatch(resumeInFlightStreams({ conversationId: params.conversationId, streamId: result.streamId }))
+    } catch (error) { console.warn('Queued input accepted; could not observe run', error) }
   }
+  return { streamId: result.streamId, restarted: result.restarted === true, requestId: JSON.parse(body).requestId }
 })
 
 export const changeOperationMode = createAsyncThunk<

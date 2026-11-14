@@ -4,7 +4,7 @@ import 'boxicons/css/boxicons.min.css'
 import React, { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useQueryClient } from '@tanstack/react-query'
-import ReactMarkdown from 'react-markdown'
+import { AppMarkdown } from '../MarkdownContent/AppMarkdown'
 import rehypeHighlight from 'rehype-highlight'
 import remarkGfm from 'remark-gfm'
 import type { SubagentRunRow } from '../../../../../shared/types'
@@ -198,7 +198,7 @@ const TranscriptReasoning: React.FC<{ content: string }> = ({ content }) => {
   const isDarkMode = useHtmlDarkMode()
   return (
     <div className={REASONING_TEXT_MARKDOWN_CLASS} style={enabled ? getMarkdownThemeVars(theme, isDarkMode) : undefined}>
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={REASONING_MARKDOWN_COMPONENTS}>{content}</ReactMarkdown>
+      <AppMarkdown remarkPlugins={[remarkGfm]} components={REASONING_MARKDOWN_COMPONENTS}>{content}</AppMarkdown>
     </div>
   )
 }
@@ -209,9 +209,9 @@ const TranscriptBlock: React.FC<{ block: any }> = ({ block }) => {
     if (!textContent) return null
     return (
       <div className='prose prose-sm dark:prose-invert max-w-none text-stone-700 dark:text-stone-300 prose-p:my-1 prose-pre:my-2 prose-pre:bg-stone-100 dark:prose-pre:bg-neutral-800 prose-code:text-orange-600 dark:prose-code:text-orange-400 prose-pre:text-xs prose-pre:overflow-x-auto'>
-        <ReactMarkdown components={SCROLLABLE_MARKDOWN_COMPONENTS} remarkPlugins={[remarkGfm]} rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
+        <AppMarkdown components={SCROLLABLE_MARKDOWN_COMPONENTS} remarkPlugins={[remarkGfm]} rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
           {textContent}
-        </ReactMarkdown>
+        </AppMarkdown>
       </div>
     )
   }
@@ -302,9 +302,9 @@ export const SubagentRunView: React.FC<{ run: SubagentRunRow; index?: number; to
             Prompt
           </div>
           <div className='prose prose-sm dark:prose-invert max-w-none text-stone-800 dark:text-stone-200 prose-p:my-1 prose-pre:my-2 prose-pre:bg-stone-100 dark:prose-pre:bg-neutral-800 prose-code:text-orange-600 dark:prose-code:text-orange-400 prose-pre:text-xs prose-pre:overflow-x-auto'>
-            <ReactMarkdown components={SCROLLABLE_MARKDOWN_COMPONENTS} remarkPlugins={[remarkGfm]} rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
+            <AppMarkdown components={SCROLLABLE_MARKDOWN_COMPONENTS} remarkPlugins={[remarkGfm]} rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
               {prompt}
-            </ReactMarkdown>
+            </AppMarkdown>
           </div>
         </div>
       )}
@@ -635,14 +635,14 @@ export const SubagentTranscriptModal: React.FC<SubagentTranscriptModalProps> = (
               </div>
               {live.reasoning && (
                 <div className='mb-2 prose prose-sm dark:prose-invert max-w-none text-stone-500 dark:text-stone-400 prose-p:my-1'>
-                  <ReactMarkdown components={REASONING_MARKDOWN_COMPONENTS} remarkPlugins={[remarkGfm]}>{live.reasoning}</ReactMarkdown>
+                  <AppMarkdown components={REASONING_MARKDOWN_COMPONENTS} remarkPlugins={[remarkGfm]}>{live.reasoning}</AppMarkdown>
                 </div>
               )}
               {live.text && (
                 <div className='prose prose-sm dark:prose-invert max-w-none text-stone-700 dark:text-stone-300 prose-p:my-1 prose-pre:my-2 prose-pre:bg-stone-100 dark:prose-pre:bg-neutral-800 prose-code:text-orange-600 dark:prose-code:text-orange-400 prose-pre:text-xs prose-pre:overflow-x-auto'>
-                  <ReactMarkdown components={SCROLLABLE_MARKDOWN_COMPONENTS} remarkPlugins={[remarkGfm]} rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
+                  <AppMarkdown components={SCROLLABLE_MARKDOWN_COMPONENTS} remarkPlugins={[remarkGfm]} rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
                     {live.text}
-                  </ReactMarkdown>
+                  </AppMarkdown>
                 </div>
               )}
             </div>

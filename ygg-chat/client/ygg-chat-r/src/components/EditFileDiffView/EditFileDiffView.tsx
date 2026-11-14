@@ -2,7 +2,7 @@ import * as Diff from 'diff'
 import React, { useMemo, useState } from 'react'
 import { AlignLeft, ChevronDown, Columns2, FileText, GitCompareArrows, Minus, Plus, X } from 'lucide-react'
 import { getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from '../ThemeManager/themeConfig'
-import ReactMarkdown from 'react-markdown'
+import { AppMarkdown } from '../MarkdownContent/AppMarkdown'
 import { SCROLLABLE_MARKDOWN_COMPONENTS } from '../MarkdownContent/MarkdownCodeBlock'
 import rehypeHighlight from 'rehype-highlight'
 import type { ClaudeFilePatchHunk } from '../../../../../shared/claudeProvider'
@@ -381,9 +381,9 @@ const EditFileDiffViewComponent: React.FC<EditFileDiffViewProps> = ({ args, resu
                   <Minus className='h-3 w-3' aria-label='Original' />
                 </div>
                 <div className={`${DIFF_SURFACE_CLASS} ${codeBlockStyles} thin-scrollbar overflow-x-auto`}>
-                  <ReactMarkdown components={SCROLLABLE_MARKDOWN_COMPONENTS} rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
+                  <AppMarkdown components={SCROLLABLE_MARKDOWN_COMPONENTS} rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
                     {originalMarkdown}
-                  </ReactMarkdown>
+                  </AppMarkdown>
                 </div>
               </div>
 
@@ -392,9 +392,9 @@ const EditFileDiffViewComponent: React.FC<EditFileDiffViewProps> = ({ args, resu
                   <Plus className='h-3 w-3' aria-label='Replacement' />
                 </div>
                 <div className={`${DIFF_SURFACE_CLASS} ${codeBlockStyles} thin-scrollbar overflow-x-auto`}>
-                  <ReactMarkdown components={SCROLLABLE_MARKDOWN_COMPONENTS} rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
+                  <AppMarkdown components={SCROLLABLE_MARKDOWN_COMPONENTS} rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
                     {replacementMarkdown}
-                  </ReactMarkdown>
+                  </AppMarkdown>
                 </div>
               </div>
             </div>
@@ -408,9 +408,9 @@ const EditFileDiffViewComponent: React.FC<EditFileDiffViewProps> = ({ args, resu
                 <div
                   className={`${DIFF_SURFACE_CLASS} ${codeBlockStyles} thin-scrollbar overflow-x-auto max-h-[250px] overflow-y-auto`}
                 >
-                  <ReactMarkdown components={SCROLLABLE_MARKDOWN_COMPONENTS} rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
+                  <AppMarkdown components={SCROLLABLE_MARKDOWN_COMPONENTS} rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
                     {originalMarkdown}
-                  </ReactMarkdown>
+                  </AppMarkdown>
                 </div>
               </div>
 
@@ -422,9 +422,9 @@ const EditFileDiffViewComponent: React.FC<EditFileDiffViewProps> = ({ args, resu
                 <div
                   className={`${DIFF_SURFACE_CLASS} ${codeBlockStyles} thin-scrollbar overflow-x-auto max-h-[250px] overflow-y-auto`}
                 >
-                  <ReactMarkdown components={SCROLLABLE_MARKDOWN_COMPONENTS} rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
+                  <AppMarkdown components={SCROLLABLE_MARKDOWN_COMPONENTS} rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
                     {replacementMarkdown}
-                  </ReactMarkdown>
+                  </AppMarkdown>
                 </div>
               </div>
             </div>

@@ -1,6 +1,7 @@
 import type { ReadableStreamReadResult } from '../webStreamTypes.js'
 import type {
   ProviderGenerateInput,
+  ProviderPartialOutput,
   ProviderStreamEventHandler,
   ProviderToolCall,
   ProviderToolDefinition,
@@ -67,7 +68,9 @@ export type CodexResponseUsage = {
 }
 
 export type CodexParseResult = {
+  /** Selected answer for loop control; commentary belongs only in display blocks. */
   content: string
+  contentBlocks: any[]
   reasoningContent?: string
   toolCalls: ProviderToolCall[]
   providerStopReason?: string
@@ -84,6 +87,7 @@ export type CodexParseResult = {
 }
 
 export type CodexResponseParseOptions = {
+  registerPartialOutput?: (read: () => ProviderPartialOutput) => void
   emit?: ProviderStreamEventHandler
   modelName?: string
   strictFinalAnswerText?: boolean

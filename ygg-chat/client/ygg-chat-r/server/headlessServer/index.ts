@@ -44,6 +44,7 @@ import { createWatchExecutor, watchService } from './services/watchService.js'
 import { createMultiCallDispatchExecutor } from './services/multiCallExecutor.js'
 import { createReplDispatchExecutor } from './services/replExecutor.js'
 import { createContextStatusExecutor } from './services/contextStatusTool.js'
+import { createOperationModeSwitchExecutor } from './services/operationModeSwitchTool.js'
 import { ProviderRouter, isKnownProviderName, normalizeProviderRoute } from './services/providerRouter.js'
 import type { ToolExecutor } from './services/toolLoopService.js'
 
@@ -79,6 +80,7 @@ const HEADLESS_RUNTIME_BUILTIN_TOOL_NAMES = new Set([
   'fetch_notes',
   'fetch_chats',
   'context_status',
+  'switch_mode',
   'read_file',
   'read_file_continuation',
   'read_files',
@@ -137,7 +139,8 @@ const resolveDefaultInferenceTools = (): InferenceToolDefinition[] => {
 }
 
 // Delegation tools are always excluded (no nested subagents or external reviewers).
-const SUBAGENT_EXCLUDED_TOOL_NAMES = new Set(['subagent', 'subagent_manager', 'claude_bridge'])
+// switch_mode too: a child inherits its parent's mode and has no live mode control.
+const SUBAGENT_EXCLUDED_TOOL_NAMES = new Set(['subagent', 'subagent_manager', 'claude_bridge', 'switch_mode'])
 
 // These orchestration tools are always exposed to a child, including when a
 // parent supplies an explicit tool whitelist.
@@ -363,7 +366,8 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
   }
   const watcherExecutor = createWatchExecutor(bridgeWaitExecutor, watchService,
     id => deps.statements.getConversationById?.get(id)?.project_id ?? null)
-  const multiCallToolExecutor = createMultiCallDispatchExecutor(createReplDispatchExecutor(createContextStatusExecutor(watcherExecutor)))
+  const multiCallToolExecutor = createMultiCallDispatchExecutor(createReplDispatchExecutor(createContextStatusExecutor(
+    createOperationModeSwitchExecutor(watcherExecutor))))
   const subagentRunService = new SubagentRunService({
     statements: deps.statements,
     tokenStore,

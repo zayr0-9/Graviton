@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const { manager } = vi.hoisted(() => ({ manager: {
   initialize: vi.fn(), getConfigs: vi.fn(), getStatus: vi.fn(), getServerStatus: vi.fn(),
-  startServer: vi.fn(), stopServer: vi.fn(), callServerTool: vi.fn(), getStartPhase: vi.fn(),
+  startServer: vi.fn(), reauthenticateServer: vi.fn(), stopServer: vi.fn(), callServerTool: vi.fn(), getStartPhase: vi.fn(),
 } }))
 vi.mock('../../mcp/mcpManager.js', () => ({ mcpManager: manager }))
 
@@ -27,6 +27,32 @@ describe('mcp_manager discovery and invoke', () => {
     const shared = BUILTIN_TOOL_DEFINITIONS.find(tool => tool.name === 'mcp_manager')!
     expect(shared.inputSchema).toEqual(mcpManagerDefinition.inputSchema)
     expect(shared.description).toEqual(mcpManagerDefinition.description)
+  })
+
+  it('exposes explicit reauthentication without invoking any MCP tool', async () => {
+    expect(mcpManagerDefinition.inputSchema.properties?.action.enum).toContain('reauthenticate')
+    const result = await execute({ action: 'reauthenticate', name: 'demo_server' })
+    expect(result).toMatchObject({ success: true, server: { status: 'connected' } })
+    expect(manager.reauthenticateServer).toHaveBeenCalledWith('demo_server')
+    expect(manager.startServer).not.toHaveBeenCalled()
+    expect(manager.callServerTool).not.toHaveBeenCalled()
+  })
+
+  it('reports pending sign-in and tells agents to check status, not reset again', async () => {
+    manager.reauthenticateServer.mockReturnValue(new Promise(() => {}))
+    manager.getStartPhase.mockReturnValue('authorizing')
+    const result = await execute({ action: 'reauthenticate', name: 'demo_server' }, { startWaitBudgetMs: 5 })
+    expect(result).toMatchObject({ success: false, pending: true, phase: 'authorizing' })
+    expect(result.error).toContain('Use get')
+    expect(result.error).toContain('do not repeatedly reset')
+  })
+
+  it('returns reauthentication failures without claiming success', async () => {
+    manager.reauthenticateServer.mockRejectedValue(new Error('Keychain denied'))
+    expect(await execute({ action: 'reauthenticate', name: 'demo_server' })).toMatchObject({ success: false, error: 'Keychain denied' })
+    manager.reauthenticateServer.mockClear()
+    expect((await execute({ action: 'reauthenticate', name: 'missing' })).success).toBe(false)
+    expect(manager.reauthenticateServer).not.toHaveBeenCalled()
   })
 
   it('lists servers without connecting, then returns tool schemas on demand', async () => {

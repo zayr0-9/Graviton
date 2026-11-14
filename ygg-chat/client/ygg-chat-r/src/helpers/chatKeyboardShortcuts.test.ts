@@ -7,6 +7,7 @@ import {
   loadModelShortcutSlots,
   MODEL_SHORTCUT_SLOTS_STORAGE_KEY,
   saveModelShortcutSlot,
+  shouldComposerEnterSubmit,
   wrapPastedTextInMarkdownFence,
 } from './chatKeyboardShortcuts'
 
@@ -150,5 +151,28 @@ describe('fenced composer insertion', () => {
     const second = insertFencedText(first.value, 'next')
     expect(second.value).toBe(`${first.value}\n\`\`\`\nnext\n\`\`\``)
     expect(second.cursorPosition).toBe(second.value.length)
+  })
+})
+
+describe('shouldComposerEnterSubmit', () => {
+  const key = (overrides: Partial<{ key: string; shiftKey: boolean; ctrlKey: boolean; metaKey: boolean }> = {}) => ({
+    key: 'Enter',
+    shiftKey: false,
+    ctrlKey: false,
+    metaKey: false,
+    ...overrides,
+  })
+
+  it('sends on plain Enter and adds a line on Shift+Enter with a hardware keyboard', () => {
+    expect(shouldComposerEnterSubmit(key(), false)).toBe(true)
+    expect(shouldComposerEnterSubmit(key({ shiftKey: true }), false)).toBe(false)
+    expect(shouldComposerEnterSubmit(key({ key: 'a' }), false)).toBe(false)
+  })
+
+  it('adds a line on touch devices and only sends with Ctrl/Cmd+Enter', () => {
+    expect(shouldComposerEnterSubmit(key(), true)).toBe(false)
+    expect(shouldComposerEnterSubmit(key({ ctrlKey: true }), true)).toBe(true)
+    expect(shouldComposerEnterSubmit(key({ metaKey: true }), true)).toBe(true)
+    expect(shouldComposerEnterSubmit(key({ shiftKey: true, ctrlKey: true }), true)).toBe(false)
   })
 })

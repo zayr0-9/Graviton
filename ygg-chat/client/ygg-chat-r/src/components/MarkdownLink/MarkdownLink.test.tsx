@@ -4,8 +4,10 @@ import ReactMarkdown from 'react-markdown'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MarkdownLink, markdownUrlTransform } from './MarkdownLink'
 
-const { navigate } = vi.hoisted(() => ({ navigate: vi.fn() }))
-vi.mock('../ChatSelection/ChatSelectionProvider', () => ({ useChatNavigate: () => navigate }))
+const { navigate, linkRoot, client } = vi.hoisted(() => ({ navigate: vi.fn(), linkRoot: { current: null as string | null }, client: { browser: false } }))
+vi.mock('../ChatSelection/ChatSelectionProvider', () => ({ useOptionalChatNavigate: () => navigate }))
+vi.mock('./markdownLinkRoot', () => ({ useMarkdownLinkRoot: () => linkRoot.current }))
+vi.mock('../../platform/clientCapabilities', () => ({ get isBrowserClient() { return client.browser } }))
 
 const fileUrl = 'file:///Users/karansingh/Vega/coinvest-agent-api-gaps.md'
 const chatRoute = '/chat/a7dd257e-52ab-4963-a56f-2843cc82cf7d/b441a3dd-b8d9-4bda-91e9-dd610e09b720#bef47fca-59fb-4097-b9b9-8ebe0a0383db'
@@ -23,6 +25,8 @@ async function clickLink(href?: string, props = {}) {
 describe('Markdown links', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    linkRoot.current = null
+    client.browser = false
     vi.spyOn(console, 'error').mockImplementation(() => {})
   })
 
@@ -91,10 +95,10 @@ describe('Markdown links', () => {
     expect(openExternal).toHaveBeenCalledWith('https://example.com')
   })
 
-  it('keeps internal routes on React Router', async () => {
-    expect(await clickLink('/chat/123')).toHaveBeenCalledOnce()
+  it.each(['/chat/project/conversation', '/chat/p/c/lineage/l', '/settings', '/conversationPage?projectId=p'])('keeps app route %s on React Router', async route => {
+    expect(await clickLink(route)).toHaveBeenCalledOnce()
     expect(navigate).toHaveBeenCalledOnce()
-    expect(navigate).toHaveBeenCalledWith('/chat/123')
+    expect(navigate).toHaveBeenCalledWith(route)
   })
 
   it('renders the reported graviton chat link as an internal route with its message anchor', () => {
@@ -146,5 +150,91 @@ describe('Markdown links', () => {
 
   it('leaves hash navigation unchanged', async () => {
     expect(await clickLink('#section')).not.toHaveBeenCalled()
+  })
+
+  describe('editor, app and path links', () => {
+    const anchor = { type: 'element' as const, tagName: 'a', properties: {}, children: [] }
+
+    it.each(['vscode://file/Users/x/app.ts:10:2', 'cursor://file/tmp/a.md', 'idea://open?file=/tmp/a.kt&line=3', 'slack://channel?id=1'])('keeps %s clickable through the sanitizer', url => {
+      expect(markdownUrlTransform(url, 'href', anchor)).toBe(url)
+      expect(markdownUrlTransform(url, 'src', { ...anchor, tagName: 'img' })).toBe('')
+    })
+
+    it.each(['ms-msdt:/id', 'search-ms:query=x', 'blob:https://x/y', 'chrome://settings'])('strips dangerous scheme %s', url => {
+      expect(markdownUrlTransform(url, 'href', anchor)).toBe('')
+    })
+
+    it('renders vscode links instead of stripping them to an empty href', () => {
+      const html = renderToStaticMarkup(
+        <ReactMarkdown components={{ a: MarkdownLink }} urlTransform={markdownUrlTransform}>
+          {'[app.ts](vscode://file/Users/x/app.ts:10)'}
+        </ReactMarkdown>
+      )
+      expect(html).toContain('href="vscode://file/Users/x/app.ts:10"')
+    })
+
+    it('hands editor links to the OS through openExternal, never the window', async () => {
+      const openExternal = vi.fn().mockResolvedValue({ success: true })
+      const open = vi.fn()
+      vi.stubGlobal('window', { electronAPI: { shell: { openExternal } }, open })
+      expect(await clickLink('vscode://file/Users/x/app.ts:10')).toHaveBeenCalledOnce()
+      expect(openExternal).toHaveBeenCalledWith('vscode://file/Users/x/app.ts:10')
+      expect(open).not.toHaveBeenCalled()
+      expect(navigate).not.toHaveBeenCalled()
+    })
+
+    it('does not log when the user cancels an app-link confirmation', async () => {
+      const openExternal = vi.fn().mockResolvedValue({ success: false, cancelled: true })
+      vi.stubGlobal('window', { electronAPI: { shell: { openExternal } } })
+      await clickLink('slack://channel?id=1')
+      expect(console.error).not.toHaveBeenCalled()
+    })
+
+    it('resolves relative paths against the conversation cwd and drops line suffixes', async () => {
+      linkRoot.current = '/Users/x/repo'
+      const openPath = vi.fn().mockResolvedValue({ success: true })
+      vi.stubGlobal('window', { electronAPI: { shell: { openPath } } })
+      expect(await clickLink('src/app.ts:12')).toHaveBeenCalledOnce()
+      expect(openPath).toHaveBeenCalledWith('/Users/x/repo/src/app.ts')
+    })
+
+    it('opens bare absolute paths as files instead of routing to them', async () => {
+      const openPath = vi.fn().mockResolvedValue({ success: true })
+      vi.stubGlobal('window', { electronAPI: { shell: { openPath } } })
+      expect(await clickLink('/Users/x/notes.md')).toHaveBeenCalledOnce()
+      expect(openPath).toHaveBeenCalledWith('/Users/x/notes.md')
+      expect(navigate).not.toHaveBeenCalled()
+    })
+
+    it('prevents navigation and opens nothing for a relative path without a cwd', async () => {
+      const openPath = vi.fn()
+      vi.stubGlobal('window', { electronAPI: { shell: { openPath } } })
+      vi.spyOn(console, 'warn').mockImplementation(() => {})
+      expect(await clickLink('src/app.ts')).toHaveBeenCalledOnce()
+      expect(openPath).not.toHaveBeenCalled()
+      expect(navigate).not.toHaveBeenCalled()
+    })
+
+    it('opens editor links in the host editor on browser clients', async () => {
+      client.browser = true
+      const dispatchEvent = vi.fn()
+      const openExternal = vi.fn()
+      vi.stubGlobal('window', { dispatchEvent, electronAPI: { shell: { openExternal } } })
+      expect(await clickLink('vscode://file/Users/x/app.ts:10')).toHaveBeenCalledOnce()
+      expect(openExternal).not.toHaveBeenCalled()
+      expect(dispatchEvent).toHaveBeenCalledOnce()
+      expect((dispatchEvent.mock.calls[0][0] as CustomEvent).detail).toEqual({ path: '/Users/x/app.ts' })
+    })
+
+    it('routes middle-clicks through the same handler instead of opening a window', async () => {
+      const openPath = vi.fn().mockResolvedValue({ success: true })
+      vi.stubGlobal('window', { electronAPI: { shell: { openPath } } })
+      const element = MarkdownLink({ href: '/Users/x/notes.md' }) as React.ReactElement<{ onAuxClick: (event: unknown) => void }>
+      const preventDefault = vi.fn()
+      element.props.onAuxClick({ button: 1, preventDefault })
+      await Promise.resolve()
+      expect(preventDefault).toHaveBeenCalledOnce()
+      expect(openPath).toHaveBeenCalledWith('/Users/x/notes.md')
+    })
   })
 })

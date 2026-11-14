@@ -129,7 +129,8 @@ function claudeSlashCommandError(name?: string): Error {
   return attachChatErrorCode(new Error(message), 'bad_request', { userMessage: message, recoverability: 'user_action' })
 }
 /** Tools that never prompt for permission (mirrors the renderer TOOL_PERMISSION_ALWAYS_BYPASS). */
-const ALWAYS_BYPASS_TOOLS = new Set(['skill_manager', 'multi_call', 'context_status'])
+// switch_mode asks for Agent mode through its own upgrade dialog; a second prompt adds nothing.
+const ALWAYS_BYPASS_TOOLS = new Set(['skill_manager', 'multi_call', 'context_status', 'switch_mode'])
 /** custom_tool_manager actions that are read-only/management (bypass) vs 'invoke' (prompt). */
 const CUSTOM_TOOL_MANAGER_BYPASS_ACTIONS = new Set([
   'search',
@@ -476,7 +477,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     queue: MessageInputQueue; request: HeadlessMessageRequest; control: OperationModeControl
     head: string | null; successor?: string; restartRequestId?: string; restartFingerprint?: string; terminal?: 'completed' | 'failed'; signal?: AbortSignal
     /** Claude native plan mode, live: an approved plan turns it off for the rest of the run. */
-    claudePlan?: { active: boolean }
+    claudePlan?: { active: boolean; auto?: boolean }
     /** A live Claude session: `wake` hands it new entries, `claudeCancel` withdraws one it holds. */
     wake?: () => void; claudeCancel?: (requestId: string) => Promise<boolean | null>
     claudeTasks?: ClaudeTaskControl
@@ -804,6 +805,8 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       fullAccessNotificationId: submission.fullAccessNotificationId,
       attachmentsBase64: submission.attachmentsBase64 ?? null, operationMode: run.control.mode,
       claudePlanMode: run.claudePlan?.active === true ? true : undefined,
+      // A plan approved during the run switched it to Claude's auto mode; the successor keeps it.
+      claudePermissionMode: run.claudePlan?.auto === true ? 'auto' : run.request.claudePermissionMode,
       retrigger: false, isBranch: false } }
   }
 
@@ -1289,7 +1292,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     const claudePlan = { active: isClaudeProvider(request.provider) && request.claudePlanMode === true }
     const inputRun = { queue: inputQueue, request, control: modeControl, head: request.parentId ?? null, signal, claudePlan } as {
       queue: MessageInputQueue; request: HeadlessMessageRequest; control: OperationModeControl
-      head: string | null; successor?: string; terminal?: 'completed' | 'failed'; signal?: AbortSignal; claudePlan?: { active: boolean }
+      head: string | null; successor?: string; terminal?: 'completed' | 'failed'; signal?: AbortSignal; claudePlan?: { active: boolean; auto?: boolean }
       wake?: () => void; claudeCancel?: (requestId: string) => Promise<boolean | null>; claudeTasks?: ClaudeTaskControl
     }
     this.inputRuns.set(trackedStreamId, inputRun)

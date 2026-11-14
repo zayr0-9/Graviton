@@ -15,11 +15,15 @@ type State = {
   eventCounts: Map<string, number>
   itemPhases: Map<string, string>
   itemText: Map<string, string>
+  textParts: Map<string, Map<number, string>>
+  reasoningTextParts: Map<string, Map<string, string>>
+  displayBlocks: Map<string, any>
+  lastTextItem?: string
   options: CodexResponseParseOptions
 }
 
 export function createCodexResponseParseState(options: CodexResponseParseOptions = {}): State {
-  return {
+  const state: State = {
     content: '',
     visibleContent: '',
     reasoningParts: [],
@@ -33,8 +37,13 @@ export function createCodexResponseParseState(options: CodexResponseParseOptions
     eventCounts: new Map(),
     itemPhases: new Map(),
     itemText: new Map(),
+    textParts: new Map(),
+    reasoningTextParts: new Map(),
+    displayBlocks: new Map(),
     options,
   }
+  options.registerPartialOutput?.(() => codexPartialOutputFromState(state))
+  return state
 }
 
 export function codexResponseParseResult(state: State): CodexParseResult {
@@ -42,6 +51,9 @@ export function codexResponseParseResult(state: State): CodexParseResult {
   const outputItems = stripDuplicateReasoningFromOutputItems(state.outputItems, reasoningContent)
   return {
     content: selectFinalText(state),
+    contentBlocks: Array.from(state.displayBlocks.values())
+      .filter(block => block.type === 'tool_use' || block.content?.trim())
+      .map((block, index) => ({ ...block, index })),
     ...(reasoningContent ? { reasoningContent } : {}),
     toolCalls: dedupeToolCalls(state.toolCalls),
     ...(state.providerStopReason ? { providerStopReason: state.providerStopReason } : {}),
@@ -64,13 +76,14 @@ export function codexResponseParseResult(state: State): CodexParseResult {
  *
  * Deliberately reuses `codexResponseParseResult`, so a partial is assembled by the
  * exact same text/reasoning/tool-call selection as a successful run — a failure
- * must not produce differently-shaped text from a success. Content blocks are not
- * built here: `openaiChatgptProvider` owns that mapping and fills them in.
+ * must not produce differently-shaped text from a success. Ordered display blocks
+ * include commentary even when the selected answer is still empty.
  */
 export function codexPartialOutputFromState(state: State): ProviderPartialOutput {
   const result = codexResponseParseResult(state)
   return {
     ...(result.content ? { content: result.content } : {}),
+    contentBlocks: result.contentBlocks,
     ...(result.reasoningContent ? { reasoning: result.reasoningContent } : {}),
     ...(result.toolCalls?.length ? { toolCalls: result.toolCalls } : {}),
   }
@@ -93,24 +106,31 @@ export function processCodexResponsePayload(payload: any, state: State, eventHin
     case 'response.output_text.delta': {
       const delta = String(payload.delta ?? '')
       const itemId = getPayloadItemId(payload)
+      const parts = state.textParts.get(itemId) || new Map<number, string>()
+      const index = payload.content_index ?? 0
+      parts.set(index, (parts.get(index) || '') + delta)
+      state.textParts.set(itemId, parts)
       appendOutputText(state, itemId, delta)
       state.options.onTextDelta?.(delta)
       const phase = itemId ? state.itemPhases.get(itemId) : ''
-      if (phase !== 'commentary') {
-        state.visibleContent += delta
-        state.options.emit?.({ type: 'chunk', part: 'text', delta })
-      }
+      if (phase !== 'commentary') state.visibleContent += delta
+      updateDisplayText(state, itemId, delta, false)
       break
     }
     case 'response.output_text.done': {
-      const text = String(payload.text ?? '')
       const itemId = getPayloadItemId(payload)
+      const parts = state.textParts.get(itemId) || new Map<number, string>()
+      parts.set(payload.content_index ?? 0, String(payload.text ?? ''))
+      state.textParts.set(itemId, parts)
+      const text = [...parts].sort(([a], [b]) => a - b).map(([, value]) => value).join('')
       const existing = itemId ? state.itemText.get(itemId) || '' : ''
-      if (text && (!existing || !existing.includes(text))) {
-        appendOutputText(state, itemId, text)
+      const suffix = text.startsWith(existing) ? text.slice(existing.length) : !existing ? text : ''
+      if (suffix) {
+        appendOutputText(state, itemId, suffix)
         const phase = itemId ? state.itemPhases.get(itemId) : ''
-        if (phase !== 'commentary') state.visibleContent += text
+        if (phase !== 'commentary') state.visibleContent += suffix
       }
+      if (text) updateDisplayText(state, itemId, text, true)
       break
     }
     case 'response.reasoning_text.delta':
@@ -121,9 +141,26 @@ export function processCodexResponsePayload(payload: any, state: State, eventHin
         state.options.emit?.({ type: 'chunk', part: 'reasoning', delta })
       }
       appendReasoning(state, payload.delta)
+      const key = `reasoning:${getPayloadItemId(payload) || 'unknown'}`
+      const parts = state.reasoningTextParts.get(key) || new Map<string, string>()
+      const partKey = `${eventType}:${payload.summary_index ?? payload.content_index ?? 0}`
+      parts.set(partKey, (parts.get(partKey) || '') + delta)
+      state.reasoningTextParts.set(key, parts)
+      state.displayBlocks.set(key, { type: 'thinking', content: canonicalReasoningText([...parts.values()]) })
       break
     }
     case 'response.output_item.added': {
+      const item = payload.item
+      const id = item?.id || `output-${payload.output_index ?? state.displayBlocks.size}`
+      // Reserve the provider's item order even if text arrives only in done/completed.
+      const type = item?.type === 'reasoning' ? 'thinking'
+        : item?.type === 'message' || item?.type === 'output_message' ? 'text' : undefined
+      const key = type === 'thinking' ? `reasoning:${id}` : `text:${id}`
+      if (type && !state.displayBlocks.has(key)) state.displayBlocks.set(key, { type, content: '' })
+      if (item?.type === 'function_call') {
+        const toolKey = `tool:${item.call_id || item.id}`
+        if (!state.displayBlocks.has(toolKey)) state.displayBlocks.set(toolKey, { type: 'pending' })
+      }
       rememberItemPhase(payload.item, state)
       if (payload.item) state.responseItemsAdded.push(payload.item)
       break
@@ -133,7 +170,7 @@ export function processCodexResponsePayload(payload: any, state: State, eventHin
       rememberItemPhase(item, state)
       if (item) state.responseItemsAdded.push(item)
       if (isHostedToolOutputItem(item)) state.outputItems.push(item)
-      collectOutputItem(item, state)
+      collectOutputItem(item, state, `output-${payload.output_index ?? state.displayBlocks.size}`)
       break
     }
     case 'response.completed':
@@ -153,6 +190,23 @@ export function processCodexResponsePayload(payload: any, state: State, eventHin
     default:
       if (payload?.type === 'function_call') collectOutputItem(payload, state)
       break
+  }
+}
+
+/** Display every assistant message, independently of the answer selected for loop control. */
+function updateDisplayText(state: State, itemId: string, text: string, done: boolean): void {
+  if (!text) return
+  const key = `text:${itemId || 'unknown'}`
+  const previous = state.displayBlocks.get(key)?.content || ''
+  const content = done ? text : previous + text
+  state.displayBlocks.set(key, { type: 'text', content })
+  const delta = done ? content.startsWith(previous) ? content.slice(previous.length) : '' : text
+  if (delta) {
+    // The shared text stream has no item-boundary event. Keep adjacent assistant
+    // messages readable without adding protocol/UI types just for Codex.
+    const separator = state.lastTextItem && state.lastTextItem !== key ? '\n\n' : ''
+    state.lastTextItem = key
+    state.options.emit?.({ type: 'chunk', part: 'text', delta: separator + delta })
   }
 }
 
@@ -195,16 +249,29 @@ function captureCompletedResponseMetadata(response: any, state: State): void {
 
 function collectResponseOutput(response: any, state: State): void {
   if (!Array.isArray(response?.output)) return
-  for (const item of response.output) collectOutputItem(enrichMessageItemWithStreamedText(item, state), state)
+  response.output.forEach((item: any, index: number) =>
+    collectOutputItem(enrichMessageItemWithStreamedText(item, state), state, `output-${index}`))
 }
 
-function collectOutputItem(item: any, state: State): void {
+function collectOutputItem(item: any, state: State, fallbackId = 'unknown'): void {
   if (!item || typeof item !== 'object') return
   if (item.type === 'reasoning') {
-    appendReasoning(state, reasoningTextFromItem(item))
+    const text = reasoningTextFromItem(item)
+    appendReasoning(state, text)
+    const key = `reasoning:${item.id || fallbackId}`
+    const previous = state.displayBlocks.get(key)?.content || ''
+    const content = canonicalReasoningText([previous, text])
+    if (content) {
+      state.displayBlocks.set(key, { type: 'thinking', content })
+      const delta = content.startsWith(previous) ? content.slice(previous.length) : ''
+      if (delta) state.options.emit?.({ type: 'chunk', part: 'reasoning', delta })
+    }
     return
   }
   if (item.type === 'function_call') {
+    state.displayBlocks.set(`tool:${item.call_id || item.id}`, {
+      type: 'tool_use', id: item.call_id || item.id, name: String(item.name || 'unknown_tool'), input: parseArgs(item.arguments),
+    })
     state.toolCalls.push({
       id: item.call_id || item.id,
       name: String(item.name || 'unknown_tool'),
@@ -224,11 +291,9 @@ function collectOutputItem(item: any, state: State): void {
     const text = outputTextFromItem(item)
     if (text && !state.content) {
       state.content += text
-      if (item.phase !== 'commentary') {
-        state.visibleContent += text
-        state.options.emit?.({ type: 'chunk', part: 'text', delta: text })
-      }
+      if (item.phase !== 'commentary') state.visibleContent += text
     }
+    updateDisplayText(state, typeof item.id === 'string' ? item.id : fallbackId, text, true)
   }
 }
 

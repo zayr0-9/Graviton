@@ -42,3 +42,42 @@ export function calculateDockedPreviewLayout(
 
   return { left, top, width, maxHeight }
 }
+
+export type PreviewEdge = 'left' | 'right' | 'top' | 'bottom'
+export interface PreviewRect { left: number; top: number; width: number; height: number }
+
+export function clampPreviewRect(rect: PreviewRect, viewport: ViewportSize): PreviewRect {
+  const marginX = Math.min(12, Math.max(0, viewport.width) / 2)
+  const marginY = Math.min(10, Math.max(0, viewport.height) / 2)
+  const availableWidth = Math.max(0, viewport.width - marginX * 2)
+  const availableHeight = Math.max(0, viewport.height - marginY * 2)
+  const width = Math.min(availableWidth, Math.max(0, rect.width))
+  const height = Math.min(availableHeight, Math.max(0, rect.height))
+  return {
+    left: Math.max(marginX, Math.min(rect.left, viewport.width - marginX - width)),
+    top: Math.max(marginY, Math.min(rect.top, viewport.height - marginY - height)),
+    width, height,
+  }
+}
+
+export function resizePreviewEdge(start: PreviewRect, edge: PreviewEdge, delta: number, viewport: ViewportSize): PreviewRect {
+  const rect = clampPreviewRect(start, viewport)
+  const marginX = Math.min(12, Math.max(0, viewport.width) / 2)
+  const marginY = Math.min(10, Math.max(0, viewport.height) / 2)
+  const minWidth = Math.min(220, rect.width)
+  const minHeight = Math.min(120, rect.height)
+  const right = rect.left + rect.width
+  const bottom = rect.top + rect.height
+  if (edge === 'left') {
+    rect.left = Math.max(marginX, Math.min(rect.left + delta, right - minWidth))
+    rect.width = right - rect.left
+  } else if (edge === 'right') {
+    rect.width = Math.max(minWidth, Math.min(rect.width + delta, viewport.width - marginX - rect.left))
+  } else if (edge === 'top') {
+    rect.top = Math.max(marginY, Math.min(rect.top + delta, bottom - minHeight))
+    rect.height = bottom - rect.top
+  } else {
+    rect.height = Math.max(minHeight, Math.min(rect.height + delta, viewport.height - marginY - rect.top))
+  }
+  return rect
+}

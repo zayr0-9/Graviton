@@ -115,7 +115,7 @@ export const GlobalNotifications: React.FC = () => {
       {errorNotices.map(notice => (
         <ChatErrorBubble
           key={notice.id}
-          className='pointer-events-auto shadow-lg backdrop-blur-md'
+          className='pointer-events-auto'
           envelope={notice.envelope}
           onAction={isGloballyActionable(notice) ? handleAction(notice) : undefined}
           onDismiss={() => dispatch(uiActions.errorNoticeDismissed(notice.id))}

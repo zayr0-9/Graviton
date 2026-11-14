@@ -52,6 +52,7 @@ import {
 import { StreamingThinkingIndicator } from '../StreamingThinkingIndicator/StreamingThinkingIndicator'
 import { BackgroundTasksIndicator } from '../StreamingThinkingIndicator/BackgroundTasksIndicator'
 import { ToolPermissionDialog } from '../ToolPermissionDialog/ToolPermissionDialog'
+import { ConversationLinkRootProvider } from '../MarkdownLink/markdownLinkRoot'
 import {
   getThemeModeColor,
   useCustomChatTheme,
@@ -413,6 +414,7 @@ export function ParallelChatPane({
   )
 
   return (
+    <ConversationLinkRootProvider conversationId={target.conversationId}>
     <ChatPaneSurface
       active={active}
       onActivate={onActivate}
@@ -549,5 +551,6 @@ export function ParallelChatPane({
         </Button>
       )}
     </ChatPaneSurface>
+    </ConversationLinkRootProvider>
   )
 }

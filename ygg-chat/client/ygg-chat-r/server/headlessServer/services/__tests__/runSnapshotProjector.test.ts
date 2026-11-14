@@ -40,3 +40,18 @@ it('uses pending decision authority rather than replayed prompts', () => {
   expect(snapshot.events).toEqual([])
   expect(snapshot.pendingDecisions).toEqual([])
 })
+
+it('keeps the replay anchor on the head when an earlier row is persisted again', () => {
+  const projector = new RunSnapshotProjector()
+  const row = (id: string, content = '') => ({ type: 'assistant_message_persisted' as const, message: { id, content } })
+  const anchor = () => (projector.snapshot({ epoch: 'e', streamId: 's', conversationId: 'c', stateSeq: 1, persisted: [], pendingDecisions: [] })
+    .events.find(event => event.type === 'assistant_message_persisted') as any)?.message
+  projector.apply(row('launch'))
+  projector.apply({ type: 'tool_loop', status: 'turn_started', turn: 2, maxTurns: 0 })
+  projector.apply(row('head', 'first block'))
+  projector.apply(row('head', 'both blocks')) // The head itself persisted again: its newest copy is kept.
+  // A background task's progress lands on the call that launched it, long after that row.
+  projector.apply(row('launch', 'task progress'))
+  projector.apply({ type: 'tool_loop', status: 'turn_started', turn: 3, maxTurns: 0 })
+  expect(anchor()).toEqual({ id: 'head', content: 'both blocks' })
+})

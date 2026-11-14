@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import type { ContentBlock, HookRunRecord, StreamEvent } from '../../features/chats/chatTypes'
 import { AgentSteps } from './AgentSteps'
-import { getAgentProgress, partitionAgentItems, splitLiveAgentEvents, hasTrailingAgentProse, canAttachLiveAgentGroup, type ActivityItem } from './agentActivity'
+import { getAgentProgress, partitionAgentItems, splitLiveAgentEvents, hasTrailingAgentProse, canAttachLiveAgentGroup, buildStreamRenderItems, trailingAgentGroupKey, resolveActivityIndicatorOwner, resolveTrailingStatusGroupKey, type ActivityItem } from './agentActivity'
 import { estimateMessageRowHeight } from './estimateMessageHeight'
 
 const item = (key: string, kind: ActivityItem['kind']): ActivityItem => ({ key, kind })
@@ -115,5 +115,95 @@ describe('attached activity rendering', () => {
     const estimate = (blocks: ContentBlock[]) => estimateMessageRowHeight({ role: 'assistant', content: '', contentBlocks: blocks, containerWidth: 720, rootFontSize: 16, fontSizeOffset: 0, groupToolReasoningRuns: true, artifactCount: 0, showsActionsRow: false })
     expect(estimate([tool('a'), context, tool('b')])).toBe(estimate([tool('a'), context]))
     expect(estimate([tool('a'), context])).toBeGreaterThan(estimate([tool('a')]))
+  })
+})
+
+describe('activity indicator ownership', () => {
+  const text = (delta = 'Still working.'): StreamEvent => ({ type: 'text', delta })
+  const reasoning: StreamEvent = { type: 'reasoning', delta: 'Thinking' }
+  const owner = (events: StreamEvent[], overrides: Partial<Parameters<typeof resolveActivityIndicatorOwner>[0]> = {}, grouped = true) =>
+    resolveActivityIndicatorOwner({ visible: true, placement: 'message', dedicatedStatus: false,
+      liveTail: events.some(event => event.type === 'text' && event.delta?.trim()),
+      trailingGroupKey: trailingAgentGroupKey(buildStreamRenderItems(events), grouped), ...overrides })
+
+  it('moves the single owner through reasoning, commentary, tools, commentary and completion', () => {
+    const events: StreamEvent[] = []
+    expect(owner(events)).toEqual({ kind: 'virtual-footer' })
+    events.push(reasoning)
+    expect(owner(events).kind).toBe('agent-steps')
+    events.push(text())
+    expect(owner(events)).toEqual({ kind: 'live-tail' })
+    events.push(call('a'))
+    expect(owner(events).kind).toBe('agent-steps')
+    events.push(text('Found the cause.'))
+    expect(owner(events)).toEqual({ kind: 'live-tail' })
+    expect(owner(events, { visible: false })).toEqual({ kind: 'none' })
+  })
+
+  it('does not mistake text events or an earlier process group for an active trailing group', () => {
+    expect(owner([text()])).toEqual({ kind: 'live-tail' })
+    expect(owner([reasoning, text()])).toEqual({ kind: 'live-tail' })
+    expect(owner([call('a'), text(), result('a')])).toEqual({ kind: 'live-tail' })
+    expect(owner([call('a'), text(), result('unknown')])).toEqual({ kind: 'live-tail' })
+    expect(buildStreamRenderItems([call('a'), text(), result('a')]).map(item => item.source)).toEqual(['tool', 'text'])
+  })
+
+  it('uses the shared renderer grouping rules for short text, whitespace and split deltas', () => {
+    expect(owner([text('Inspecting'), text(' files.'), call('a')]).kind).toBe('agent-steps')
+    expect(owner([call('a'), text('OK')]).kind).toBe('live-tail')
+    const items = buildStreamRenderItems([reasoning, text(' '), { ...reasoning, delta: ' more' }])
+    expect(items).toHaveLength(1)
+    expect(items[0]).toMatchObject({ source: 'reasoning', text: 'Thinking more' })
+    expect(owner([text('')])).toEqual({ kind: 'virtual-footer' })
+  })
+
+  it.each(['html_renderer', 'mcp__app'])('keeps the footer after an interactive %s surface', name => {
+    expect(owner([call('a'), call('surface', name), result('surface')])).toEqual({ kind: 'virtual-footer' })
+  })
+
+  it('keeps image, notice and visible error boundaries outside group ownership', () => {
+    for (const event of [
+      { type: 'image', url: 'data:image/png;base64,AA' },
+      { type: 'notice', content: 'Reconnecting' },
+      { type: 'error', errorEnvelope: { code: 'unknown' } },
+    ] as StreamEvent[]) {
+      expect(owner([call('a'), event])).toEqual({ kind: 'virtual-footer' })
+    }
+  })
+
+  it('preserves input placement, compaction/background statuses and disabled grouping', () => {
+    expect(owner([reasoning], { placement: 'input-tab' })).toEqual({ kind: 'input-tab' })
+    expect(owner([reasoning], { dedicatedStatus: true })).toEqual({ kind: 'virtual-footer' })
+    expect(owner([text(), call('a')], { dedicatedStatus: true })).toEqual({ kind: 'live-tail' })
+    expect(owner([reasoning], {}, false)).toEqual({ kind: 'virtual-footer' })
+    expect(owner([text(), call('a')], {}, false)).toEqual({ kind: 'live-tail' })
+    expect(owner([reasoning], { visible: false, placement: 'input-tab' })).toEqual({ kind: 'none' })
+  })
+
+  it('only lets the persisted group own activity when visible live content does not follow it', () => {
+    const split = splitLiveAgentEvents([call('a'), text(), result('a')])
+    const outside = buildStreamRenderItems(split.outside)
+    expect(outside).toHaveLength(1)
+    expect(trailingAgentGroupKey(outside, true)).toBeNull()
+    expect(owner(split.outside)).toEqual({ kind: 'live-tail' })
+    expect(owner([], { trailingGroupKey: 'persisted:a' })).toEqual({ kind: 'agent-steps', groupKey: 'persisted:a' })
+  })
+})
+
+describe('trailing surface selection', () => {
+  const resolve = (events: StreamEvent[], extra = {}) => resolveTrailingStatusGroupKey({
+    items: buildStreamRenderItems(events), grouped: true, standalone: true, streamingMessage: true, attachedGroupId: 'persisted', ...extra,
+  })
+  it('uses persisted ownership across turn reset, invisible events and persistence handoff', () => {
+    expect(resolve([])).toBe('persisted:persisted')
+    expect(resolve([{ type: 'notice', content: '' }, { type: 'error' }])).toBe('persisted:persisted')
+    expect(resolve([{ type: 'text', delta: 'Already persisted' }], { standalone: false, streamingMessage: false })).toBe('persisted:persisted')
+    expect(resolve([], { attachedGroupId: null })).toBeNull()
+  })
+  it('does not let a previous group claim visible prose, and selects only the last of two live groups', () => {
+    const prose: StreamEvent = { type: 'text', delta: 'This is substantive commentary that remains visible outside the process group and explains the next step.' }
+    expect(resolve([prose])).toBeNull()
+    expect(resolve([call('a'), prose, call('b')])).toBe('live:stream-tool-b-2')
+    expect(resolve([call('a'), prose, call('b')], { grouped: false, attachedGroupId: null })).toBeNull()
   })
 })

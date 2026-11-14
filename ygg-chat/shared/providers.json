@@ -24,6 +24,12 @@
       "description": "Z.AI GLM models via local BYOK headless provider"
     },
 
+    "deepseek": {
+      "name": "DeepSeek",
+      "url": "https://api.deepseek.com",
+      "description": "DeepSeek models via local BYOK headless provider"
+    },
+
     "claude": {
       "name": "Claude Code",
       "url": "https://code.claude.com",

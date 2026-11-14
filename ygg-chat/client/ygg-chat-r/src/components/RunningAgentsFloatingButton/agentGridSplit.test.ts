@@ -70,6 +70,13 @@ describe('full-width row tracks', () => {
     factors.forEach((factor, index) => expect(factor / total).toBeCloseTo(ratios[index]))
   })
 
+  it('gives collapsed cells a fixed strip and normalizes open cells among themselves', () => {
+    expect(getAgentGridTracks([0.1, 0.3, 0.6], [true, false, false])).toBe(
+      '3rem minmax(min(160px, 100%), 1fr) minmax(min(160px, 100%), 2fr)'
+    )
+    expect(getAgentGridTracks([0.5, 0.5], [false, true])).toBe('minmax(min(160px, 100%), 1fr) 3rem')
+  })
+
   it('fills remaining space when a narrow card reaches its minimum', () => {
     expect(getAgentGridTracks([0.125, 0.25, 0.625])).toBe(
       'minmax(min(160px, 100%), 1fr) minmax(min(160px, 100%), 2fr) minmax(min(160px, 100%), 5fr)'

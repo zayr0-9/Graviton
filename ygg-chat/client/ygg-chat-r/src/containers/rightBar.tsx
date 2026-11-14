@@ -14,6 +14,7 @@ import {
   loadMonacoWorkspace,
   whenMonacoWorkspaceLoaded,
 } from '../components/Monaco/monacoWorkspace'
+import { CommitGraph } from '../components/CommitGraph/CommitGraph'
 import { TextArea } from '../components/TextArea/TextArea'
 import { useHtmlDarkMode } from '../components/ThemeManager/themeConfig'
 import { updateResearchNote } from '../features/conversations/conversationActions'
@@ -287,6 +288,16 @@ const RightBar: React.FC<RightBarProps> = ({
   const parentContainerRef = useRef<HTMLElement | null>(null)
   const [isResizingSidebar, setIsResizingSidebar] = useState(false)
   const [isResizingDock, setIsResizingDock] = useState(false)
+  const [explorerSplitPercent, setExplorerSplitPercent] = useState(50)
+  const [isResizingExplorer, setIsResizingExplorer] = useState(false)
+  const explorerPanelRef = useRef<HTMLDivElement | null>(null)
+  const lowerPanelRef = useRef<HTMLDivElement | null>(null)
+  const explorerResizeRef = useRef<{
+    pointerId: number
+    startY: number
+    height: number
+    totalHeight: number
+  } | null>(null)
   const [parentContainerWidth, setParentContainerWidth] = useState<number | null>(null)
   const [dockedLayoutWidth, setDockedLayoutWidth] = useState<number | null>(null)
   const activeFileEditor = useMemo(
@@ -627,6 +638,33 @@ const RightBar: React.FC<RightBarProps> = ({
       document.body.style.cursor = prevCursor
     }
   }, [isResizingDock, maxDockOverlayWidth, minDockOverlayWidth])
+
+  useEffect(() => {
+    if (!shouldRenderExpandedContent || !ccCwd) {
+      explorerResizeRef.current = null
+      setIsResizingExplorer(false)
+    }
+  }, [ccCwd, shouldRenderExpandedContent])
+
+  useEffect(() => {
+    if (!isResizingExplorer) return
+
+    const prevUserSelect = document.body.style.userSelect
+    const prevCursor = document.body.style.cursor
+    document.body.style.userSelect = 'none'
+    document.body.style.cursor = 'row-resize'
+    const stopResizing = () => {
+      explorerResizeRef.current = null
+      setIsResizingExplorer(false)
+    }
+    window.addEventListener('blur', stopResizing)
+
+    return () => {
+      window.removeEventListener('blur', stopResizing)
+      document.body.style.userSelect = prevUserSelect
+      document.body.style.cursor = prevCursor
+    }
+  }, [isResizingExplorer])
 
   // Sync currentPath with ccCwd only when the actual cwd prop changes
   useEffect(() => {
@@ -2092,10 +2130,7 @@ const RightBar: React.FC<RightBarProps> = ({
     [gitOverviewData]
   )
   const displayedGitCommits = useMemo(() => (gitOverviewData?.commits || []).slice(0, 8), [gitOverviewData?.commits])
-  const displayedCommitGraphLines = useMemo(
-    () => (gitOverviewData?.commitGraphLines || []).slice(0, 18),
-    [gitOverviewData?.commitGraphLines]
-  )
+  const graphCommits = useMemo(() => gitOverviewData?.commits || [], [gitOverviewData?.commits])
   const displayedLocalBranches = useMemo(
     () => (gitOverviewData?.branches.local || []).slice(0, 8),
     [gitOverviewData?.branches.local]
@@ -2487,7 +2522,11 @@ const RightBar: React.FC<RightBarProps> = ({
         >
           {/* File browser - show when ccCwd is set and expanded */}
           {shouldRenderExpandedContent && ccCwd && (
-            <div className='min-w-0 flex-1 min-h-0 flex flex-col overflow-hidden px-2 pb-2 border-b border-neutral-200 dark:border-neutral-800'>
+            <div
+              ref={explorerPanelRef}
+              className='min-w-0 min-h-0 flex flex-col overflow-hidden px-2 pb-2'
+              style={{ flex: `${explorerSplitPercent} 1 0%` }}
+            >
               {/* Path header with navigation */}
               <div className='flex min-w-0 items-center gap-2 mb-2 flex-shrink-0 overflow-hidden'>
                 <button
@@ -2661,6 +2700,63 @@ const RightBar: React.FC<RightBarProps> = ({
             </div>
           )}
 
+          {shouldRenderExpandedContent && ccCwd && (
+            <div
+              role='separator'
+              aria-orientation='horizontal'
+              aria-label='Resize file explorer and lower panel'
+              aria-valuemin={15}
+              aria-valuemax={85}
+              aria-valuenow={Math.round(explorerSplitPercent)}
+              tabIndex={0}
+              title='Drag to resize file explorer; double-click to reset'
+              className={`group relative z-30 h-2 shrink-0 touch-none cursor-row-resize select-none outline-none focus-visible:bg-neutral-200 dark:focus-visible:bg-neutral-800 ${isResizingExplorer ? 'bg-neutral-200/60 dark:bg-neutral-800/60' : ''}`}
+              onPointerDown={event => {
+                if (event.button !== 0 || !event.isPrimary) return
+                const height = explorerPanelRef.current?.getBoundingClientRect().height || 0
+                const totalHeight = height + (lowerPanelRef.current?.getBoundingClientRect().height || 0)
+                if (totalHeight <= 0) return
+                event.preventDefault()
+                event.stopPropagation()
+                event.currentTarget.setPointerCapture(event.pointerId)
+                explorerResizeRef.current = { pointerId: event.pointerId, startY: event.clientY, height, totalHeight }
+                setIsResizingExplorer(true)
+              }}
+              onPointerMove={event => {
+                const drag = explorerResizeRef.current
+                if (!drag || drag.pointerId !== event.pointerId) return
+                const nextPercent = ((drag.height + event.clientY - drag.startY) / drag.totalHeight) * 100
+                setExplorerSplitPercent(Math.max(15, Math.min(85, nextPercent)))
+              }}
+              onPointerUp={event => {
+                if (explorerResizeRef.current?.pointerId !== event.pointerId) return
+                explorerResizeRef.current = null
+                setIsResizingExplorer(false)
+                event.currentTarget.releasePointerCapture(event.pointerId)
+              }}
+              onPointerCancel={() => {
+                explorerResizeRef.current = null
+                setIsResizingExplorer(false)
+              }}
+              onLostPointerCapture={() => {
+                explorerResizeRef.current = null
+                setIsResizingExplorer(false)
+              }}
+              onDoubleClick={() => setExplorerSplitPercent(50)}
+              onKeyDown={event => {
+                if (!['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return
+                event.preventDefault()
+                setExplorerSplitPercent(value => {
+                  if (event.key === 'Home') return 15
+                  if (event.key === 'End') return 85
+                  return Math.max(15, Math.min(85, value + (event.key === 'ArrowUp' ? -5 : 5)))
+                })
+              }}
+            >
+              <div className={`absolute inset-x-0 top-1/2 h-px transition-colors ${isResizingExplorer ? 'bg-neutral-400 dark:bg-neutral-500' : 'bg-neutral-200 group-hover:bg-neutral-400 dark:bg-neutral-800 dark:group-hover:bg-neutral-500'}`} />
+            </div>
+          )}
+
           {/* Tab buttons - only show when expanded */}
           {shouldRenderExpandedContent && (
             <div className='flex min-w-0 gap-2 overflow-hidden px-3 py-2 flex-shrink-0'>
@@ -2704,7 +2800,9 @@ const RightBar: React.FC<RightBarProps> = ({
 
           {/* Content Area */}
           <div
-            className={`${shouldRenderExpandedContent && ccCwd ? 'flex-1' : 'flex-1'} min-w-0 min-h-0 overflow-y-auto overflow-x-hidden p-2 pt-2 2xl:pt-2 no-scrollbar scroll-fade dark:border-neutral-800 rounded-xl border-t-0`}
+            ref={lowerPanelRef}
+            style={shouldRenderExpandedContent && ccCwd ? { flex: `${100 - explorerSplitPercent} 1 0%` } : undefined}
+            className='flex-1 min-w-0 min-h-0 overflow-y-auto overflow-x-hidden p-2 pt-2 2xl:pt-2 no-scrollbar scroll-fade dark:border-neutral-800 rounded-xl border-t-0'
             data-heimdall-wheel-exempt='true'
             data-heimdall-contextmenu-exempt='true'
           >
@@ -3245,22 +3343,14 @@ const RightBar: React.FC<RightBarProps> = ({
 
                   <div className='border-t border-neutral-200/70 px-2 pt-4 dark:border-neutral-800/70'>
                     <div className='mb-2 flex items-center justify-between gap-2'>
-                      <h3 className='text-[11px] font-semibold uppercase tracking-[0.16em] text-neutral-500 dark:text-neutral-400'>
+                      <h3 className='text-xs font-semibold text-neutral-500 dark:text-neutral-400'>
                         Commit Graph
                       </h3>
                       <span className='text-[11px] text-neutral-500 dark:text-neutral-400'>
-                        last {displayedCommitGraphLines.length}
+                        last {graphCommits.length}
                       </span>
                     </div>
-                    {displayedCommitGraphLines.length === 0 ? (
-                      <div className='text-xs text-neutral-500 dark:text-neutral-400'>No commit graph available.</div>
-                    ) : (
-                      <div className='overflow-hidden rounded-lg bg-neutral-950/95'>
-                        <pre className='max-h-72 overflow-auto px-3 py-3 font-mono text-[11px] leading-5 text-emerald-100 no-scrollbar whitespace-pre-wrap break-words'>
-                          {displayedCommitGraphLines.join('\n')}
-                        </pre>
-                      </div>
-                    )}
+                    <CommitGraph commits={graphCommits} />
                   </div>
 
                   <div className='border-t border-neutral-200/70 px-2 pt-4 dark:border-neutral-800/70'>

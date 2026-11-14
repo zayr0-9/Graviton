@@ -451,7 +451,7 @@ export interface CompositionState {
   imagePreparationError: string | null
   imagePreparationGeneration: number
   editingBranch: boolean // true when user is editing a branch; controls UI like hiding image drafts
-  branchEditModes?: { operationMode?: OperationMode; fastMode?: boolean; toolAutoApprove?: boolean; claudePlanMode?: boolean }
+  branchEditModes?: { operationMode?: OperationMode; fastMode?: boolean; toolAutoApprove?: boolean; claudePlanMode?: boolean; claudeAutoMode?: boolean }
   branchEditMessageId?: MessageId
   branchEditModelSelection?: { provider: string; model: string | null }
   optimisticMessage: Message | null // temp message for instant UI feedback in web mode only
@@ -559,6 +559,8 @@ export interface ChatState {
    * mode Claude rows record, so each branch keeps its own state.
    */
   claudePlanModeDrafts?: Record<string, boolean>
+  /** Claude auto mode choices per branch point (`resolveBranchClaudeAutoMode`). */
+  claudeAutoModeDrafts?: Record<string, boolean>
   operationMode: OperationMode
   messageQueues: Record<string, import('../../../../../shared/queuedMessages').MessageQueueSnapshot>
   /** Unsent selections, keyed by conversation and selected branch tip. */

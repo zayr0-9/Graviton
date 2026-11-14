@@ -13,7 +13,7 @@ const MAX_OUTPUT = 20_000
 const MAX_CODE = 32_000
 const NAME = /^[A-Za-z_$][A-Za-z0-9_$]{0,63}$/
 // These tools have transcript/UI semantics, not just a return value. Never hide them.
-const DIRECT_ONLY = new Set(['repl', 'multi_call', 'skill_manager', 'html_renderer', 'view_image'])
+const DIRECT_ONLY = new Set(['repl', 'multi_call', 'skill_manager', 'html_renderer', 'view_image', 'switch_mode'])
 
 type Session = {
   runtime: QuickJSRuntime
@@ -469,6 +469,8 @@ export class ReplSessions {
         try { text = boundedJson(value ?? null) }
         catch (error) { throw new Error(`Tool executed but ${error instanceof Error ? error.message : 'serialization failed'}; request bounded JSON output. Do not blindly repeat side effects`) }
       }
+      // Same measure as `show.totalChars`: raw length for strings, compact JSON otherwise.
+      const totalChars = text.startsWith('"') ? (JSON.parse(text) as string).length : text.length
       return await this.cell(workspace, context, async () => {
         const session = await this.session(workspace, context)
         if (action === 'import') {
@@ -483,13 +485,13 @@ export class ReplSessions {
           try { this.eval(session, `__repl.put(${JSON.stringify(resultVariable)}, ${JSON.stringify(text)}, false)`) }
           catch { throw new Error('Tool executed but conflict result could not be retained; do not blindly repeat side effects') }
           this.changed(workspace, context)
-          return { status: 'conflict', variable: name, resultVariable, toolStatus, toolExecuted: true,
+          return { status: 'conflict', variable: name, resultVariable, totalChars, toolStatus, toolExecuted: true,
             error: 'Workspace changed during capture; destination was not replaced. Inspect resultVariable instead of repeating side effects.', ...this.receipt(workspace) }
         }
         try { this.eval(session, `__repl.put(${quoted}, ${JSON.stringify(text)}, ${args.overwrite === true})`) }
         catch { throw new Error('Tool executed but storing its result failed; reset or free session memory. Do not blindly repeat side effects') }
         this.changed(workspace, context)
-        return { status: action === 'import' ? 'imported' : 'stored', variable: name, toolStatus,
+        return { status: action === 'import' ? 'imported' : 'stored', variable: name, totalChars, toolStatus,
           ...(action === 'import' ? { success: true, path: args.path, format: 'json', sizeBytes: Buffer.byteLength(text, 'utf8') } : {}),
           ...(metadataOnly ? { metadataOnly: true } : {}), ...this.receipt(workspace) }
       })

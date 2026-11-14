@@ -213,3 +213,13 @@ Path advancement was adjacency-only for every stream that does not own the view,
 - `conversation.lastViewedTips` (renderer session, 100 entries) records the branch tip shown when a conversation is left. A conversation-only route reopens that branch, extended to its live leaf, instead of the fork holding the newest `created_at`. Lineage and message targets are unchanged; a deleted tip falls back to the newest row.
 
 Regression: `streamCatchUp.test.ts` (lineage-route race, finished-during-navigation, in-conversation switch, row-time and terminal catch-up, isolation negatives, edit-branch rebootstrap, `stateReset`, remembered branch, two-fork fuzz).
+
+## Rows persisted again in place (2026-11-10)
+
+`assistant_message_persisted` does not always name the run's head. The host persists an earlier row again when a late tool result lands on it, and Claude writes a background task's progress onto the call that launched the task, about once a second, for as long as the task runs (`claudeSessionService.ts` `writeTasks`). The per-turn `complete` chunk used to move every stream anchor to that row. With no lineage selected (any return from another chat by a conversation-only route), `selectCurrentViewStreamFor` matches a run only by anchors near the path tip, so the run stopped being the view stream until its next new row: Chat showed it as stopped, with no waiting indicator or Stop.
+
+- `streamChunkReceived` ignores a `complete` chunk for a row that already has `children_ids` and is not the stream's current anchor. `messageAdded` has already upserted the row. The first row after a start or a `reset` is always adopted, since a replay opens with one.
+- `catchUpSelectedPath` adopts an active run's confirmed lineage when a settled view is already at that run's last persisted row. Only rows the run persisted qualify, not its parent or trigger anchors, so a fork's lineage is never paired with its source branch.
+- `RunSnapshotProjector` keeps `currentAnchor` on the head: a row that was an anchor before and is not the current one does not replace it, so a bootstrap after a background wait does not open at the launching call.
+
+Regression: `streamCatchUp.test.ts` ("a run held open by a background task", "returning to a run that is already on screen at its head"), `runSnapshotProjector.test.ts`.

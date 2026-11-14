@@ -305,6 +305,7 @@ class McpClient extends EventEmitter {
   private authFlowPromise: Promise<void> | null = null
   private oauthAbortController?: AbortController
   private lastOAuthError?: string
+  private connectionAbortController = new AbortController()
 
   public status: 'disconnected' | 'connecting' | 'connected' | 'error' = 'disconnected'
   public error?: string
@@ -324,7 +325,7 @@ class McpClient extends EventEmitter {
     this.oauth = config.oauth ? { ...config.oauth } : undefined
   }
 
-  async connect(): Promise<void> {
+  async connect(forceAuthorization = false): Promise<void> {
     if (this.status === 'connected' || this.status === 'connecting') {
       return
     }
@@ -336,6 +337,7 @@ class McpClient extends EventEmitter {
     try {
       if (this.transport === 'http') {
         await this.connectHttp()
+        if (forceAuthorization) await this.ensureOAuthAccessToken()
       } else {
         await this.connectStdio()
       }
@@ -346,6 +348,7 @@ class McpClient extends EventEmitter {
       // Fetch capabilities
       await this.refreshCapabilities()
 
+      this.connectionAbortController.signal.throwIfAborted()
       this.status = 'connected'
       this.emit('statusChange', this.status)
       console.log(`[MCP:${this.name}] Connected successfully (${this.transport})`)
@@ -409,7 +412,10 @@ class McpClient extends EventEmitter {
   }
 
   async disconnect(options: { preserveStatus?: boolean } = {}): Promise<void> {
+    this.connectionAbortController.abort()
     this.oauthAbortController?.abort()
+    // Release the old callback listener before a replacement authorization binds it.
+    await this.authFlowPromise?.catch(() => undefined)
     if (this.process) {
       this.process.kill('SIGTERM')
 
@@ -705,8 +711,9 @@ class McpClient extends EventEmitter {
         method: 'POST',
         headers,
         body: JSON.stringify(request),
-        signal: controller.signal,
+        signal: AbortSignal.any([controller.signal, this.connectionAbortController.signal]),
       })
+      this.connectionAbortController.signal.throwIfAborted()
 
       const responseSessionId = response.headers.get('mcp-session-id')
       if (responseSessionId) {
@@ -723,6 +730,10 @@ class McpClient extends EventEmitter {
       }
 
       if (!response.ok) {
+        if (response.status === 401 && this.oauth?.accessToken) {
+          this.oauth = { ...this.oauth, accessToken: undefined, expiresAt: undefined }
+          await this.persistOAuthState()
+        }
         const wwwAuthenticate = response.headers.get('www-authenticate')
         const oauthHint =
           response.status === 401 && wwwAuthenticate
@@ -732,7 +743,7 @@ class McpClient extends EventEmitter {
           response.status === 401 && this.lastOAuthError ? ` | OAuth flow failed: ${this.lastOAuthError}` : ''
 
         throw new Error(
-          `MCP HTTP request failed (${method}): ${describeHttpFailure(response, payload)}${oauthHint}${oauthFailureHint}`
+          `MCP HTTP request failed (${method}): ${describeHttpFailure(response, payload)}${oauthHint}${oauthFailureHint}${response.status === 401 ? ' | To start fresh OAuth sign-in, use Settings → MCP → Sign in again or mcp_manager action="reauthenticate" with this server name.' : ''}`
         )
       }
 
@@ -800,13 +811,13 @@ class McpClient extends EventEmitter {
     const wwwAuthenticate = response.headers.get('www-authenticate')
     const challenge = parseWwwAuthenticateBearerChallenge(wwwAuthenticate)
 
-    // A rejected access token must not be considered reusable by ensureOAuthAccessToken.
-    // Preserve the refresh token so the single retry can refresh before reopening the browser.
-    if (this.oauth?.accessToken) {
-      this.oauth = { ...this.oauth, accessToken: undefined, expiresAt: undefined }
-    }
-
     try {
+      this.connectionAbortController.signal.throwIfAborted()
+      // Persist rejection too: a failed recovery must not reload this token on reconnect.
+      if (this.oauth?.accessToken) {
+        this.oauth = { ...this.oauth, accessToken: undefined, expiresAt: undefined }
+        await this.persistOAuthState()
+      }
       await this.ensureOAuthAccessToken({
         resourceMetadataUrlHint: challenge.resourceMetadataUrl,
         challengeScope: challenge.scope,
@@ -826,6 +837,7 @@ class McpClient extends EventEmitter {
     resourceMetadataUrlHint?: string
     challengeScope?: string
   }): Promise<void> {
+    this.connectionAbortController.signal.throwIfAborted()
     if (!this.config.url) {
       throw new Error(`MCP HTTP server '${this.name}' is missing url`)
     }
@@ -1176,6 +1188,7 @@ class McpClient extends EventEmitter {
 
     const response = await fetch(registrationEndpoint, {
       method: 'POST',
+      signal: this.oauthAbortController?.signal,
       headers: {
         'content-type': 'application/json',
         accept: 'application/json',
@@ -1346,6 +1359,7 @@ class McpClient extends EventEmitter {
   }
 
   private async persistOAuthState(): Promise<void> {
+    this.connectionAbortController.signal.throwIfAborted()
     if (!this.oauth) return
     this.config.oauth = { ...this.oauth }
     await this.onOAuthChanged?.({ ...this.oauth })
@@ -1579,7 +1593,9 @@ class McpClient extends EventEmitter {
         method: 'POST',
         headers,
         body: JSON.stringify(notification),
+        signal: this.connectionAbortController.signal,
       })
+      this.connectionAbortController.signal.throwIfAborted()
 
       const responseSessionId = response.headers.get('mcp-session-id')
       if (responseSessionId) {
@@ -1644,6 +1660,9 @@ export class McpManager extends EventEmitter {
   private initPromise: Promise<void> | null = null
   private settings: { lazyStart: boolean } = { lazyStart: true }
   private starts = new Map<string, Promise<void>>()
+  private startControllers = new Map<string, AbortController>()
+  private reauthenticating = new Set<string>()
+  private lifecycleVersions = new Map<string, number>()
   private startPhases = new Map<string, McpStartPhase>()
   private authorizing = new Set<string>()
   /** A start can fail before a client exists (credential load); keep why. */
@@ -1851,21 +1870,82 @@ export class McpManager extends EventEmitter {
     })
   }
 
-  async startServer(config: McpServerConfig): Promise<void> {
-    const pending = this.starts.get(config.name)
-    if (pending) return pending
-    this.startErrors.delete(config.name)
-    const operation = this.connectServer(config)
-    this.starts.set(config.name, operation)
-    try { await operation } catch (error) {
-      this.startErrors.set(config.name, error instanceof Error ? error.message : String(error))
-      throw error
-    } finally {
-      if (this.starts.get(config.name) === operation) {
-        this.starts.delete(config.name)
-        this.startPhases.delete(config.name)
+  startServer(config: McpServerConfig): Promise<void> {
+    return this.starts.get(config.name) ?? this.trackStart(config.name, signal => this.connectServer(config, signal))
+  }
+
+  private trackStart(name: string, work: (signal: AbortSignal) => Promise<void>): Promise<void> {
+    const controller = new AbortController()
+    this.startControllers.set(name, controller)
+    this.startErrors.delete(name)
+    this.startPhases.set(name, 'credentials')
+    const operation = Promise.resolve().then(() => {
+      controller.signal.throwIfAborted()
+      return work(controller.signal)
+    }).catch(error => {
+      if (this.startControllers.get(name) === controller) {
+        this.startErrors.set(name, error instanceof Error ? error.message : String(error))
       }
+      throw error
+    }).finally(() => {
+      if (this.startControllers.get(name) === controller) {
+        this.starts.delete(name)
+        this.startControllers.delete(name)
+        this.startPhases.delete(name)
+        this.reauthenticating.delete(name)
+      }
+    })
+    this.starts.set(name, operation)
+    return operation
+  }
+
+  /** Explicit fresh browser sign-in; ordinary reconnects continue to preserve credentials. */
+  reauthenticateServer(name: string): Promise<void> {
+    if (this.reauthenticating.has(name)) return this.starts.get(name)!
+    // Validate before disturbing an existing connection or credentials.
+    return this.prepareReauthentication(name)
+  }
+
+  private validateReauthentication(config: McpServerConfig | undefined, name: string): asserts config is McpServerConfig {
+    if (!config) throw new Error(`MCP server '${name}' not found`)
+    if (!config.enabled) throw new Error(`MCP server '${name}' is disabled`)
+    if (resolveTransport(config) !== 'http') throw new Error('Sign in again is only available for HTTP MCP servers')
+    if (Object.keys(config.headers || {}).some(key => key.toLowerCase() === 'authorization')) {
+      throw new Error('Remove the static Authorization header before using OAuth sign-in')
     }
+  }
+
+  private async prepareReauthentication(name: string): Promise<void> {
+    const version = this.lifecycleVersions.get(name)
+    const config = (await this.getConfigs()).find(item => item.name === name)
+    this.validateReauthentication(config, name)
+    if (this.reauthenticating.has(name)) return this.starts.get(name)!
+    if (this.lifecycleVersions.get(name) !== version) throw new Error('MCP sign-in cancelled')
+    const stopped = this.stopServer(name)
+    this.reauthenticating.add(name)
+    return this.trackStart(name, async signal => {
+      await stopped
+      signal.throwIfAborted()
+      const freshConfig = await this.serializeConfig(async () => {
+        signal.throwIfAborted()
+        const configs = await this.loadConfig()
+        const current = configs.find(item => item.name === name)
+        signal.throwIfAborted()
+        this.validateReauthentication(current, name)
+        // Preserve confidential client credentials, including unmigrated legacy secrets.
+        if (hasOAuthSecrets(current.oauth)) {
+          await mcpOAuthSecretStore.importLegacy(name, extractOAuthSecrets(current.oauth))
+        }
+        signal.throwIfAborted()
+        await mcpOAuthSecretStore.patch(name, { accessToken: undefined, refreshToken: undefined })
+        current.oauth = { ...stripOAuthSecrets(current.oauth), expiresAt: undefined }
+        current.credentialStorage = 'vault'
+        await this.saveConfig(configs, this.settings)
+        return current
+      })
+      signal.throwIfAborted()
+      await this.connectServer(freshConfig, signal, true)
+    })
   }
 
   /** What an in-flight start (or a mid-session reauthorization) is waiting on. */
@@ -1874,7 +1954,8 @@ export class McpManager extends EventEmitter {
     return this.startPhases.get(name) ?? (this.clients.get(name)?.status === 'connecting' ? 'connecting' : undefined)
   }
 
-  private async connectServer(config: McpServerConfig): Promise<void> {
+  private async connectServer(config: McpServerConfig, signal: AbortSignal, forceAuthorization = false): Promise<void> {
+    signal.throwIfAborted()
     // Check if already running
     const existing = this.clients.get(config.name)
     if (existing && existing.status === 'connected') {
@@ -1909,6 +1990,7 @@ export class McpManager extends EventEmitter {
       // Old entries without a storage marker are ambiguous: do not silently
       // discard possible legacy credentials and fall back to anonymous OAuth.
       storedSecrets = await mcpOAuthSecretStore.load(config.name, config.credentialStorage !== 'vault' && !hasOAuthSecrets(config.oauth))
+      signal.throwIfAborted()
       normalizedConfig.oauth = config.oauth || Object.keys(storedSecrets).length
         ? { ...stripOAuthSecrets(config.oauth), ...storedSecrets } : undefined
       if (normalizedConfig.oauth?.accessToken && normalizedConfig.headers?.Authorization?.startsWith('Bearer ')) {
@@ -1919,6 +2001,7 @@ export class McpManager extends EventEmitter {
         await this.serializeConfig(async () => {
           const configs = await this.loadConfig()
           const index = configs.findIndex(item => item.name === config.name)
+          signal.throwIfAborted()
           if (index !== -1) {
             configs[index] = { ...configs[index], oauth: stripOAuthSecrets(normalizedConfig.oauth), credentialStorage: 'vault' }
             await this.saveConfig(configs, this.settings)
@@ -1927,6 +2010,11 @@ export class McpManager extends EventEmitter {
       }
     }
 
+    signal.throwIfAborted()
+    if (forceAuthorization) {
+      // A concurrent vault writer must not turn explicit sign-in back into token reuse.
+      normalizedConfig.oauth = { ...normalizedConfig.oauth, accessToken: undefined, refreshToken: undefined, expiresAt: undefined }
+    }
     // Create and connect client
     let client: McpClient
     client = new McpClient(
@@ -1944,6 +2032,7 @@ export class McpManager extends EventEmitter {
         })
       },
       tools => {
+        if (this.clients.get(config.name) !== client) return
         this.emit('toolsChanged', {
           serverName: config.name,
           tools: tools.map(tool => ({ ...tool })),
@@ -1952,10 +2041,12 @@ export class McpManager extends EventEmitter {
     )
 
     client.on('statusChange', (status) => {
+      if (this.clients.get(config.name) !== client) return
       this.emit('serverStatusChange', { name: config.name, status })
     })
 
     client.on('authPhase', (phase: McpStartPhase) => {
+      if (this.clients.get(config.name) !== client) return
       if (phase === 'authorizing') this.authorizing.add(config.name)
       else this.authorizing.delete(config.name)
     })
@@ -1963,29 +2054,34 @@ export class McpManager extends EventEmitter {
     this.clients.set(config.name, client)
     this.startPhases.set(config.name, 'connecting')
     try {
-      await client.connect()
+      await client.connect(forceAuthorization)
+      signal.throwIfAborted()
     } finally {
-      this.authorizing.delete(config.name)
+      if (this.clients.get(config.name) === client) this.authorizing.delete(config.name)
     }
     await this.persistClientConfig(config.name)
   }
 
   async stopServer(name: string): Promise<void> {
+    this.lifecycleVersions.set(name, (this.lifecycleVersions.get(name) ?? 0) + 1)
+    this.startControllers.get(name)?.abort()
+    this.startControllers.delete(name)
+    this.starts.delete(name)
+    this.startPhases.delete(name)
+    this.reauthenticating.delete(name)
     const client = this.clients.get(name)
+    this.clients.delete(name)
     this.startErrors.delete(name)
     this.authorizing.delete(name)
-    if (client) {
-      await client.disconnect()
-      this.clients.delete(name)
-    }
+    if (client) await client.disconnect()
+    this.emit('serverStatusChange', { name, status: 'disconnected' })
   }
 
   async restartServer(name: string): Promise<void> {
-    const client = this.clients.get(name)
-    if (client) {
-      await client.disconnect()
-      await client.connect()
-    }
+    const config = (await this.getConfigs()).find(item => item.name === name)
+    if (!config) throw new Error(`MCP server '${name}' not found`)
+    await this.stopServer(name)
+    await this.startServer(config)
   }
 
   async addServer(config: McpServerConfig): Promise<void> {
@@ -2022,10 +2118,7 @@ export class McpManager extends EventEmitter {
   async updateServer(name: string, updates: Partial<McpServerConfig>): Promise<void> {
     const client = this.clients.get(name)
     const wasConnected = client?.status === 'connected'
-    if (client) {
-      await this.stopServer(name)
-      await client.waitForOAuthCompletion()
-    }
+    await this.stopServer(name)
     const config = await this.serializeConfig(() => this.updateServerUnlocked(name, updates))
     if (wasConnected) await this.startServer(config)
   }
@@ -2239,7 +2332,7 @@ export class McpManager extends EventEmitter {
 
   async shutdown(): Promise<void> {
     console.log('[McpManager] Shutting down all MCP servers...')
-    const promises = Array.from(this.clients.keys()).map(name => this.stopServer(name))
+    const promises = Array.from(new Set([...this.clients.keys(), ...this.starts.keys()])).map(name => this.stopServer(name))
     await Promise.all(promises)
     console.log('[McpManager] All MCP servers stopped')
   }

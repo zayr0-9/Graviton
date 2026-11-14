@@ -19,11 +19,14 @@ function world() {
   const row = (id: string, parent_id: string | null, role: string, lineage_id: string) => {
     const prior = db.get(id)
     const next = {
-      id, parent_id, role, conversation_id: 'c', content: '', children_ids: [], content_blocks: [], lineage_id,
+      id, parent_id, role, conversation_id: 'c', content: '', children_ids: prior?.children_ids ?? [], content_blocks: [], lineage_id,
       revision: ((prior as any)?.revision ?? 0) + 1,
       created_at: prior?.created_at ?? new Date(Date.UTC(2026, 0, 1, 0, 0, clock++)).toISOString(),
     } as unknown as Message
     db.set(id, next)
+    // Like the host, a parent lists its children: a row persisted again carries them.
+    const parent = parent_id == null ? undefined : db.get(parent_id)
+    if (parent && !parent.children_ids.includes(id)) db.set(parent_id!, { ...parent, children_ids: [...parent.children_ids, id] })
     return next
   }
   let state = reducer(undefined, { type: 'init' })
@@ -106,8 +109,9 @@ function world() {
   }
   const selectNode = (id: string) => commitLocal(request({ kind: 'message', conversationId: 'c', messageId: id }))
   const leave = () => commitLocal(request({ kind: 'conversation', conversationId: 'd' }))
-  const awayAndBack = () => {
+  const awayAndBack = (whileAway?: () => void) => {
     leave()
+    whileAway?.()
     const back = request({ kind: 'conversation', conversationId: 'c' })
     snapshot()
     commitLocal(back)
@@ -251,6 +255,91 @@ describe('row-time catch-up', () => {
     w.dispatch(chatSelectionCommitted({ requestId, conversationId: 'c', lineageId: null, path: earlier, focus: earlier.at(-1)! }))
     w.snapshot()
     expect(w.tip()).toBe(earlier.at(-1))
+  })
+})
+
+describe('a run held open by a background task', () => {
+  // The task's progress is written on the call that launched it, so the host persists that
+  // earlier row again, about once a second, while the run's head stays where the turn ended.
+  const waiting = () => {
+    const w = world()
+    w.send('S1', 'X', 'root')
+    const launch = w.step('S1'); w.step('S1'); w.step('S1')
+    const progress = () => w.streams.S1.emit({ type: 'assistant_message_persisted',
+      message: w.row(launch, 'S1-u', 'assistant', 'X'), lineageId: 'X' })
+    return { w, launch, progress, head: w.streams.S1.head }
+  }
+
+  it('stays the view stream after another chat was opened while the task reported progress', () => {
+    const { w, progress, head } = waiting()
+    w.awayAndBack(() => { progress(); progress() })
+    expect(w.tip()).toBe(head)
+    expect(w.view()).toBe('S1')
+    expect(w.get().conversation.currentLineageId).toBe('X')
+    progress()
+    expect(w.view()).toBe('S1')
+    expect(w.tip()).toBe(head)
+  })
+
+  it('keeps the run anchored at its head, not at the launching call', () => {
+    const { w, progress, head } = waiting()
+    progress()
+    const stream = w.get().streaming.byId.S1
+    expect(stream.currentBranchAnchorMessageId).toBe(head)
+    expect(stream.lastCompletedMessageId).toBe(head)
+    expect(stream.persistedTurnMessageId).toBe(head)
+    expect(w.tip()).toBe(head)
+  })
+
+  it('shows the turn that answers the finished task', () => {
+    const { w, progress } = waiting()
+    w.awayAndBack(progress)
+    progress()
+    const answer = w.step('S1')
+    expect(w.tip()).toBe(answer)
+    expect(w.view()).toBe('S1')
+    progress()
+    w.finish('S1')
+    expect(w.tip()).toBe(answer)
+  })
+
+  it('still follows the head when that row itself is persisted again', () => {
+    const { w, head } = waiting()
+    // A sibling run branched from the head, so the head now has a child of its own.
+    w.row('other', head, 'user', 'Y')
+    w.streams.S1.emit({ type: 'assistant_message_persisted', message: w.row(head, w.db.get(head)!.parent_id as string, 'assistant', 'X'), lineageId: 'X' })
+    expect(w.get().streaming.byId.S1.currentBranchAnchorMessageId).toBe(head)
+    const next = w.step('S1')
+    expect(w.tip()).toBe(next)
+    expect(w.view()).toBe('S1')
+  })
+})
+
+describe('returning to a run that is already on screen at its head', () => {
+  it('selects the run\'s lineage with the view, before any further row arrives', () => {
+    const w = world()
+    w.send('S1', 'X', 'root'); w.step('S1')
+    w.awayAndBack(() => { w.step('S1') })
+    expect(w.tip()).toBe(w.streams.S1.head)
+    expect(w.get().conversation.currentLineageId).toBe('X')
+    expect(w.view()).toBe('S1')
+  })
+
+  it('does not take a lineage from a run whose head is elsewhere', () => {
+    const w = world()
+    w.send('S1', 'X', 'root'); w.step('S1')
+    const earlier = w.streams.S1.head
+    w.step('S1')
+    w.leave()
+    const requestId = 'explicit'
+    w.dispatch(chatSelectionRequested({ requestId, target: { kind: 'conversation', conversationId: 'c' }, source: 'route' }))
+    w.snapshot()
+    // A view that stops one row short of the head is caught up; this one is on a sibling.
+    w.row('side', earlier, 'user', 'Y')
+    w.snapshot()
+    w.dispatch(chatSelectionCommitted({ requestId, conversationId: 'c', lineageId: null, path: [...w.pathTo(earlier), 'side'], focus: null }))
+    expect(w.tip()).toBe('side')
+    expect(w.get().conversation.currentLineageId).toBeNull()
   })
 })
 

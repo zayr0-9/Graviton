@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
+import { opaqueAppBackground } from '../../helpers/opaqueAppBackground'
 import { getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from '../ThemeManager/themeConfig'
 
 /** Portal escapes the pill's animated overflow/mask and scroll containers. */
@@ -62,7 +63,8 @@ export function AgentMessageTooltip({ text, children }: { text: string; children
         <div id={id} role='tooltip'
           className='fixed z-[1800] overflow-y-auto overscroll-contain whitespace-pre-wrap break-words rounded-xl border p-3 text-left text-xs leading-relaxed shadow-xl thin-scrollbar'
           style={{ ...position, transform: above ? 'translateY(-100%)' : undefined,
-            backgroundColor: enabled ? getThemeModeColor(theme.colors.settingsCustomThemesCardBg, dark) : dark ? '#171717' : '#ffffff',
+            // Theme card colors are translucent; the tooltip floats over arbitrary content so it must be solid.
+            backgroundColor: enabled ? opaqueAppBackground(getThemeModeColor(theme.colors.settingsCustomThemesCardBg, dark), dark) : dark ? '#171717' : '#ffffff',
             borderColor: enabled ? getThemeModeColor(theme.colors.settingsCustomThemesCardBorder, dark) : dark ? '#404040' : '#e5e5e5',
             color: enabled ? getThemeModeColor(theme.colors.toolJobsPrimaryText, dark) : dark ? '#f5f5f5' : '#171717',
           }}

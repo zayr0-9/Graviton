@@ -39,6 +39,7 @@ import { calculateBranchContextUsage } from '../../../shared/contextTokenEstimat
 import type { BranchContextStatus } from './contextStatusTool.js'
 import { assertToolAllowedForOperationMode, filterToolsForOperationMode, requiresAgentMode } from '../../../../../shared/operationModeToolPolicy.js'
 import type { OperationModeControl } from './operationModeControl.js'
+import { createOperationModeSwitcher, type OperationModeSwitcher } from './operationModeSwitchTool.js'
 import {
   extractContextUsageFromBlocks,
   openAIModelContextLength,
@@ -81,6 +82,8 @@ export interface ToolExecutionContext {
   lineageId?: string | null
   /** Run-local meter callback; never uses renderer navigation or another branch. */
   getContextStatus?: () => BranchContextStatus
+  /** Run-local `switch_mode` handler; absent unless the run has live mode control. */
+  switchOperationMode?: OperationModeSwitcher
   /** In-repo config directory setting of the parent chat (docs §11.4); subagents inherit it. */
   contextDirectories?: ContextDirectorySettings | null
 }
@@ -975,6 +978,7 @@ export class ToolLoopService {
         contentBlocks: [],
         toolCalls: [],
       }
+      let readProviderPartial: (() => ProviderPartialOutput) | undefined
       let output: ProviderGenerateOutput
       let requestStartedAt: number | undefined
       const recordRequest = (outputTokens: number | null) => {
@@ -986,7 +990,11 @@ export class ToolLoopService {
         output = await withIdleTimeoutAndAbort(
           ({ signal: attemptSignal, touch, isActive }) => {
             requestStartedAt = performance.now()
-            return this.providerRouter.generate(input.provider, { ...providerInput, signal: attemptSignal }, event => {
+            return this.providerRouter.generate(input.provider, {
+              ...providerInput,
+              signal: attemptSignal,
+              registerPartialOutput: read => { readProviderPartial = read },
+            }, event => {
               if (!isActive()) return
               touch()
 
@@ -1038,7 +1046,7 @@ export class ToolLoopService {
           this.providerTurnIdleTimeoutMs,
           'The model provider',
           input.signal,
-          () => streamedPartial
+          () => readProviderPartial ? readProviderPartial() : streamedPartial
         )
         const outputTokens = output.raw?.usage?.output_tokens
         recordRequest(typeof outputTokens === 'number' && Number.isFinite(outputTokens) && outputTokens >= 0 ? outputTokens : null)
@@ -1317,6 +1325,7 @@ export class ToolLoopService {
       manualPending = false
       return true
     }
+    let deliveredUserInputs = 0
     const flushBoundaryInputs = async () => {
       if (phaseState.current) {
         const rows = input.flushOperationMode?.(currentParentId, history) ?? []
@@ -1328,8 +1337,17 @@ export class ToolLoopService {
         : { rows: input.flushOperationMode?.(currentParentId, history) ?? [], delivered: 0 }
       for (const row of result.rows) { history.push(row); currentParentId = row.id }
       if (result.delivered) currentUserContent = '' // already present as first-class history rows
+      deliveredUserInputs += result.delivered
       return result.delivered
     }
+    // Main chat only: subagents and direct callers have no live mode control to switch.
+    const switchOperationMode = input.modeControl
+      ? createOperationModeSwitcher({
+          control: input.modeControl,
+          requestUpgrade: input.requestOperationModeUpgrade,
+          userInputCount: () => deliveredUserInputs,
+        })
+      : undefined
     // Phase 3: true iff the most recent iteration was a natural stop (no tool calls)
     // that a Stop hook forced to continue. Used only at the max-turns boundary to
     // finalize gracefully with the valid persisted answer (parity with the renderer,
@@ -1779,6 +1797,7 @@ export class ToolLoopService {
             nestedExecutor: executeNested,
             allowedToolNames: new Set((input.tools ?? []).map(tool => tool.name)),
             getContextStatus,
+            switchOperationMode,
             contextDirectories: input.contextDirectories ?? null,
           })
 

@@ -1,4 +1,4 @@
-import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import React, { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import { useChatNavigate as useNavigate } from '../ChatSelection/ChatSelectionProvider'
 import { getChatSelectionHref } from '../../features/chats/chatSelection'
@@ -6,6 +6,7 @@ import { selectCurrentConversationId, selectCurrentPath, selectCurrentViewStream
 import type { Conversation } from '../../features/conversations/conversationTypes'
 import type { BranchDebugData, BranchDebugRow } from '../../features/chats/branchDebug'
 import { uiActions, type UiNotification } from '../../features/ui'
+import { runningAgentsUiActions } from '../../features/ui/runningAgentsUiSlice'
 import { useAppDispatch, useAppSelector } from '../../hooks/redux'
 import {
   buildAgentForkGroups,
@@ -19,11 +20,12 @@ import {
 import { useConversationBranchDebugData, type ResearchNoteItem } from '../../hooks/useQueries'
 import { getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from '../ThemeManager/themeConfig'
 import './agentsPillMotion.css'
-import { AgentRunPreview } from './AgentRunPreview'
+import type { AgentPreviewScrollState } from './AgentRunPreview'
+import { AgentForkCard, cardIconButtonClass, resolvePreviewFork } from './AgentForkCard'
 import { AgentMessageTooltip } from './AgentMessageTooltip'
-import { Expand, Layers } from 'lucide-react'
+import { ArrowLeft, Expand, EyeOff, Layers } from 'lucide-react'
 import { AgentsViewSwitch } from './AgentsViewSwitch'
-import { AgentsMonitorGrid } from './AgentsMonitorGrid'
+import { AgentsMonitorGrid, useAgentGridForks } from './AgentsMonitorGrid'
 import { useAgentsPillResize } from './useAgentsPillResize'
 import { getAgentNotificationPreview } from './agentNotificationTarget'
 import { createEmptyStreamState } from '../../features/chats/streamHelpers'
@@ -398,6 +400,8 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
     [activeStreams, streamHistory]
   )
   const notifications = useAppSelector(state => state.ui.notifications)
+  const hiddenForks = useAppSelector(state => state.runningAgentsUi.hiddenForks)
+  const collapsedForks = useAppSelector(state => state.runningAgentsUi.collapsedForks)
   const currentConversationId = useAppSelector(selectCurrentConversationId)
   const currentPath = useAppSelector(selectCurrentPath)
   const branchDebugQuery = useConversationBranchDebugData(codexDevLogsEnabled ? currentConversationId : null)
@@ -412,6 +416,13 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
   const selectedItem = selectedRun
     ? [...allActiveStreams, ...allStreamHistory].find(item => item.streamId === selectedRun.streamId) ?? selectedRun
     : null
+  // Same fork group as the grid card (from the unfiltered lists, like the other preview lookups).
+  const previewFork = useMemo(
+    () => selectedItem ? resolvePreviewFork(selectedItem, allActiveStreams, allStreamHistory) : null,
+    [selectedItem, allActiveStreams, allStreamHistory]
+  )
+  // Grid reading positions outlive the grid, which unmounts while a preview is open.
+  const gridScrollStates = useRef(new Map<string, AgentPreviewScrollState>())
   const previewTriggerRef = useRef<HTMLElement | null>(null)
   const openPreview = (stream: AgentStreamListItem, wholeFork = false) => {
     setPreviewWholeFork(wholeFork)
@@ -426,6 +437,11 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
   const [branchDebugOpen, setBranchDebugOpen] = useState(false)
   const [inlineNotification, setInlineNotification] = useState<UiNotification | null>(null)
   const gridBody = gridView && !selectedItem
+  const { hiddenList: hiddenGridForks } = useAgentGridForks(activeStreams, streamHistory, hiddenForks)
+  const [hiddenListOpen, setHiddenListOpen] = useState(false)
+  const hiddenListId = useId()
+  const hiddenToggleRef = useRef<HTMLButtonElement>(null)
+  const showHiddenToggle = expanded && gridBody && hiddenGridForks.length > 0
   const contentRef = useRef<HTMLDivElement>(null)
   const [shellSize, setShellSize] = useState<{ width: number; height: number } | null>(null)
 
@@ -830,6 +846,22 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
                   key='expanded-actions'
                   className='flex shrink-0 items-center gap-1.5'
                 >
+                  {showHiddenToggle && <button ref={hiddenToggleRef} type='button' aria-expanded={hiddenListOpen} aria-controls={hiddenListId}
+                    title='Hidden from grid'
+                    onClick={event => {
+                      event.stopPropagation()
+                      setHiddenListOpen(open => !open)
+                    }}
+                    className={`flex h-10 shrink-0 items-center gap-1.5 rounded-full px-3 text-sm font-semibold transition-[background-color,color] duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 ${hiddenListOpen
+                      ? 'bg-blue-50 text-blue-700 dark:bg-orange-500/15 dark:text-orange-100'
+                      : 'text-neutral-500 hover:bg-white/70 dark:text-neutral-400 dark:hover:bg-white/10'}`}
+                    style={customThemeEnabled ? hiddenListOpen ? {
+                      backgroundColor: getThemeModeColor(customTheme.colors.composerToggleActiveBg, isDarkMode),
+                      color: getThemeModeColor(customTheme.colors.composerToggleActiveText, isDarkMode),
+                    } : { color: floatingButtonText } : undefined}>
+                    <EyeOff size={18} strokeWidth={2.25} aria-hidden='true' />
+                    {hiddenGridForks.length} hidden
+                  </button>}
                   <button type='button' aria-label='Group steps' title='Group steps' aria-pressed={groupPreviewSteps}
                     onClick={event => {
                       event.stopPropagation()
@@ -914,19 +946,34 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
                     grouped={groupPreviewSteps}
                     onOpenFork={stream => openPreview(stream, true)}
                     onOpenChat={navigateToStream}
+                    hiddenForks={hiddenForks}
+                    onHideFork={fork => dispatch(runningAgentsUiActions.forkHidden({ key: fork.key,
+                      streamIds: [...fork.activeStreams, ...fork.completedStreams].map(stream => stream.streamId) }))}
+                    onShowFork={key => dispatch(runningAgentsUiActions.forkShown(key))}
+                    onShowAllForks={() => dispatch(runningAgentsUiActions.allForksShown())}
+                    hiddenListOpen={hiddenListOpen}
+                    hiddenListId={hiddenListId}
+                    onHiddenListOpenChange={setHiddenListOpen}
+                    hiddenToggleRef={hiddenToggleRef}
+                    collapsedForks={collapsedForks}
+                    onToggleForkCollapsed={(key, collapsed) => dispatch(collapsed
+                      ? runningAgentsUiActions.forkCollapsed(key) : runningAgentsUiActions.forkExpanded(key))}
+                    scrollStates={gridScrollStates.current}
                   />
-                ) : selectedItem ? (
-                  <section className={pillResize.size ? 'flex min-h-0 flex-1 flex-col' : undefined} aria-label='Agent run preview' onKeyDown={event => {
+                ) : selectedItem && previewFork ? (
+                  // The same card as the grid cell, so status, request text and the working indicator match.
+                  <div className={pillResize.size ? 'flex min-h-0 flex-1 flex-col' : undefined} onKeyDown={event => {
                     if (event.key === 'Escape') { event.stopPropagation(); closePreview() }
                   }}>
-                    <div className='flex shrink-0 flex-wrap items-center gap-2 px-2 py-2 text-xs'>
-                      <button autoFocus type='button' onClick={closePreview} className='rounded-full px-2 py-1.5 hover:bg-black/5 dark:hover:bg-white/5'>← Back</button>
-                      <span className='min-w-0 flex-1 truncate font-semibold'>{selectedItem.conversationTitle || 'Run preview'}</span>
-                      <button type='button' disabled={!getStreamHref(selectedItem)} onClick={() => navigateToStream(selectedItem)}
-                        className='rounded-full bg-emerald-600 px-3 py-1.5 font-semibold text-white disabled:opacity-50'>Open chat ↗</button>
-                    </div>
-                    <AgentRunPreview key={`${selectedItem.streamId}:${previewWholeFork}`} streamId={selectedItem.streamId} grouped={groupPreviewSteps} wholeFork={previewWholeFork} transcriptLabel={previewWholeFork ? 'Full fork transcript' : 'Run transcript'} fillHeight={Boolean(pillResize.size)} />
-                  </section>
+                    <AgentForkCard key={`${previewFork.key}:${previewWholeFork ? 'fork' : selectedItem.streamId}`}
+                      fork={previewFork} run={previewWholeFork ? undefined : selectedItem}
+                      grouped={groupPreviewSteps} onOpenChat={navigateToStream}
+                      fillHeight={Boolean(pillResize.size)} className={pillResize.size ? 'min-h-0 flex-1' : ''}
+                      leading={<button autoFocus type='button' onClick={closePreview} aria-label='Back to agents' title='Back'
+                        className={`${cardIconButtonClass} -ml-1 h-8 w-8`} style={floatingMutedTextStyle}>
+                        <ArrowLeft size={18} strokeWidth={2.25} aria-hidden='true' />
+                      </button>} />
+                  </div>
                 ) : <>
                 <div className='flex items-center justify-between px-2 py-2'>
                   <div className='flex items-center gap-2'>

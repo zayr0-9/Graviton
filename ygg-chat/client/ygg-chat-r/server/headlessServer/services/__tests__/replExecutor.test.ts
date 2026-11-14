@@ -67,6 +67,19 @@ describe('replExecutor', () => {
     expect(await run({ action: 'list' })).toMatchObject({ variables: [{ variable: 'page' }, { variable: 'matches' }] })
   })
 
+  it('reports the stored size in the receipt using the same measure as show', async () => {
+    const { run } = setup()
+    const receipt = await run(capture)
+    const shown = await run({ action: 'show', variable: 'page', maxOutputChars: 1 })
+    expect(receipt.totalChars).toBe(shown.totalChars)
+    expect(receipt.totalChars).toBe(JSON.stringify({ success: true, content: 'secret payload\nlicense: MIT' }).length)
+
+    const text = setup(async () => 'line "one"\nline two')
+    const stringReceipt = await text.run({ ...capture, assign: 'raw' })
+    expect(stringReceipt.totalChars).toBe('line "one"\nline two'.length)
+    expect((await text.run({ action: 'show', variable: 'raw' })).totalChars).toBe(stringReceipt.totalChars)
+  })
+
   it.each(['full', 'range', 'continuation'] as const)('captures a real %s file read with JSON-safe metadata and unchanged CSS', async mode => {
     const harness = await createToolFsHarness()
     const css = '/* café */\r\nbody { color: red; }\r\n'

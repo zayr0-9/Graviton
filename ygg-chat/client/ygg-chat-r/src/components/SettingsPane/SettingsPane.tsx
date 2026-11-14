@@ -1,9 +1,16 @@
 import { HOST_SKILLS_CHANGED } from '../../services/hostCatalogClient'
 import { useActivityStepLabels, saveActivityStepLabels } from '../../helpers/activityStepLabelsSettings'
+import {
+  MCP_APP_MAX_HEIGHT,
+  MCP_APP_MIN_HEIGHT,
+  saveMcpAppConstraintsEnabled,
+  useMcpAppConstraintsEnabled,
+} from '../McpAppIframe/mcpAppSizing'
 import { useQueryClient } from '@tanstack/react-query'
 import mammoth from 'mammoth'
 import {
   AlertCircle,
+  AppWindow,
   Brain,
   Check,
   CheckCircle,
@@ -400,6 +407,7 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
   })
 
   const showActivityStepLabels = useActivityStepLabels()
+  const mcpAppConstraintsEnabled = useMcpAppConstraintsEnabled()
 
   const [truncateToolOutput, setTruncateToolOutput] = useState<boolean>(loadToolOutputTruncationEnabled)
 
@@ -820,10 +828,9 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
 
   // Handle MCP server start/stop
   const handleToggleMcpServer = useCallback(
-    async (serverName: string, currentStatus: string) => {
-      // Already connecting (possibly started by the model): another start only parks a request.
-      if (currentStatus === 'connecting' || mcpStartingRef.current[serverName]) return
-      const action = currentStatus === 'connected' ? 'stop' : 'start'
+    async (serverName: string, currentStatus: string, reauthenticate = false) => {
+      if (mcpStartingRef.current[serverName]) return
+      const action = reauthenticate ? 'reauthenticate' : currentStatus === 'connected' || currentStatus === 'connecting' ? 'stop' : 'start'
       mcpStartingRef.current = { ...mcpStartingRef.current, [serverName]: true }
       setMcpStarting(mcpStartingRef.current)
       try {
@@ -834,10 +841,10 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
           setMcpActionStatus({ type: 'info', message: `${serverName}: ${data.message || 'Still connecting.'}` })
           void fetchMcpServers({ silent: true })
         } else if (data.success) {
-          setMcpActionStatus({ type: 'success', message: `Server ${action}ed successfully` })
+          setMcpActionStatus({ type: 'success', message: reauthenticate ? 'Signed in successfully' : `Server ${action}ed successfully` })
           fetchMcpServers()
           // Refresh MCP tools with orchestrator and Redux after server state change
-          if (action === 'start') {
+          if (action === 'start' || action === 'reauthenticate') {
             setTimeout(async () => {
               // First refresh with orchestrator (backend registers tools)
               await localApi.post('/mcp/refresh-tools')
@@ -852,7 +859,7 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
           setMcpActionStatus({ type: 'error', message: data.error || `Failed to ${action} server` })
         }
       } catch (error) {
-        setMcpActionStatus({ type: 'error', message: `Failed to ${action} server` })
+        setMcpActionStatus({ type: 'error', message: error instanceof Error ? error.message : `Failed to ${action} server` })
         void fetchMcpServers({ silent: true })
       } finally {
         const { [serverName]: _done, ...rest } = mcpStartingRef.current
@@ -2105,6 +2112,72 @@ ${block}`
                           aria-pressed={editDiffAnimationsEnabled}
                         >
                           {editDiffAnimationsEnabled ? (
+                            <Check
+                              {...lucideIconProps}
+                              style={
+                                savedCustomThemesColors ? { color: savedCustomThemesColors.primaryButtonBg } : undefined
+                              }
+                            />
+                          ) : (
+                            <X {...lucideIconProps} />
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* MCP App Native Size Constraints Section */}
+                  <div className='space-y-2'>
+                    <div
+                      className='overflow-hidden rounded-2xl bg-neutral-50/70 dark:bg-neutral-900/10'
+                      style={settingsSectionCardStyle}
+                    >
+                      <div className='flex items-start justify-between gap-3 px-3 py-3'>
+                        <div className='flex min-w-0 items-start gap-3'>
+                          <div
+                            className='mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-sky-100 text-sky-600 dark:bg-sky-500/15 dark:text-sky-300'
+                            style={settingsSectionIconStyle}
+                          >
+                            <AppWindow {...lucideIconProps} />
+                          </div>
+                          <div className='min-w-0 pr-3'>
+                            <p
+                              id='mcp-app-constraints-label'
+                              className='text-sm font-medium text-stone-700 dark:text-neutral-100'
+                              style={settingsSectionTitleStyle}
+                            >
+                              Apply Graviton size constraints to MCP apps
+                            </p>
+                            <p
+                              className='mt-0.5 text-xs text-neutral-500 dark:text-neutral-100'
+                              style={settingsSectionBodyStyle}
+                            >
+                              Keep inline MCP app viewers between {MCP_APP_MIN_HEIGHT}px and {MCP_APP_MAX_HEIGHT}px
+                              tall. Turn off to use the height each app requests.
+                            </p>
+                          </div>
+                        </div>
+                        <button
+                          type='button'
+                          onClick={() => saveMcpAppConstraintsEnabled(!mcpAppConstraintsEnabled)}
+                          className={iconButtonClass}
+                          style={
+                            savedCustomThemesColors
+                              ? {
+                                  backgroundColor: savedCustomThemesColors.buttonBg,
+                                  color: savedCustomThemesColors.buttonText,
+                                }
+                              : undefined
+                          }
+                          title={
+                            mcpAppConstraintsEnabled
+                              ? 'Let MCP apps choose their own height'
+                              : 'Apply Graviton size constraints to MCP apps'
+                          }
+                          aria-labelledby='mcp-app-constraints-label'
+                          aria-pressed={mcpAppConstraintsEnabled}
+                        >
+                          {mcpAppConstraintsEnabled ? (
                             <Check
                               {...lucideIconProps}
                               style={
@@ -3557,23 +3630,31 @@ ${block}`
                               <button
                                 type='button'
                                 onClick={() => handleToggleMcpServer(server.name, server.status)}
-                                disabled={server.status === 'connecting' || Boolean(mcpStarting[server.name])}
+                                disabled={Boolean(mcpStarting[server.name])}
                                 className={`${iconButtonClass} disabled:cursor-default disabled:opacity-70`}
-                                title={server.status === 'connected' ? 'Stop server'
-                                  : server.status === 'connecting' || mcpStarting[server.name] ? (server.phaseMessage || 'Connecting…')
-                                  : 'Start server'}
-                                aria-label={server.status === 'connected' ? `Stop ${server.name}`
-                                  : server.status === 'connecting' || mcpStarting[server.name] ? `${server.name} is connecting`
-                                  : `Start ${server.name}`}
+                                title={server.status === 'connecting' ? 'Cancel connection or sign-in' : server.status === 'connected' ? 'Stop server' : 'Start server'}
+                                aria-label={server.status === 'connecting' ? `Cancel connection to ${server.name}` : server.status === 'connected' ? `Stop ${server.name}` : `Start ${server.name}`}
                               >
-                                {server.status === 'connected' ? (
+                                {server.status === 'connected' || server.status === 'connecting' ? (
                                   <Square {...lucideIconProps} className='text-red-500' />
-                                ) : server.status === 'connecting' || mcpStarting[server.name] ? (
+                                ) : mcpStarting[server.name] ? (
                                   <LoaderCircle {...lucideIconProps} className='animate-spin text-yellow-500' />
                                 ) : (
                                   <Play {...lucideIconProps} className='text-green-500' />
                                 )}
                               </button>
+                              {(server.transport === 'http' || Boolean(server.url)) && (
+                                <button
+                                  type='button'
+                                  onClick={() => handleToggleMcpServer(server.name, server.status, true)}
+                                  disabled={server.status === 'connecting' || Boolean(mcpStarting[server.name])}
+                                  className={`${pillButtonClass} shrink-0 whitespace-nowrap`}
+                                  title={server.status === 'connecting' ? 'Cancel the pending connection first to start a new sign-in' : 'Clear saved tokens and open browser sign-in; keep server configuration'}
+                                  aria-label={`Sign in again to ${server.name}`}
+                                >
+                                  Sign in again
+                                </button>
+                              )}
                               <button
                                 type='button'
                                 onClick={() => beginEditMcpServer(server)}

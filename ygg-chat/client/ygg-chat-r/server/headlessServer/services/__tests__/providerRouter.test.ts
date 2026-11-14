@@ -18,6 +18,7 @@ describe('provider routing', () => {
     expect(normalizeProviderRoute('openai')).toBe('openaichatgpt')
     expect(normalizeProviderRoute('z.ai')).toBe('zai')
     expect(normalizeProviderRoute('glm')).toBe('zai')
+    expect(normalizeProviderRoute('DeepSeek')).toBe('deepseek')
     expect(normalizeProviderRoute('bedrock')).toBe('bedrock')
     expect(normalizeProviderRoute('aws-bedrock')).toBe('bedrock')
     expect(normalizeProviderRoute('amazon bedrock')).toBe('bedrock')

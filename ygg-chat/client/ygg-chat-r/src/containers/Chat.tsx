@@ -8,6 +8,7 @@ import { isClaudeProvider, isClaudeTranscriptMessage } from '../../../../shared/
 import { isCleanStartBranchEdit, isProviderHandoffEdit, resolveComposerModelSelection, resolveComposerClaudeLock, resolveSummaryContinuation } from '../features/chats/branchModelSelection'
 import { resolveBranchFastMode } from '../features/chats/branchFastMode'
 import { resolveBranchPlanMode } from '../features/chats/branchPlanMode'
+import { resolveBranchClaudeAutoMode } from '../features/chats/branchClaudeAutoMode'
 import { resolveComposerToolApproval } from '../features/chats/branchToolApproval'
 import { isCommittedCompaction } from '../../../../shared/compaction'
 import { isHiddenCompactionMessage, resolveBranchBeforeSummaryAnchor } from '../features/chats/summaryPresentation'
@@ -56,7 +57,7 @@ import {
 } from '../components'
 import { ChatErrorBubble } from '../components/ChatErrorBubble/ChatErrorBubble'
 import { ActionPopoverButton, ActionPopoverDisclosure, ActionPopoverSwitch } from '../components/ActionPopover/ActionPopoverControls'
-import { ClipboardCheck, CodeXml, MessageSquare, Plus, ShieldCheck, ShieldHalf, ShieldQuestion, X } from 'lucide-react'
+import { ClipboardCheck, ClipboardPaste, CodeXml, MessageSquare, Plus, ShieldCheck, ShieldHalf, ShieldQuestion, X } from 'lucide-react'
 import { useConversationRunStatistics } from '../hooks/useConversationRunStatistics'
 import { deriveRunStatistics, placeRunFooters, interleaveRunFooters, type RunStatisticsFooterData } from '../features/chats/runStatistics'
 import { RunStatisticsFooter } from '../components/ChatMessage/RunStatisticsFooter'
@@ -172,7 +173,7 @@ import { isContextInjectionMessage, parseMessageMeta } from '../../../../shared/
 import { ContextInjectionCard, type ContextInjectionCardEntry } from '../components/ChatMessage/ContextInjectionCard'
 import { AgentSteps } from '../components/ChatMessage/AgentSteps'
 import { MessageActivity } from '../components/ChatMessage/MessageActivity'
-import { getAgentProgress, splitLiveAgentEvents, hasTrailingAgentProse, canAttachLiveAgentGroup } from '../components/ChatMessage/agentActivity'
+import { getAgentProgress, splitLiveAgentEvents, hasTrailingAgentProse, canAttachLiveAgentGroup, buildStreamRenderItems, resolveTrailingStatusGroupKey, resolveActivityIndicatorOwner } from '../components/ChatMessage/agentActivity'
 import {
   chatErrorRowHeight,
   DEFAULT_ROOT_FONT_SIZE,
@@ -246,7 +247,8 @@ import {
 import { useAppDispatch, useAppSelector } from '../hooks/redux'
 import { useAuth } from '../hooks/useAuth'
 import { useIdeContext } from '../hooks/useIdeContext'
-import { useIsMobile } from '../hooks/useMediaQuery'
+import { useIsMobile, useIsTouchPrimary } from '../hooks/useMediaQuery'
+import { canReadClipboardImages, readClipboardImageFiles } from '../helpers/clipboardImages'
 import { useRunningJobs } from '../hooks/useToolJobs'
 import {
   ResearchNoteItem,
@@ -267,6 +269,7 @@ import { parseId } from '../utils/helpers'
 import { extractTextFromPdf } from '../utils/pdfUtils'
 import { addFileMentionLookupKeys } from '../../shared/fileMatchRanking'
 import { extractLatestTodoList } from '../features/chats/todoListTracking'
+import { ConversationLinkRootProvider } from '../components/MarkdownLink/markdownLinkRoot'
 
 type ParsedMessageData = {
   toolCalls?: ToolCall[]
@@ -1334,7 +1337,11 @@ function Chat() {
       : null
   )
   const toolAutoApprove = useAppSelector(state => resolveComposerToolApproval(state.chat))
-  const claudeAutoMode = useAppSelector(state => state.chat.claudeAutoMode === true)
+  // Per branch, like plan mode: an approved ExitPlanMode leaves its branch in auto mode.
+  const claudeAutoMode = useAppSelector(state =>
+    (state.chat.composition.editingBranch ? state.chat.composition.branchEditModes?.claudeAutoMode : undefined)
+      ?? resolveBranchClaudeAutoMode(state.chat)
+  )
   const claudeUltracode = useAppSelector(state => state.chat.claudeUltracode === true)
   // Per branch: follows the selected branch as the user navigates (resolveBranchPlanMode).
   const claudePlanMode = useAppSelector(state =>
@@ -2764,6 +2771,21 @@ function Chat() {
     streamState.status === 'active' ||
     streamState.status === 'waiting_for_tool' ||
     streamState.status === 'aborting'
+  const errorRecoveryStreamRef = useRef<string | null>(null)
+  useEffect(() => {
+    const recoveringStreamId = streamLifecycleActive ? streamState.id : null
+    if (errorRecoveryStreamRef.current === recoveringStreamId) return
+    errorRecoveryStreamRef.current = recoveringStreamId
+    if (!recoveringStreamId || !currentConversationId || chatErrorRecords.length === 0) return
+
+    dispatch(chatSliceActions.chatErrorsSuperseded({
+      conversationId: currentConversationId,
+      streamId: recoveringStreamId,
+      lineageId: modeLineageId ?? null,
+      path: selectedPath,
+    }))
+  }, [dispatch, streamLifecycleActive, streamState.id, currentConversationId, chatErrorRecords, modeLineageId, selectedPath])
+
   const showGenerationLoadingAnimation =
     selection.status !== 'pending' && selection.status !== 'error' && (showCompactionStatus || streamLifecycleActive || hasRunningToolJobForCurrentBranch)
   // A Claude run whose turn ended stays open only for its background tasks: name them instead of "Composing".
@@ -2773,14 +2795,14 @@ function Chat() {
         idle: streamState.backgroundTurnIdle && !showCompactionStatus }
     : null
   const showThinkingIndicator = !backgroundTasksView?.idle
-  const hasFinalTextStreaming = Boolean(streamState.buffer?.trim())
+  const hasStreamingText = Boolean(streamState.buffer?.trim())
   const hasProcessStreamingContent =
     Boolean(streamState.thinkingBuffer) || streamState.toolCalls.length > 0 || streamState.events.length > 0
   // R4: `streamState.error` deliberately does NOT keep the live row alive. The failure is drawn
   // by the message list and nowhere else — tier 1 when the server persisted a row carrying the
   // ErrorBlock, tier 2 (`chat_error`) when it could not. A stream that died before its first
   // token therefore renders no live row at all rather than an empty shell plus a second bubble.
-  const hasStreamingMessageContent = hasFinalTextStreaming || hasProcessStreamingContent
+  const hasStreamingMessageContent = hasStreamingText || hasProcessStreamingContent
 
   // Suppress the persisted current turn, not the previous turn's branch anchor.
   // New server-owned generations have no live message ID until persistence.
@@ -2818,18 +2840,34 @@ function Chat() {
   )
   const visibleLiveEvents = liveAgentGroupId ? liveAgentEvents.outside : streamState.events
   const showStandaloneStreamingMessage = showStreamingMessage && (!liveAgentGroupId || visibleLiveEvents.length > 0)
-  const showLiveStreamingTail = showStandaloneStreamingMessage && hasFinalTextStreaming && liveExplainSurface !== 'virtual'
-  // Once the final answer is streaming, the live tail is rendered OUTSIDE TanStack Virtual as an
+  const showLiveStreamingTail = showStandaloneStreamingMessage && hasStreamingText && liveExplainSurface !== 'virtual'
+  // Any streamed prose (commentary or answer) uses a live tail OUTSIDE TanStack Virtual as an
   // in-flow sibling (see the message list render) so its token-by-token growth never enters
   // virtualizer geometry or the ResizeObserver, and can never drag scrollTop. Only the
   // process-only phase (thinking/tools, no text yet) is kept as a measured virtual row.
   const showStreamingMessageInVirtualList = (showStandaloneStreamingMessage && !showLiveStreamingTail) || liveExplainSurface === 'virtual'
-  const showStreamingThinkingMessageRow = streamingThinkingIndicatorPlacement === 'message'
-  const showStreamingThinkingInputTab = streamingThinkingIndicatorPlacement === 'input-tab'
-  const showGenerationLoaderRow = showGenerationLoadingAnimation && showStreamingThinkingMessageRow
-  // Grouped live process work draws its own animated "Agent steps" status line; a second loader below it duplicates it.
-  const showsLiveAgentStepsStatus = groupToolReasoningRuns && !showCompactionStatus && showStreamingMessage && hasProcessStreamingContent
-  const showGenerationLoaderInVirtualList = showGenerationLoaderRow && !showLiveStreamingTail && !liveAgentGroupId && !showsLiveAgentStepsStatus
+  const liveRenderItems = useMemo(() => buildStreamRenderItems(visibleLiveEvents), [visibleLiveEvents])
+  const trailingStatusGroupKey = useMemo(() => resolveTrailingStatusGroupKey({
+    items: liveRenderItems, grouped: groupToolReasoningRuns, standalone: showStandaloneStreamingMessage,
+    streamingMessage: showStreamingMessage, attachedGroupId: liveAgentGroupId,
+  }), [liveRenderItems, groupToolReasoningRuns, showStandaloneStreamingMessage, showStreamingMessage, liveAgentGroupId])
+  const activityIndicatorOwner = resolveActivityIndicatorOwner({
+    visible: showGenerationLoadingAnimation,
+    placement: streamingThinkingIndicatorPlacement,
+    dedicatedStatus: showCompactionStatus || Boolean(backgroundTasksView),
+    liveTail: showLiveStreamingTail,
+    trailingGroupKey: trailingStatusGroupKey,
+  })
+  const liveMessageOwnsActivity = activityIndicatorOwner.kind === 'agent-steps' && activityIndicatorOwner.groupKey.startsWith('live:')
+  const showGenerationLoaderInVirtualList = activityIndicatorOwner.kind === 'virtual-footer'
+  const renderGenerationStatus = () => (
+    <div className={`${showStreamingMessage ? 'pt-2' : 'pt-1'} flex flex-wrap items-center gap-1 px-0 sm:px-2`}>
+      {showThinkingIndicator && <StreamingThinkingIndicator compacting={showCompactionStatus} compactionCompleted={Boolean(compactionCompleted)}
+        style={fontSizeOffset !== 0 ? { fontSize: `calc(0.75em + ${fontSizeOffset}px)` } : undefined} />}
+      {backgroundTasksView && <BackgroundTasksIndicator {...backgroundTasksView}
+        style={fontSizeOffset !== 0 ? { fontSize: `calc(0.75em + ${fontSizeOffset}px)` } : undefined} />}
+    </div>
+  )
   // The in-flow bottom sentinel is the sole trailing spacer (paddingEnd is 0). Sized to mirror the
   // previous paddingEnd so scroll-to-bottom lands the last message in the same place. It must be
   // flexShrink:0 in the render, otherwise the flex column collapses it to 0 and there is no room to
@@ -4542,14 +4580,14 @@ function Chat() {
       return
     }
 
-    if (hasFinalTextStreaming && !finalTextStreamingStartedRef.current) {
+    if (hasStreamingText && !finalTextStreamingStartedRef.current) {
       finalTextStreamingStartedRef.current = true
       const container = messagesContainerRef.current
       if (container && !isNearBottom(container, AUTO_FOLLOW_BOTTOM_PX)) {
         userScrolledDuringStreamRef.current = true
       }
     }
-  }, [hasFinalTextStreaming, streamState.active])
+  }, [hasStreamingText, streamState.active])
 
   useEffect(() => {
     if (!showLiveStreamingTail) {
@@ -6330,6 +6368,33 @@ function Chat() {
     [dispatch, activeBranchEditingMessageId, updateLocalInput, focusLocalInput]
   )
 
+  // Touch browsers may never deliver an image-only clipboard to the textarea's paste event,
+  // so phones get an explicit button that reads the clipboard (secure origins only).
+  const isTouchPrimary = useIsTouchPrimary()
+  const showClipboardImageButton = isTouchPrimary && canReadClipboardImages()
+  const [clipboardImageNotice, setClipboardImageNotice] = useState<string | null>(null)
+  useEffect(() => {
+    if (!clipboardImageNotice) return
+    const timer = window.setTimeout(() => setClipboardImageNotice(null), 2500)
+    return () => window.clearTimeout(timer)
+  }, [clipboardImageNotice])
+  const handlePasteClipboardImage = useCallback(async () => {
+    let files: File[]
+    try {
+      files = await readClipboardImageFiles()
+    } catch {
+      setClipboardImageNotice('Clipboard access was blocked')
+      return
+    }
+    if (files.length === 0) {
+      setClipboardImageNotice('No image on the clipboard')
+      return
+    }
+    const target: ImageDraftTarget = activeBranchEditingMessageId != null
+      ? { kind: 'branch', messageId: parseId(activeBranchEditingMessageId) } : { kind: 'composer' }
+    void dispatch(prepareImageFiles(files, target))
+  }, [dispatch, activeBranchEditingMessageId])
+
   // const handleMultiReplyCountChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
   //   const value = e.target.value
   //   if (value === '' || !isNaN(Number(value))) {
@@ -6488,6 +6553,8 @@ function Chat() {
   // so we intentionally avoid passive threshold-triggered compaction effects here.
 
   return (
+    // Relative Markdown file links resolve against this conversation's working directory.
+    <ConversationLinkRootProvider conversationId={currentConversationId} fallbackRoot={ccCwd}>
     <motion.div
       initial={{ opacity: 0, x: 10 }}
       animate={{ opacity: 1, x: 0 }}
@@ -6690,7 +6757,8 @@ function Chat() {
                                 role='assistant'
                                 content={streamState.buffer}
                                 streamEvents={visibleLiveEvents}
-                    processRunActive={streamLifecycleActive}
+                    streamRenderItems={liveRenderItems}
+                    processRunActive={liveMessageOwnsActivity}
                     firstProcessGroupExpanded={!liveAgentGroupId ? expandedProcessMessageRuns.has(transientProcessGroupKey) : undefined}
                     onFirstProcessGroupToggle={() => toggleProcessMessageRun(transientProcessGroupKey)}
                                 width='w-full'
@@ -6750,25 +6818,7 @@ function Chat() {
                               start={virtualRow.start}
                               measureElement={virtualizer.measureElement}
                             >
-                              <div className={`${showStreamingMessage ? 'pt-2' : 'pt-1'} flex flex-wrap items-center gap-1 px-0 sm:px-2`}>
-                                {showThinkingIndicator && (
-                                  <StreamingThinkingIndicator
-                                    compacting={showCompactionStatus}
-                                    compactionCompleted={Boolean(compactionCompleted)}
-                                    style={
-                                      fontSizeOffset !== 0
-                                        ? { fontSize: `calc(0.75em + ${fontSizeOffset}px)` }
-                                        : undefined
-                                    }
-                                  />
-                                )}
-                                {backgroundTasksView && (
-                                  <BackgroundTasksIndicator
-                                    {...backgroundTasksView}
-                                    style={fontSizeOffset !== 0 ? { fontSize: `calc(0.75em + ${fontSizeOffset}px)` } : undefined}
-                                  />
-                                )}
-                              </div>
+                              {renderGenerationStatus()}
                             </VirtualizedRowContainer>
                           )
                         }
@@ -6778,6 +6828,7 @@ function Chat() {
                         if (row.kind === 'process_group') {
                           const runId = String(row.id)
                           const liveHere = liveAgentGroupId === runId
+                          const ownsActivity = activityIndicatorOwner.kind === 'agent-steps' && activityIndicatorOwner.groupKey === `persisted:${runId}`
                           const isExpanded = expandedProcessMessageRuns.has(runId) || (liveHere && expandedProcessMessageRuns.has(transientProcessGroupKey))
                           const liveEvents = liveHere && showStreamingMessage ? liveAgentEvents.process : []
                           const leadingMessage = row.leadingMessageId != null ? messageById.get(String(row.leadingMessageId)) : undefined
@@ -6831,6 +6882,9 @@ function Chat() {
                           const groupedBlocks = activityMessages.flatMap(message => parsedMessageDataById.get(message.id)?.contentBlocks ?? [])
                           const groupedHooks = activityMessages.flatMap(message => message.hook_runs ?? [])
                           const progress = getAgentProgress(groupedBlocks, liveEvents, groupedHooks, liveHere)
+                          // Hook-owned work can outlive a model run; retain its existing local
+                          // status when there is no run-level indicator to duplicate.
+                          const showGroupStatus = ownsActivity || (!showGenerationLoadingAnimation && progress.active)
                           const summary = progress.toolCount ? `${progress.completed} completed${progress.active && progress.pending ? ` · ${progress.pending} pending` : ''}` : row.toolCount ? `${row.toolCount} tools` : undefined
                           let toolOffset = 0
                           const activity = activityMessages.map(message => {
@@ -6854,7 +6908,7 @@ function Chat() {
                             >
                               <div className='min-w-0 px-0 py-1 sm:px-2'>
                                 <AgentSteps id={`message-group-${runId}`} expanded={isExpanded} onToggle={() => toggleProcessMessageRun(runId)}
-                                  summary={summary} activity={hasActivity ? activity : undefined} status={progress.status} active={progress.active}
+                                  summary={summary} activity={hasActivity ? activity : undefined} status={showGroupStatus ? progress.status : undefined} active={showGroupStatus && progress.active}
                                   style={fontSizeOffset !== 0 ? { fontSize: `calc(1em + ${fontSizeOffset}px)` } : undefined}
                                   history={<div>
                                     {renderBridgedProcess(leadingMessage)}
@@ -7059,8 +7113,8 @@ function Chat() {
               )}
             </React.Profiler>
 
-            {/* Live streaming tail rendered OUTSIDE the virtualizer as an in-flow sibling. Once final
-                text starts, the token-by-token growth happens here and never enters virtualizer
+            {/* Live streaming tail rendered OUTSIDE the virtualizer as an in-flow sibling. Once prose
+                starts, the token-by-token growth happens here and never enters virtualizer
                 geometry or the ResizeObserver, so it can never drag scrollTop. `flexShrink: 0` keeps
                 the flex column from collapsing it (mirrors the totalSize div). Auto-follow targets
                 liveStreamingContentRef via getBoundingClientRect, which is layout-agnostic. */}
@@ -7072,7 +7126,8 @@ function Chat() {
                     role='assistant'
                     content={streamState.buffer}
                     streamEvents={visibleLiveEvents}
-                    processRunActive={streamLifecycleActive}
+                    streamRenderItems={liveRenderItems}
+                    processRunActive={liveMessageOwnsActivity}
                     firstProcessGroupExpanded={!liveAgentGroupId ? expandedProcessMessageRuns.has(transientProcessGroupKey) : undefined}
                     onFirstProcessGroupToggle={() => toggleProcessMessageRun(transientProcessGroupKey)}
                     width='w-full'
@@ -7094,6 +7149,7 @@ function Chat() {
                     onOpenSubagentTranscript={openSubagentTranscript}
                     onChatErrorAction={handlePersistedChatErrorAction}
                   />
+                  {activityIndicatorOwner.kind === 'live-tail' && <div data-live-activity-footer='true'>{renderGenerationStatus()}</div>}
                 </div>
                 <div
                   aria-hidden='true'
@@ -7162,7 +7218,7 @@ function Chat() {
               surfaceClassName='slate-input-wrapper bg-neutral-100/40 dark:bg-neutral-900/40 backdrop-blur-xl'
               strokeClassName={composerStrokeClasses}
               className='px-2 pt-3 pb-2'
-              tab={showGenerationLoadingAnimation && showStreamingThinkingInputTab && (showThinkingIndicator || backgroundTasksView) && (
+              tab={activityIndicatorOwner.kind === 'input-tab' && (showThinkingIndicator || backgroundTasksView) && (
                 <>
                   {showThinkingIndicator && (
                     <StreamingThinkingIndicator variant='tab' compacting={showCompactionStatus} compactionCompleted={Boolean(compactionCompleted)} />
@@ -7973,6 +8029,22 @@ function Chat() {
                       <path d='m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.51a2 2 0 0 1-2.83-2.83l8.49-8.48' />
                     </svg>
                   </button>
+                  {showClipboardImageButton && (
+                    <button
+                      type='button'
+                      className='p-2 rounded-full text-neutral-500 dark:text-neutral-400 hover:text-neutral-800 dark:hover:text-neutral-200 hover:bg-white/10 dark:hover:bg-white/5 transition-[background-color,color] duration-200'
+                      onClick={() => void handlePasteClipboardImage()}
+                      title={clipboardImageNotice ?? 'Paste image'}
+                      aria-label='Paste image from clipboard'
+                    >
+                      <ClipboardPaste size={18} strokeWidth={2} />
+                    </button>
+                  )}
+                  {clipboardImageNotice && (
+                    <span role='status' className='text-xs text-neutral-500 dark:text-neutral-400 whitespace-nowrap'>
+                      {clipboardImageNotice}
+                    </span>
+                  )}
                   {streamState.active && hasLocalInput && (
                     <button type='button' onClick={() => handleSend(1)} disabled={!canQueueLocal}
                       title='Queue message' aria-label='Queue message'
@@ -8370,6 +8442,7 @@ function Chat() {
         </div>
       )}
     </motion.div>
+    </ConversationLinkRootProvider>
   )
 }
 

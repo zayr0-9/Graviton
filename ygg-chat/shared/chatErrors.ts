@@ -56,6 +56,7 @@ export type ChatErrorCode =
   | 'stop_not_confirmed'
   | 'cancelled'
   | 'unsupported_runtime'
+  | 'claude_workspace_changed'
   | 'internal_error'
 
 /**
@@ -120,6 +121,10 @@ interface ChatErrorDefault {
  * but it must never leave a code without prose.
  */
 export const CHAT_ERROR_DEFAULTS: Record<ChatErrorCode, ChatErrorDefault> = {
+  claude_workspace_changed: {
+    userMessage: 'The workspace folder changed, but this Claude conversation is still tied to its original folder. Switch back to continue, or start a new conversation in the new folder. To give Claude access to another folder, add it as an additional directory instead.',
+    recoverability: 'user_action',
+  },
   // ── Network / transport ──
   local_server_unreachable: {
     userMessage:

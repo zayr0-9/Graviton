@@ -16,8 +16,17 @@ export function resizeAgentGridSplit(ratios: number[], divider: number, delta: n
   return next
 }
 
-/** Sub-1fr tracks can leave free space after a neighboring track hits its minimum. */
-export function getAgentGridTracks(ratios: number[]): string {
-  const smallest = Math.min(...ratios)
-  return ratios.map(ratio => `minmax(min(160px, 100%), ${ratio / smallest}fr)`).join(' ')
+/** Fixed strip width for a user-collapsed card. */
+export const COLLAPSED_AGENT_CARD_TRACK = '3rem'
+
+/**
+ * Sub-1fr tracks can leave free space after a neighboring track hits its minimum.
+ * Collapsed cells take a fixed strip; open cells share the rest by their own ratios.
+ */
+export function getAgentGridTracks(ratios: number[], collapsed: readonly boolean[] = []): string {
+  const open = ratios.filter((_, index) => !collapsed[index])
+  const smallest = Math.min(...open)
+  return ratios.map((ratio, index) => collapsed[index]
+    ? COLLAPSED_AGENT_CARD_TRACK
+    : `minmax(min(160px, 100%), ${ratio / smallest}fr)`).join(' ')
 }

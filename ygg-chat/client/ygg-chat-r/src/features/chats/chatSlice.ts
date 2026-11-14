@@ -2,6 +2,7 @@ import { createSlice, current, PayloadAction } from '@reduxjs/toolkit'
 import { composerApprovalHandoff, composerProvider, loadBranchToolApprovalDrafts, resolveComposerToolApproval, saveBranchToolApprovalDrafts } from './branchToolApproval'
 import { loadBranchFastModeDrafts, saveBranchFastModeDrafts } from './branchFastMode'
 import { loadClaudePlanModeDrafts, saveClaudePlanModeDrafts, withClaudePlanModeDraft } from './branchPlanMode'
+import { loadClaudeAutoModeDrafts, saveClaudeAutoModeDrafts, withClaudeAutoModeDraft } from './branchClaudeAutoMode'
 import { branchModelKey, loadBranchModelDrafts, saveBranchModelDrafts, type BranchModelSelection } from './branchModelSelection'
 import { normalizeChatErrorEnvelope } from '../../../../../shared/chatErrors'
 import providersList from '../../../../../shared/providers.json'
@@ -277,6 +278,7 @@ const makeInitialState = (): ChatState => {
     ...claudeToolApprovalState(loadClaudeToolApprovalDefault()),
     claudeUltracode: loadClaudeUltracode(),
     claudePlanModeDrafts: loadClaudePlanModeDrafts(),
+    claudeAutoModeDrafts: loadClaudeAutoModeDrafts(),
     operationMode: 'plan',
     operationModeChanges: {},
     operationModeDrafts: {},
@@ -423,7 +425,16 @@ function catchUpSelectedPath(state: ChatState) {
     const target = [stream.finalMessageId, stream.lastCompletedMessageId, stream.currentBranchAnchorMessageId, stream.liveMessageId]
       .filter((id): id is MessageId => id != null && selectedTipTrails(state, stream, id))
       .sort((a, b) => buildPathToMessage(state.conversation.messages, b).length - buildPathToMessage(state.conversation.messages, a).length)[0]
-    if (!target) continue
+    if (!target) {
+      // Already at the run's head. A conversation-only route resolves without a lineage;
+      // adopt the run's own, which matches the run to this view whatever its anchors do.
+      const tip = state.conversation.currentPath.at(-1)
+      if (stream.active && state.conversation.currentLineageId == null && stream.lineage.lineageIdConfirmed && tip != null &&
+          [stream.lastCompletedMessageId, stream.finalMessageId].some(id => id != null && String(id) === String(tip))) {
+        state.conversation.currentLineageId = stream.lineage.lineageId ?? null
+      }
+      continue
+    }
     state.conversation.currentPath = buildPathToMessage(state.conversation.messages, target)
     extendContinuationTail(state, target)
     if (state.conversation.currentLineageId == null && stream.lineage.lineageIdConfirmed) {
@@ -1049,6 +1060,15 @@ export const chatSlice = createSlice({
         }
       } else if (chunk.type === 'complete') {
         const completedMessageId = chunk.message?.id || null
+        // A row that already has children is not the run's head: the host re-persists an
+        // earlier row in place (a late tool result, or a background task's progress on the
+        // call that launched it, about once a second). Its row is upserted by `messageAdded`;
+        // moving the anchors back to it detached the run from the view showing its head.
+        // The first row after a (re)start is always adopted: a replay opens with one.
+        const children = (chunk.message as any)?.children_ids
+        if (completedMessageId && Array.isArray(children) && children.length > 0 &&
+            stream.lastCompletedMessageId != null && stream.currentBranchAnchorMessageId != null &&
+            String(stream.currentBranchAnchorMessageId) !== String(completedMessageId)) return
         stream.messageId = completedMessageId
         stream.lastCompletedMessageId = completedMessageId
         stream.persistedTurnMessageId = completedMessageId
@@ -1917,9 +1937,23 @@ export const chatSlice = createSlice({
       state.toolAutoApprove = false
     },
 
-    // Session-only, like toolAutoApprove; the launch default is saved from Settings.
+    // Auto mode belongs to the branch, like plan mode: the choice is kept at the selected tip (or the
+    // edit being composed). With no conversation yet it sets the session's launch default, which a
+    // branch with no recorded choice follows (the saved default comes from Settings).
     claudeAutoModeSet: (state, action: PayloadAction<boolean>) => {
-      state.claudeAutoMode = action.payload
+      if (state.composition.editingBranch) {
+        state.composition.branchEditModes ??= {}
+        state.composition.branchEditModes.claudeAutoMode = action.payload
+        return
+      }
+      const { currentConversationId, currentPath } = state.conversation
+      if (!currentConversationId) {
+        state.claudeAutoMode = action.payload
+        return
+      }
+      state.claudeAutoModeDrafts = withClaudeAutoModeDraft(state.claudeAutoModeDrafts,
+        branchModelKey(currentConversationId, currentPath.at(-1) ?? null), action.payload)
+      saveClaudeAutoModeDrafts(state.claudeAutoModeDrafts)
     },
 
     claudeToolApprovalDefaultApplied: (state, action: PayloadAction<ClaudeToolApproval>) => {
@@ -2148,6 +2182,29 @@ export const chatSlice = createSlice({
 
       if (remaining.length === 0) delete state.errorNotices.byConversationId[key]
       else state.errorNotices.byConversationId[key] = remaining
+    },
+
+    chatErrorsSuperseded: (state, action: PayloadAction<{
+      conversationId: ConversationId
+      streamId: string
+      lineageId: string | null
+      path: MessageId[]
+    }>) => {
+      const { conversationId, streamId, lineageId, path } = action.payload
+      const bucket = state.errorNotices.byConversationId[String(conversationId)]
+      if (!bucket) return
+      const pathIds = new Set(path.map(String))
+      for (const record of bucket) {
+        if (
+          record.streamId === streamId ||
+          (lineageId != null && record.lineageId === lineageId) ||
+          (record.parentMessageId != null && pathIds.has(String(record.parentMessageId))) ||
+          (record.parentMessageId == null && record.lineageId == null)
+        ) {
+          // Keep the dedupe tombstone so delayed reattach failures cannot revive the notice.
+          record.dismissed = true
+        }
+      }
     },
 
     chatReattachErrorCleared: (state, action: PayloadAction<{ conversationId: ConversationId; streamId: string }>) => {

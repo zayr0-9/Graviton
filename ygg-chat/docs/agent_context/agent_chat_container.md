@@ -355,3 +355,9 @@ Validation: `chatSelection.test.ts`, `chatSelectionController.test.ts`, existing
 ## Explain selection child intent
 
 `handleExplainFromSelection` retains the normal-send optimistic bubble, attachments and image/reasoning settings, but passes `isBranch:true` through `SendMessagePayload` and `buildServerLoopRequest`. This uses the existing host explicit-child contract: historical selected parents bypass ordinary head-only admission and fork structurally when needed. Do not replace the parent with the current head or relax ordinary admission. Regular edit-branch remains sibling semantics and unchanged. Regression coverage: `buildServerLoopRequest.test.ts`, `editMessageWithBranching.test.ts`.
+
+## Touch composer: Enter and image paste
+
+On touch-primary devices (`(hover: none) and (pointer: coarse)`, `useIsTouchPrimary`), Enter in `ChatInputController` adds a new line, and the send button or Ctrl/Cmd+Enter sends (`shouldComposerEnterSubmit`). The Shift+Enter hint is hidden there. `enterkeyhint` only changes the keyboard key label, not this behaviour.
+
+Textarea paste uses `getPastedImageFiles` (items, then files). Android Chrome may never deliver an image-only clipboard to a plain textarea, so touch devices on a secure origin also get a Paste image button that reads it through `navigator.clipboard.read()` (`helpers/clipboardImages.ts`). Over plain HTTP that API does not exist, and the button stays hidden; use the attach button instead.

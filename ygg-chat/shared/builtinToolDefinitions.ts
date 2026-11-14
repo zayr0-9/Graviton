@@ -69,6 +69,19 @@ export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
     inputSchema: { type: 'object', properties: {} },
   },
   {
+    name: 'switch_mode',
+    enabled: true,
+    description: 'Switch this conversation between Chat mode (read-only investigation and planning) and Agent mode (edits, commands, mutating tools). agent: asks the user to approve in a dialog and waits; use it when the user wants changes made and you are in Chat mode, not to bypass a decision the user already made. If the user declines, stay in Chat mode and do not ask again unless they request it. chat: switches immediately without approval; use it when the user asks you to stop making changes or to return to discussion/planning. Calls already running are not cancelled. Call directly, not inside multi_call or repl.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        mode: { type: 'string', enum: ['chat', 'agent'], description: 'Target mode.' },
+        reason: { type: 'string', minLength: 1, maxLength: 500, description: 'One short sentence shown to the user explaining why you are switching.' },
+      },
+      required: ['mode', 'reason'],
+    },
+  },
+  {
     name: 'watcher',
     enabled: true,
     description: 'Register branch-scoped asynchronous watches. start returns immediately. Completion submits an automated user message to the same branch at a safe boundary, continuing a live run or starting a successor after normal completion; also pushes a visible notification. Stopped/failed/unavailable branches report delivery failure. No shell conditions. Watches are memory-only; status/list do not wait.',
@@ -1157,18 +1170,18 @@ export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
     name: 'mcp_manager',
     enabled: true,
     description:
-      'Search MCP tools with action "search" and query (optional server name); only tools on already-connected servers are searched and only matching descriptions/schemas are returned. Use "list_tools" with a server name to connect a disconnected server. Individual tools are never preloaded. Use "list" for servers, "get" for status, "list_tools" for tool names and schemas, "invoke" with name (server), tool and args to execute, and "stop" to disconnect.',
+      'Search MCP tools with action "search" and query (optional server name); only tools on already-connected servers are searched and only matching descriptions/schemas are returned. Use "list_tools" with a server name to connect a disconnected server. Individual tools are never preloaded. Use "list" for servers, "get" for status, "list_tools" for tool names and schemas, "invoke" with name (server), tool and args to execute, and "stop" to disconnect. Use "reauthenticate" with a server name after OAuth/token rejection or when the user requests fresh sign-in: clears only that HTTP server\'s saved access/refresh tokens and opens browser authorization, preserving its configuration. Requires normal tool approval (or auto-approve); the user must complete browser sign-in. If pending, use get to check status rather than repeatedly reauthenticating.',
     inputSchema: {
       type: 'object',
       properties: {
         action: {
           type: 'string',
-          enum: ['search', 'list', 'get', 'stop', 'list_tools', 'invoke'],
+          enum: ['search', 'list', 'get', 'stop', 'reauthenticate', 'list_tools', 'invoke'],
           description: 'Action to perform',
         },
         name: {
           type: 'string',
-          description: 'MCP server name (required for get, stop, list_tools and invoke; optional search scope).',
+          description: 'MCP server name (required for get, stop, reauthenticate, list_tools and invoke; optional search scope).',
         },
         query: { type: 'string', maxLength: 500, description: 'Required for search: case-insensitive keywords in server/tool names and descriptions; all words must match. Search connects enabled servers, optionally scoped by name, and returns matching schemas only.' },
         limit: { type: 'integer', minimum: 1, maximum: 100, description: 'Search page size; default 20.' },

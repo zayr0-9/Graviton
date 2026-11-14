@@ -521,7 +521,7 @@ const parseGitCommits = (output: string): LocalGitCommit[] =>
     .map(line => line.trimEnd())
     .filter(Boolean)
     .map(line => {
-      const [hash = '', shortHash = '', author = '', relativeDate = '', decorations = '', ...subjectParts] =
+      const [hash = '', shortHash = '', author = '', relativeDate = '', decorations = '', parents = '', ...subjectParts] =
         line.split('\t')
       return {
         hash,
@@ -529,6 +529,7 @@ const parseGitCommits = (output: string): LocalGitCommit[] =>
         author,
         relativeDate,
         decorations: decorations.trim(),
+        parents: parents.split(' ').filter(Boolean),
         subject: subjectParts.join('\t').trim(),
       }
     })
@@ -583,10 +584,11 @@ const buildGitOverview = async (requestedPathRaw: string): Promise<LocalGitOverv
     runGitOptional(gitContext.repoRootFs, [
       'log',
       '-n',
-      '15',
+      '50',
+      '--topo-order',
       '--date=relative',
       '--decorate=short',
-      '--pretty=format:%H%x09%h%x09%an%x09%ar%x09%d%x09%s',
+      '--pretty=format:%H%x09%h%x09%an%x09%ar%x09%d%x09%P%x09%s',
     ]),
     runGitOptional(gitContext.repoRootFs, [
       'log',

@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import type { ConversationId } from '../../../../../shared/types'
 import type { ImageDraftTarget } from '../../features/chats/chatTypes'
-import { insertFencedText } from '../../helpers/chatKeyboardShortcuts'
+import { insertFencedText, shouldComposerEnterSubmit } from '../../helpers/chatKeyboardShortcuts'
+import { useIsTouchPrimary } from '../../hooks/useMediaQuery'
 import { InputTextArea } from '../InputTextArea/InputTextArea'
 import { getSentMessageHistory } from './sentMessageHistory'
 
@@ -74,6 +75,7 @@ export const ChatInputController = React.memo(
       const markdownPastePendingRef = useRef(false)
       const historyIndexRef = useRef<number | null>(null)
       const historyDraftRef = useRef('')
+      const isTouchPrimary = useIsTouchPrimary()
 
       const publishHasText = useCallback(
         (nextValue: string) => {
@@ -247,7 +249,7 @@ export const ChatInputController = React.memo(
                 if (navigateSentMessageHistory('newer')) event.preventDefault()
                 return
               }
-              if (event.key === 'Enter' && !event.shiftKey) {
+              if (shouldComposerEnterSubmit(event, isTouchPrimary)) {
                 event.preventDefault()
                 historyIndexRef.current = null
                 historyDraftRef.current = ''
@@ -262,6 +264,7 @@ export const ChatInputController = React.memo(
             minRows={1}
             autoFocus={autoFocus}
             showCharCount={false}
+            showHelp={!isTouchPrimary}
             slashCommands={slashCommands}
             onSlashCommandSelect={onSlashCommandSelect}
             onAddCurrentIdeContext={onAddCurrentIdeContext}

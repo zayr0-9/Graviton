@@ -20,8 +20,12 @@ export const ToolPermissionDialog: React.FC<ToolPermissionDialogProps> = ({
 }) => {
   const claudePlan = variant === 'operation-mode-upgrade' ? claudePlanFromToolCall(toolCall.name, toolCall.arguments) : null
   const isClaudePlanExit = variant === 'operation-mode-upgrade' && toolCall.name === 'ExitPlanMode'
+  // The model asked for Agent mode itself (switch_mode); show its reason, not the raw arguments.
+  const isSwitchModeRequest = variant === 'operation-mode-upgrade' && toolCall.name === 'switch_mode'
+  const switchReason =
+    isSwitchModeRequest && typeof toolCall.arguments?.reason === 'string' ? toolCall.arguments.reason.trim() : ''
   // The full plan renders in the transcript; the dialog previews it as text.
-  const formattedArgs = claudePlan ? claudePlan.plan : JSON.stringify(toolCall.arguments, null, 2)
+  const formattedArgs = claudePlan ? claudePlan.plan : switchReason || JSON.stringify(toolCall.arguments, null, 2)
   const bashDescription =
     toolCall.name === 'bash' && typeof toolCall.arguments?.description === 'string'
       ? toolCall.arguments.description.trim()
@@ -149,7 +153,9 @@ export const ToolPermissionDialog: React.FC<ToolPermissionDialogProps> = ({
         <p className='px-1 text-[11px]' style={{ color: badgeTextColor }}>
           {isClaudePlanExit
             ? 'Claude finished planning. Approve the plan to leave plan mode and let it implement it in Agent Mode.'
-            : 'This tool requires Agent Mode because it can modify files, system state, or app state.'}
+            : isSwitchModeRequest
+              ? 'The assistant is asking to switch to Agent Mode so it can make changes.'
+              : 'This tool requires Agent Mode because it can modify files, system state, or app state.'}
         </p>
       )}
 

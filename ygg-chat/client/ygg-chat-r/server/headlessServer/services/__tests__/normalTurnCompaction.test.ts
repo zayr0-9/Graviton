@@ -41,7 +41,7 @@ function harness(outputs: any[], overrides: any = {}) {
   const sink = new Sink()
   const calls: any[] = []
   const router = { generate: vi.fn(async (provider: string, input: any) => {
-    calls.push({ provider, input: structuredClone({ ...input, signal: undefined }) })
+    calls.push({ provider, input: structuredClone({ ...input, signal: undefined, registerPartialOutput: undefined }) })
     const output = outputs.shift()
     if (output instanceof Error) throw output
     if (!output) throw new Error('Unexpected provider request')

@@ -84,6 +84,11 @@ export function useChatSelection(): SelectionContextValue {
   return value
 }
 
+/** Like useChatNavigate, but null outside the provider (read-only Markdown rendered in isolation). */
+export function useOptionalChatNavigate(): SelectionContextValue['navigate'] | null {
+  return useContext(SelectionContext)?.navigate ?? null
+}
+
 /** Drop-in router facade: recognized chat routes select centrally; other navigation is unchanged. */
 export function useChatNavigate() {
   return useChatSelection().navigate

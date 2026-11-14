@@ -4,7 +4,7 @@ import { HOST_EXECUTION_CHANGED } from '../services/hostExecutionClient'
 import { buildSharedBrowserUrl } from '../helpers/remoteServerSettingsStorage'
 import React, { useEffect, useRef, useState } from 'react'
 import { ArrowLeft, ChevronDown, Moon, RefreshCw, Star, Sun, Trash2, X } from 'lucide-react'
-import ReactMarkdown from 'react-markdown'
+import { AppMarkdown } from '../components/MarkdownContent/AppMarkdown'
 import { SCROLLABLE_MARKDOWN_COMPONENTS } from '../components/MarkdownContent/MarkdownCodeBlock'
 import { useNavigate } from 'react-router-dom'
 import rehypeHighlight from 'rehype-highlight'
@@ -347,6 +347,10 @@ const Settings: React.FC = () => {
   const [zaiApiKeyConfigured, setZaiApiKeyConfigured] = useState(false)
   const [zaiApiKeyLoading, setZaiApiKeyLoading] = useState(isNativeShell)
   const [zaiApiKeySaving, setZaiApiKeySaving] = useState(false)
+  const [deepSeekApiKeyInput, setDeepSeekApiKeyInput] = useState('')
+  const [deepSeekApiKeyConfigured, setDeepSeekApiKeyConfigured] = useState(false)
+  const [deepSeekApiKeyLoading, setDeepSeekApiKeyLoading] = useState(isNativeShell)
+  const [deepSeekApiKeySaving, setDeepSeekApiKeySaving] = useState(false)
   const [openRouterByokApiKeyInput, setOpenRouterByokApiKeyInput] = useState('')
   const [openRouterByokApiKeyConfigured, setOpenRouterByokApiKeyConfigured] = useState(false)
   const [openRouterByokApiKeyLoading, setOpenRouterByokApiKeyLoading] = useState(isNativeShell)
@@ -706,6 +710,37 @@ const Settings: React.FC = () => {
       })
       .finally(() => {
         if (active) setZaiApiKeyLoading(false)
+      })
+
+    return () => {
+      active = false
+    }
+  }, [userId])
+
+  useEffect(() => {
+    if (!isNativeShell) {
+      setDeepSeekApiKeyLoading(false)
+      return
+    }
+
+    let active = true
+    const effectiveUserId = userId || LOCAL_USER_ID
+
+    localApi
+      .get<{ success?: boolean; hasToken?: boolean }>(`/provider-auth/deepseek/token?userId=${encodeURIComponent(effectiveUserId)}`)
+      .then(status => {
+        if (!active) return
+        setDeepSeekApiKeyConfigured(Boolean(status?.hasToken))
+        setDeepSeekApiKeyInput('')
+      })
+      .catch(error => {
+        if (active) {
+          console.error('Failed to load DeepSeek token status:', error)
+          setDeepSeekApiKeyConfigured(false)
+        }
+      })
+      .finally(() => {
+        if (active) setDeepSeekApiKeyLoading(false)
       })
 
     return () => {
@@ -1164,6 +1199,47 @@ const Settings: React.FC = () => {
       showStatus({ type: 'error', text: error instanceof Error ? error.message : 'Failed to delete Z.AI API key.' })
     } finally {
       setZaiApiKeySaving(false)
+    }
+  }
+
+  const handleSaveDeepSeekApiKey = async () => {
+    const normalized = deepSeekApiKeyInput.trim()
+    if (!normalized) {
+      showStatus({ type: 'error', text: 'Enter a DeepSeek API key before saving.' })
+      return
+    }
+
+    const effectiveUserId = userId || LOCAL_USER_ID
+    setDeepSeekApiKeySaving(true)
+    try {
+      await localApi.post('/provider-auth/deepseek/token', {
+        userId: effectiveUserId,
+        accessToken: normalized,
+      })
+      setDeepSeekApiKeyInput('')
+      setDeepSeekApiKeyConfigured(true)
+      showStatus({ type: 'success', text: 'DeepSeek API key saved locally.' })
+    } catch (error) {
+      console.error('Failed to save DeepSeek API key:', error)
+      showStatus({ type: 'error', text: error instanceof Error ? error.message : 'Failed to save DeepSeek API key.' })
+    } finally {
+      setDeepSeekApiKeySaving(false)
+    }
+  }
+
+  const handleDeleteDeepSeekApiKey = async () => {
+    const effectiveUserId = userId || LOCAL_USER_ID
+    setDeepSeekApiKeySaving(true)
+    try {
+      await localApi.delete(`/provider-auth/deepseek/token?userId=${encodeURIComponent(effectiveUserId)}`)
+      setDeepSeekApiKeyInput('')
+      setDeepSeekApiKeyConfigured(false)
+      showStatus({ type: 'success', text: 'DeepSeek API key removed.' })
+    } catch (error) {
+      console.error('Failed to delete DeepSeek API key:', error)
+      showStatus({ type: 'error', text: error instanceof Error ? error.message : 'Failed to delete DeepSeek API key.' })
+    } finally {
+      setDeepSeekApiKeySaving(false)
     }
   }
 
@@ -2437,9 +2513,9 @@ const Settings: React.FC = () => {
               </div>
               <div className='max-h-[calc(85vh-60px)] overflow-y-auto thin-scrollbar p-4'>
                 <div className='prose prose-sm max-w-none dark:prose-invert prose-headings:font-semibold prose-pre:rounded-lg'>
-                  <ReactMarkdown components={SCROLLABLE_MARKDOWN_COMPONENTS} remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[[rehypeHighlight, { detect: true }], rehypeKatex]}>
+                  <AppMarkdown components={SCROLLABLE_MARKDOWN_COMPONENTS} remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[[rehypeHighlight, { detect: true }], rehypeKatex]}>
                     {changelogMarkdown}
-                  </ReactMarkdown>
+                  </AppMarkdown>
                 </div>
               </div>
             </div>
@@ -2732,7 +2808,7 @@ const Settings: React.FC = () => {
           <SettingsSection
             title='Provider Settings'
             description='Configure how providers appear in the chat interface.'
-            features={['Provider selector', 'Default provider', 'ChatGPT max context', 'Auto-compaction provider', 'LM Studio URL', 'Provider credentials', 'OpenRouter BYOK key', 'ChatGPT OAuth']}
+            features={['Provider selector', 'Default provider', 'ChatGPT max context', 'Auto-compaction provider', 'LM Studio URL', 'Provider credentials', 'OpenRouter BYOK key', 'DeepSeek API key', 'ChatGPT OAuth']}
           >
             <div className='flex flex-col gap-4'>
               {/* Visibility Toggle */}
@@ -3000,6 +3076,44 @@ const Settings: React.FC = () => {
                   </Button>
                 </div>
               </div>
+              <div className='flex flex-col gap-2 pt-2 pt-2'>
+                <div>
+                  <p className='text-base font-medium text-stone-900 dark:text-stone-100'>DeepSeek API Key</p>
+                  <p className='text-sm text-stone-500 dark:text-stone-400'>
+                    Store your DeepSeek API key locally for the DeepSeek headless provider. Requests go directly to DeepSeek and bill your DeepSeek account. You can also set DEEPSEEK_API_KEY.
+                  </p>
+                </div>
+                <div className='flex flex-wrap items-center gap-2'>
+                  <span
+                    className={`text-xs px-2 py-1 rounded-full border ${
+                      deepSeekApiKeyConfigured
+                        ? 'bg-emerald-50 border-emerald-200 text-emerald-700 dark:bg-emerald-900/30 dark:border-emerald-700 dark:text-emerald-300'
+                        : 'bg-stone-100 border-stone-200 text-stone-600 dark:bg-stone-800 dark:border-stone-700 dark:text-stone-300'
+                    }`}
+                  >
+                    {deepSeekApiKeyLoading ? 'Checking…' : deepSeekApiKeyConfigured ? 'Key saved' : 'No key'}
+                  </span>
+                  <input
+                    type='password'
+                    value={deepSeekApiKeyInput}
+                    placeholder={deepSeekApiKeyConfigured ? 'Enter new key to replace' : 'Enter DeepSeek API key'}
+                    onChange={e => setDeepSeekApiKeyInput(e.target.value)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') {
+                        void handleSaveDeepSeekApiKey()
+                      }
+                    }}
+                    className={`w-full max-w-md ${settingsInputClass}`}
+                  />
+                  <Button variant='outline2' size='small' onClick={handleSaveDeepSeekApiKey} disabled={deepSeekApiKeySaving || !deepSeekApiKeyInput.trim()}>
+                    {deepSeekApiKeyConfigured ? 'Replace key' : 'Save key'}
+                  </Button>
+                  <Button variant='outline2' size='small' onClick={handleDeleteDeepSeekApiKey} disabled={deepSeekApiKeySaving || !deepSeekApiKeyConfigured}>
+                    Clear key
+                  </Button>
+                </div>
+              </div>
+
 
               <div className='flex flex-col gap-2 pt-2 pt-2'>
                 <div>

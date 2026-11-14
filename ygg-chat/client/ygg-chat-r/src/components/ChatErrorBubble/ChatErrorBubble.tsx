@@ -1,5 +1,6 @@
 import { AlertTriangle, ChevronDown, ChevronRight, X } from 'lucide-react'
-import React, { useState } from 'react'
+import React, { useId, useState } from 'react'
+import { getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from '../ThemeManager/themeConfig'
 import type { ChatErrorActionKind, ChatErrorEnvelope } from '../../../../../shared/chatErrors'
 
 /**
@@ -19,7 +20,7 @@ import type { ChatErrorActionKind, ChatErrorEnvelope } from '../../../../../shar
  */
 
 const CONTAINER_CLASS =
-  'border border-rose-500/20 bg-rose-500/10 text-rose-700 dark:text-rose-300 rounded-lg px-3 py-2.5'
+  'rounded-2xl bg-white/60 px-4 py-3 text-stone-800 backdrop-blur-xl dark:bg-black/20 dark:text-stone-100'
 
 /** Absolute reset time beats a duration — "resets at 4:30 PM" is actionable, "in 8412s" is not. */
 const formatWhenRetryWorks = (envelope: ChatErrorEnvelope): string | null => {
@@ -63,6 +64,14 @@ export const ChatErrorBubble: React.FC<ChatErrorBubbleProps> = ({
   style,
 }) => {
   const [detailOpen, setDetailOpen] = useState(false)
+  const detailId = useId()
+  const { enabled, theme } = useCustomChatTheme()
+  const isDarkMode = useHtmlDarkMode()
+  const color = (pair: typeof theme.colors.toolJobsPrimaryText) => enabled ? getThemeModeColor(pair, isDarkMode) : undefined
+  const surfaceStyle = { backgroundColor: color(theme.colors.settingsCustomThemesCardBg), color: color(theme.colors.toolJobsPrimaryText) }
+  const mutedStyle = { color: color(theme.colors.toolJobsMutedText) }
+  const controlStyle = { backgroundColor: color(theme.colors.settingsCustomThemesButtonBg), color: color(theme.colors.settingsCustomThemesButtonText) }
+  const detailStyle = { backgroundColor: color(theme.colors.settingsCustomThemesInnerCardBg), ...mutedStyle }
   const action = envelope.action
   const retryHint = formatWhenRetryWorks(envelope)
   const hasDetail = typeof envelope.detail === 'string' && envelope.detail.trim().length > 0
@@ -70,26 +79,27 @@ export const ChatErrorBubble: React.FC<ChatErrorBubbleProps> = ({
   return (
     <div
       className={`${CONTAINER_CLASS} ${className}`}
-      style={style}
+      style={{ ...surfaceStyle, ...style }}
       role='alert'
       data-chat-error-code={envelope.code}
     >
       <div className='flex items-start gap-2'>
-        <AlertTriangle className='mt-0.5 h-4 w-4 shrink-0 opacity-80' aria-hidden='true' />
+        <AlertTriangle size={18} strokeWidth={2.25} className='mt-0.5 shrink-0 text-amber-700 dark:text-amber-300' style={mutedStyle} aria-hidden='true' />
 
         <div className='min-w-0 flex-1'>
           <p className='text-sm leading-relaxed whitespace-pre-wrap break-words'>{envelope.userMessage}</p>
 
-          {retryHint && <p className='mt-1 text-xs opacity-75'>{retryHint}</p>}
+          {retryHint && <p className='mt-1 text-xs opacity-75' style={mutedStyle}>{retryHint}</p>}
 
-          {(action || hasDetail) && (
+          {((action && onAction) || hasDetail) && (
             <div className='mt-2 flex flex-wrap items-center gap-3'>
               {action && onAction && (
                 <button
                   type='button'
                   disabled={actionPending}
                   onClick={() => onAction(action.kind)}
-                  className='rounded-md border border-rose-500/30 bg-rose-500/10 px-2.5 py-1 text-xs font-medium transition-colors hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-50'
+                  className='rounded-full bg-black/5 px-3 py-1.5 text-xs font-medium transition-[opacity,transform] hover:opacity-80 active:scale-95 motion-reduce:transform-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current disabled:cursor-not-allowed disabled:opacity-50 dark:bg-white/10'
+                  style={controlStyle}
                 >
                   {action.label}
                 </button>
@@ -99,8 +109,10 @@ export const ChatErrorBubble: React.FC<ChatErrorBubbleProps> = ({
                 <button
                   type='button'
                   onClick={() => setDetailOpen(open => !open)}
-                  className='flex items-center gap-1 text-xs opacity-70 transition-opacity hover:opacity-100'
+                  className='flex items-center gap-1 rounded-full px-2 py-1.5 text-xs opacity-70 transition-opacity hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current'
+                  style={mutedStyle}
                   aria-expanded={detailOpen}
+                  aria-controls={detailId}
                 >
                   {detailOpen ? (
                     <ChevronDown className='h-3 w-3' aria-hidden='true' />
@@ -114,7 +126,7 @@ export const ChatErrorBubble: React.FC<ChatErrorBubbleProps> = ({
           )}
 
           {detailOpen && hasDetail && (
-            <pre className='mt-2 max-h-40 overflow-auto rounded bg-black/5 p-2 text-[11px] leading-snug whitespace-pre-wrap break-words opacity-80 dark:bg-white/5'>
+            <pre id={detailId} style={detailStyle} className='mt-2 max-h-40 overflow-auto rounded-xl bg-black/5 p-3 text-xs leading-relaxed whitespace-pre-wrap break-words dark:bg-white/5'>
               {envelope.detail}
             </pre>
           )}
@@ -125,9 +137,11 @@ export const ChatErrorBubble: React.FC<ChatErrorBubbleProps> = ({
             type='button'
             onClick={onDismiss}
             aria-label='Dismiss'
-            className='-mr-1 -mt-1 shrink-0 rounded p-1 opacity-60 transition-opacity hover:opacity-100'
+            title='Dismiss'
+            style={controlStyle}
+            className='-mr-1 -mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-black/5 opacity-70 transition-[opacity,transform] hover:opacity-100 active:scale-95 motion-reduce:transform-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current dark:bg-white/10'
           >
-            <X className='h-3.5 w-3.5' aria-hidden='true' />
+            <X size={18} strokeWidth={2.25} aria-hidden='true' />
           </button>
         )}
       </div>

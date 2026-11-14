@@ -127,6 +127,14 @@ No MCP Keychain prompt at launch is expected: startup no longer reads those cred
 
 The Brave field starts as **Not checked**. **Load saved key** explicitly reads it; opening Settings does not read the key or automatically retry a denied request.
 
+## Explicit reauthentication
+
+Settings → MCP → **Sign in again**, `POST /api/mcp/servers/:name/reauthenticate`, and `mcp_manager { action: "reauthenticate", name }` use the same manager operation. Agents may initiate it after authentication rejection or at the user's request, under normal tool approval/auto-approve. The user still completes browser authorization. Pending results direct agents to `get` status, then `list_tools`/`invoke`, not repeated credential resets.
+
+Reauthentication cancels/fences the old attempt, clears only that connection's access/refresh tokens and expiry, and opens fresh browser OAuth without reusing or refreshing old tokens. Client ID/secret, scopes, callback, URL and compatibility choices are preserved. Concurrent reauthentication requests join the same attempt. Disabled, stdio and static-Authorization configurations are rejected before reset; static headers must be removed explicitly before OAuth sign-in. Vault failures fail closed. Stop/restart normally preserve credentials; restart now loads saved configuration even after Stop removed the client. Stopped credential loads cannot later publish a replacement client.
+
+Rejected access tokens are persisted as invalidated, including after the single retry is rejected. A terminal 401 points to Sign in again / the agent action; it does not start an unbounded interactive-login loop. Coverage: `mcpReauthenticate.test.ts`, `mcpStartPending.test.ts`, `mcpRoutesPending.test.ts`, `mcpManagerTool.test.ts`, and `mcpManagerPermissions.test.ts`.
+
 ## Connections that wait on the user
 
 A start can wait for minutes on the user: the OS keychain prompt when credentials are read (`credentials`), or the browser sign-in (`authorizing`). `McpManager.getStartPhase(name)` reports which; `getStatus()` / `getServerStatus()` return such a server as `connecting` with `phase`, including before a client exists, and keep the reason when a start fails before one does. `mcpStartPhase.ts` holds the phase type, the user-facing text (`MCP_START_PHASE_MESSAGE`) and `settleWithin`; it has no dependencies so tools and routes can import it without the manager.

@@ -53,3 +53,32 @@ export function createAgentPreviewRunsSelector(streamId: string, wholeFork: bool
     return previous
   }
 }
+
+type PreviewRow = ReturnType<typeof buildAgentPreviewRows>[number]
+const hasText = (value: unknown) => typeof value === 'string' && value.trim().length > 0
+
+/** Something a reader can see; empty text/thinking placeholders do not count. */
+export function previewRowHasContent(row: PreviewRow): boolean {
+  if (row.summarised || row.watcherCompletion || hasText(row.content)) return true
+  return row.blocks.some(block => block.type === 'text' || block.type === 'thinking'
+    ? hasText((block as { content?: unknown }).content)
+    : true)
+}
+
+// Immer replaces a run object when it changes, so this caches until new output arrives.
+const runContent = new WeakMap<AgentRunPreview, boolean>()
+function runHasPreviewContent(run: AgentRunPreview): boolean {
+  let cached = runContent.get(run)
+  if (cached === undefined) {
+    cached = buildAgentPreviewRows(run).some(previewRowHasContent)
+    runContent.set(run, cached)
+  }
+  return cached
+}
+
+/** Mirrors the whole-fork card lookup: no retained representative means nothing to show. */
+export function forkHasPreviewContent(byStreamId: Record<string, AgentRunPreview>, streamId: string): boolean {
+  const selected = byStreamId[streamId]
+  if (!selected) return false
+  return (getForkIndex(byStreamId).get(previewForkKey(streamId, selected.stream)) ?? [selected]).some(runHasPreviewContent)
+}

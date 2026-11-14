@@ -12,6 +12,7 @@ import { ClaudeWarmProcess, ClaudeWarmRegistry, claudeIdleEvent, claudeLaunchKey
 import type { HookInput, Options, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
 import type { HeadlessBackgroundTask, HeadlessBackgroundTaskOutput, HeadlessMessageRequest, HeadlessStreamEvent } from '../../../../../shared/headlessApi.js'
 import { ClaudeSessionRepo } from '../persistence/claudeSessionRepo.js'
+import { claudeWorkspaceChangedError } from './claudeWorkspaceError.js'
 import type { MessageRepo } from '../persistence/messageRepo.js'
 import type { MessageSink } from './messageSink.js'
 import { OperationModeControl } from './operationModeControl.js'
@@ -508,8 +509,9 @@ export class ClaudeSessionService {
     queuedInput?: ClaudeQueuedInput
     /** The run's live Chat/Agent mode, shared with Graviton's mode route; a switch applies to the next tool call. */
     modeControl?: OperationModeControl
-    /** Native plan mode, shared with the orchestrator; ExitPlanMode approval turns it off. */
-    planControl?: { active: boolean }
+    /** Native plan mode, shared with the orchestrator; ExitPlanMode approval turns it off and, unless
+     *  Allow all is on, sets `auto` so the rest of the run and a queued successor use auto mode. */
+    planControl?: { active: boolean; auto?: boolean }
     /** Receives the run's background-task control once Claude starts; returns the unbind. */
     bindTasks?: (control: ClaudeTaskControl) => () => void
   }): Promise<any> {
@@ -567,7 +569,7 @@ export class ClaudeSessionService {
       } else if (input.sourceMessageId) {
         const checkpoint = this.deps.sessions.checkpoint(input.sourceMessageId)
         if (!checkpoint?.resumable) throw new Error('This node is not a completed Claude checkpoint. Choose a completed Claude response to fork or continue.')
-        if (checkpoint.cwd !== cwd) throw new Error('Claude branch workspace is locked. Start a new conversation to change it.')
+        if (checkpoint.cwd !== cwd) throw claudeWorkspaceChangedError(checkpoint.cwd, cwd)
         // Verify the exact source is still available. Never silently start over.
         const transcript = await sdk.getSessionMessages(checkpoint.session_id, { dir: cwd })
         // getSessionMessages projects only the compacted live chain. Native forkSession
@@ -595,7 +597,7 @@ export class ClaudeSessionService {
       })
       try {
         // Always: plan mode comes and goes per turn, and an accepted ExitPlanMode moves the live
-        // session to 'default'.
+        // session to 'auto' (or 'default' under Allow all).
         await live(reused.query.setPermissionMode(permissionMode))
         if (reused.settings.model !== request.modelName) await live(reused.query.setModel(request.modelName))
         // Both keys, explicitly: null returns effort to the model default, false turns ultracode off.
@@ -803,7 +805,12 @@ export class ClaudeSessionService {
     const plansDir = path.join(cwd, CLAUDE_PLANS_DIRECTORY)
     // Native plan mode, on until the user approves the plan through ExitPlanMode. Shared with the
     // orchestrator, so a queued successor run starts in the state this run ended in.
-    const planState = input.planControl ?? { active: request.claudePlanMode === true }
+    const planState: { active: boolean; auto?: boolean } = input.planControl ?? { active: request.claudePlanMode === true }
+    // The approval mode outside plan mode. Rows record it so the branch's next send keeps it; with
+    // Allow all every call is approved anyway, so nothing is recorded.
+    const permissionMeta = (): { claudePermissionMode?: 'auto' | 'default' } =>
+      this.deps.broker?.isAutoApproveAll(request.streamId!) ? {}
+        : { claudePermissionMode: request.claudePermissionMode === 'auto' || planState.auto ? 'auto' : 'default' }
     // Why an edit tool may not run now, or null. In plan mode only the plan file may be written,
     // whatever Graviton's mode; otherwise Chat mode blocks every edit tool.
     const editDenial = async (name: string, args: Record<string, unknown> | undefined): Promise<string | null> => {
@@ -860,6 +867,10 @@ export class ClaudeSessionService {
         }
         // An approved plan leaves plan mode; the renderer turns its Plan toggle off with it.
         planState.active = false
+        // The plan is approved, so its execution runs under Claude's auto classifier (asking only
+        // when it cannot decide). Allow all already approves every call and keeps 'default'.
+        const allowAll = this.deps.broker.isAutoApproveAll(request.streamId!)
+        if (!allowAll) planState.auto = true
         // Through the shared control, so the queue's successor run and the composer see Agent mode too.
         // Claude learns from this tool result; a notice goes only if a message on its way says otherwise.
         if (control.mode !== 'execute') {
@@ -867,7 +878,7 @@ export class ClaudeSessionService {
           readMode = 'execute'
           syncToldMode()
         }
-        return { behavior: 'allow', updatedInput: args, updatedPermissions: [{ type: 'setMode', mode: 'default', destination: 'session' }] }
+        return { behavior: 'allow', updatedInput: args, updatedPermissions: [{ type: 'setMode', mode: allowAll ? 'default' : 'auto', destination: 'session' }] }
       }
       // AskUserQuestion is a question, not a permission: it goes to the user in every mode, even
       // with Allow all, and the answers go back to Claude as `updatedInput.answers`.
@@ -1151,11 +1162,11 @@ export class ClaudeSessionService {
     // left) still reaches the final row, where a mode row would displace the resumable checkpoint.
     // Plan mode too, so the composer restores it per branch and an approved plan reads as off.
     const runMeta = () => ({ ...(this.deps.broker ? { toolAutoApprove: this.deps.broker.isAutoApproveAll(request.streamId!) } : {}),
-      operationMode: control.mode, claudePlanMode: planState.active })
+      operationMode: control.mode, claudePlanMode: planState.active, ...permissionMeta() })
     const persist = (content: string, blocks: any[], uuid?: string, partial = false) => {
       const row = sink.persistAssistantMessage({ conversationId: request.conversationId, parentId: parent,
         modelName: request.modelName, content, contentBlocks: blocks,
-        meta: { operationMode: control.mode, claudePlanMode: planState.active, claude: { sessionId: activeSession, messageUuid: uuid ?? null, checkpoint: false, partial } } })
+        meta: { operationMode: control.mode, claudePlanMode: planState.active, ...permissionMeta(), claude: { sessionId: activeSession, messageUuid: uuid ?? null, checkpoint: false, partial } } })
       parent = row.id
       finalMessage = row
       if (uuid && activeSession) this.deps.sessions.record(row.id, activeSession, uuid, cwd, false)

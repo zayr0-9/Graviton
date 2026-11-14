@@ -178,7 +178,7 @@ does not round-trip through the renderer or the unfinished `tool_request` bridge
   `subagent_manager` from a subagent's tool set. The parent chat may use both in
   Plan Mode; child runs still cannot spawn nested agents.
 - **Provider routes.** Subagents use the same provider routes as the main loop
-  (`openaichatgpt`, `openrouterbyok`, `lmstudio`, `zai`, `bedrock`); `openrouter` aliases to `openrouterbyok`.
+  (`openaichatgpt`, `openrouterbyok`, `lmstudio`, `zai`, `deepseek`, `bedrock`); `openrouter` aliases to `openrouterbyok`.
 - **Cancellation depends on entry path.** Direct subagent SSE disconnect aborts
   its route controller. Blocking parent dispatch inherits the parent signal.
   Detached manager runs own their controller and survive parent cancellation;

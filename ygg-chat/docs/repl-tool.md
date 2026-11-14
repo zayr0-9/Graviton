@@ -16,7 +16,7 @@ The tool definition includes the complete workflow guide, examples, output budge
 {"action":"invoke","tool":"read_file","args":{"path":"package.json"},"assign":"file"}
 ```
 
-Returns only `{ "status": "stored", "variable": "file", "toolStatus": "success" }`. The underlying result stays in session memory.
+Returns only `{ "status": "stored", "variable": "file", "totalChars": 1234, "toolStatus": "success" }` plus the workspace receipt. `totalChars` matches what `show` would report for the variable (raw length for strings, compact JSON length otherwise); conflict and import receipts include it too. The underlying result stays in session memory.
 
 ```json
 {"action":"inspect","variable":"file"}

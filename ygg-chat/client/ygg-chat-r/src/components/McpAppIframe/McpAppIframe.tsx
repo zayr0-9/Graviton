@@ -15,7 +15,13 @@ import {
 import type { ToolDefinition } from '../../features/chats/toolDefinitions'
 import { getMcpTools } from '../../features/chats/toolDefinitions'
 import { normalizeMcpAppToolResult, type McpAppToolResultEnvelope } from '../../utils/mcpAppToolResult'
-import { getMcpAppHeight, MCP_APP_MAX_HEIGHT, rememberMcpAppHeight } from './mcpAppSizing'
+import {
+  buildMcpAppContainerDimensions,
+  getMcpAppHeight,
+  rememberMcpAppHeight,
+  resolveMcpAppHeight,
+  useMcpAppConstraintsEnabled,
+} from './mcpAppSizing'
 
 type McpAppIframeProps = {
   serverName: string
@@ -58,7 +64,7 @@ const MCP_APP_MIME_TYPE = 'text/html;profile=mcp-app'
 const BASE_ALLOW =
   'fullscreen; accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share'
 
-const buildHostContext = (toolDefinition?: ToolDefinition, fallbackToolName?: string) => {
+const buildHostContext = (toolDefinition: ToolDefinition | undefined, fallbackToolName: string | undefined, constrained: boolean) => {
   const isDark = document.documentElement.classList.contains('dark')
   const theme = isDark ? 'dark' : 'light'
   const locale = typeof navigator !== 'undefined' ? navigator.language : undefined
@@ -81,10 +87,7 @@ const buildHostContext = (toolDefinition?: ToolDefinition, fallbackToolName?: st
     timeZone,
     userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : undefined,
     displayMode: 'inline',
-    containerDimensions: {
-      width: typeof window !== 'undefined' ? window.innerWidth : undefined,
-      maxHeight: MCP_APP_MAX_HEIGHT,
-    },
+    containerDimensions: buildMcpAppContainerDimensions(constrained),
   }
 }
 
@@ -117,13 +120,20 @@ export const McpAppIframe: React.FC<McpAppIframeProps> = ({
   const iframeRef = useRef<HTMLIFrameElement | null>(null)
   const [html, setHtml] = useState<string | null>(null)
   // One height for the loading box and the iframe, so the row never changes size between the
-  // two. The app may move it inside [MIN, MAX] through `ui/notifications/size-changed`.
-  const [height, setHeight] = useState(() => getMcpAppHeight(heightKey))
+  // two. The app may move it through `ui/notifications/size-changed`, inside [MIN, MAX] unless
+  // native constraints are switched off in Chat Settings.
+  const constrained = useMcpAppConstraintsEnabled()
+  const constrainedRef = useRef(constrained)
+  constrainedRef.current = constrained
+  // What the app last asked for, so a keyless iframe can re-resolve when the setting changes.
+  const requestedHeightRef = useRef<number | null>(null)
+  const [height, setHeight] = useState(() => getMcpAppHeight(heightKey, constrained))
   const heightKeyRef = useRef(heightKey)
   useEffect(() => {
     if (heightKeyRef.current === heightKey) return
     heightKeyRef.current = heightKey
-    setHeight(getMcpAppHeight(heightKey))
+    requestedHeightRef.current = null
+    setHeight(getMcpAppHeight(heightKey, constrainedRef.current))
   }, [heightKey])
   const [uiMeta, setUiMeta] = useState<McpUiMeta | undefined>(undefined)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -133,8 +143,8 @@ export const McpAppIframe: React.FC<McpAppIframeProps> = ({
   const hostRequestIdRef = useRef(1)
 
   const hostContext = useMemo(
-    () => buildHostContext(toolDefinition, qualifiedToolName),
-    [qualifiedToolName, toolDefinition]
+    () => buildHostContext(toolDefinition, qualifiedToolName, constrained),
+    [qualifiedToolName, toolDefinition, constrained]
   )
 
   const sendMessage = useCallback((payload: JsonRpcRequest | JsonRpcNotification | JsonRpcResponse) => {
@@ -174,6 +184,22 @@ export const McpAppIframe: React.FC<McpAppIframeProps> = ({
     },
     [sendNotification]
   )
+
+  // Flipping the setting re-resolves the remembered request and tells a running app its new limits.
+  const appliedConstrainedRef = useRef(constrained)
+  useEffect(() => {
+    if (appliedConstrainedRef.current === constrained) return
+    appliedConstrainedRef.current = constrained
+    const key = heightKeyRef.current
+    const requested = requestedHeightRef.current
+    if (key) setHeight(getMcpAppHeight(key, constrained))
+    else if (requested !== null) setHeight(resolveMcpAppHeight(requested, constrained))
+    if (appReadyRef.current) {
+      sendNotification('ui/notifications/host-context-changed', {
+        containerDimensions: buildMcpAppContainerDimensions(constrained),
+      })
+    }
+  }, [constrained, sendNotification])
 
   const ensureReadyAndSend = useCallback(() => {
     if (!appReadyRef.current) return
@@ -418,11 +444,13 @@ export const McpAppIframe: React.FC<McpAppIframeProps> = ({
           ensureReadyAndSend()
           break
         case 'ui/notifications/size-changed': {
-          // Width is the card's to decide: the iframe fills it. Only height is negotiable, and
-          // it is clamped to the range the host advertised in `containerDimensions`.
+          // Width is the card's to decide: the iframe fills it. Only height is negotiable. With
+          // native constraints on it is clamped to the range advertised in `containerDimensions`;
+          // with them off the app's request is used as sent (within sanity bounds).
           const requested = notification.params?.height
           if (typeof requested !== 'number' || !Number.isFinite(requested)) break
-          setHeight(rememberMcpAppHeight(heightKeyRef.current, requested))
+          requestedHeightRef.current = requested
+          setHeight(rememberMcpAppHeight(heightKeyRef.current, requested, constrainedRef.current))
           break
         }
         case 'notifications/message':

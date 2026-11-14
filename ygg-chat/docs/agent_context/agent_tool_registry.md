@@ -2,6 +2,7 @@
 paths:
   - "shared/builtinToolDefinitions.ts"
   - "client/ygg-chat-r/server/headlessServer/services/contextStatusTool.ts"
+  - "client/ygg-chat-r/server/headlessServer/services/operationModeSwitchTool.ts"
   - "client/ygg-chat-r/server/builtinToolRegistry.ts"
   - "client/ygg-chat-r/server/headlessServer/index.ts"
   - "client/ygg-chat-r/src/features/chats/toolDefinitions.ts"
@@ -41,6 +42,7 @@ Use this when changing:
 - `repl` is a branch-shared (parent and children) composite dispatcher, not a leaf job: invoke stores nested results via the caller's policy-aware executor; synchronous QuickJS exec processes values and show explicitly reveals bounded output. See [REPL tool](../repl-tool.md) for scope, limits, direct-only exceptions and restart behavior.
 - Built-in tools have shared schemas and server-owned implementations hosted by the local server. `multi_call` is a headless-server composite implementation rather than a `toolOrchestrator` leaf handler: it expands nested calls and sends each through normal policy-aware execution.
 - `context_status` is an enabled, no-argument read-only built-in intercepted in-process by `server/headlessServer/services/contextStatusTool.ts`. `ToolLoopService` supplies a run-local meter callback; direct calls and nested `multi_call` use the invoking run's history/provider/model, never renderer navigation. It bypasses interactive permissions and is allowed in Chat mode. It calculates headroom against `totalContextLimit` (model/configured window, not credits) and returns only remaining tokens, rounded whole-number remaining percent, and a brief approximation note.
+- `switch_mode` (`mode: chat|agent`, `reason`) is a main-chat built-in intercepted in-process by `server/headlessServer/services/operationModeSwitchTool.ts`. `ToolLoopService` supplies a run-local switcher only when the run has `modeControl`. It is allowed in Chat mode and bypasses ordinary permission prompts, because leaving Chat mode goes through the operation-mode upgrade dialog. See `agent_chat_pipeline.md` § Live operation-mode changes.
 - Renderer-selected schemas exclude custom tools; discover/invoke them through `custom_tool_manager`. Server requests omitting `tools` also use built-in-only defaults. Installed custom descriptions/schemas are disclosed through manager search/get results only.
 - MCP tools are discovered/invoked through the stable `mcp_manager` schema (`list`, `list_tools`, `invoke`). Individual MCP schemas appear only in discovery tool results, never in model tool definitions. Shared policy, request shaping and the loop strip direct MCP schemas, including legacy client inputs/refresh hooks. Settings/iframe registries and direct host handlers remain available separately.
 

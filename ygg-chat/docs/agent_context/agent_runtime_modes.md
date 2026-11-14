@@ -70,7 +70,7 @@ Use this when changing:
 
 - The local headless Express server (`127.0.0.1:3002`) runs inside the Electron main process and
   OWNS the main chat agent loop for every provider route (`openaichatgpt`, `openrouterbyok`,
-  `lmstudio`, `zai`, `bedrock`; Claude Code uses its own session backend). The renderer is a thin
+  `lmstudio`, `zai`, `deepseek`, `bedrock`; Claude Code uses its own session backend). The renderer is a thin
   SSE client. See `agent_headless_server.md`.
 - `/api/gw/*` is a local data facade over `/api/app/*`. There is no `/api/cloud/*` proxy.
 - Mobile LAN UI is served from the headless server under `server/headlessServer/ui/mobile`.

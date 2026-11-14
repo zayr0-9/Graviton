@@ -109,6 +109,31 @@ describe('McpManager start phases', () => {
     expect(manager.getServerStatus('remote')).toBeUndefined()
   })
 
+  it('fences a stopped credential load so a new start cannot be overwritten', async () => {
+    const vault = deferred<Record<string, string>>()
+    vi.spyOn(mcpOAuthSecretStore, 'load').mockReturnValueOnce(vault.promise as never).mockResolvedValue({})
+    answerJsonRpc()
+    const { manager, config } = await configured()
+    const old = manager.startServer(config).catch(error => error)
+    await vi.waitFor(() => expect(manager.getStartPhase('remote')).toBe('credentials'))
+    // Ensure the first operation actually entered load before stopping.
+    await vi.waitFor(() => expect(mcpOAuthSecretStore.load).toHaveBeenCalledTimes(1))
+    await manager.stopServer('remote')
+    await manager.startServer(config)
+    vault.resolve({ accessToken: 'obsolete' })
+    expect(await old).toBeInstanceOf(Error)
+    expect(manager.getServerStatus('remote')).toMatchObject({ status: 'connected' })
+  })
+
+  it('restarts a stopped server from its saved configuration', async () => {
+    vi.spyOn(mcpOAuthSecretStore, 'load').mockResolvedValue({})
+    answerJsonRpc()
+    const { manager } = await configured()
+    await manager.stopServer('remote')
+    await manager.restartServer('remote')
+    expect(manager.getServerStatus('remote')).toMatchObject({ status: 'connected' })
+  })
+
   it('has a user-facing explanation for every phase', () => {
     expect(MCP_START_PHASE_MESSAGE.credentials).toMatch(/keychain/i)
     expect(MCP_START_PHASE_MESSAGE.authorizing).toMatch(/browser/i)

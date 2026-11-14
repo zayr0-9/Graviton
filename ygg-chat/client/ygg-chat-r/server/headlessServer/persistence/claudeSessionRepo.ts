@@ -1,3 +1,4 @@
+import { claudeWorkspaceChangedError } from '../services/claudeWorkspaceError.js'
 import { executionPathAfterHandoff } from '../../../../../shared/summaryHandoff.js'
 import { claudeMessageMetadata, isClaudeProvider } from '../../../../../shared/claudeProvider.js'
 import type { HeadlessMessageRequest } from '../../../../../shared/headlessApi.js'
@@ -29,7 +30,7 @@ export class ClaudeSessionRepo {
   /** The workspace is fixed per native session; the model may change between turns (`model` records the latest). */
   reserve(lineageId: string, conversationId: string, model: string, cwd: string): void {
     const existing = this.branch(lineageId)
-    if (existing && existing.cwd !== cwd) throw new Error('Claude branch workspace is locked. Start a new conversation.')
+    if (existing && existing.cwd !== cwd) throw claudeWorkspaceChangedError(existing.cwd, cwd)
     this.db.prepare(`INSERT INTO claude_branch_sessions (lineage_id, conversation_id, model, cwd) VALUES (?, ?, ?, ?)
       ON CONFLICT(lineage_id) DO UPDATE SET model = excluded.model`).run(lineageId, conversationId, model, cwd)
   }

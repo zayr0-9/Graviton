@@ -8,7 +8,7 @@ import 'boxicons/css/boxicons.min.css'
 import { ChevronRight, Flame, ListFilter, RotateCcw, ZoomIn, ZoomOut } from 'lucide-react'
 import type { JSX } from 'react'
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import ReactMarkdown from 'react-markdown'
+import { AppMarkdown } from '../MarkdownContent/AppMarkdown'
 import { SCROLLABLE_MARKDOWN_COMPONENTS } from '../MarkdownContent/MarkdownCodeBlock'
 import { useDispatch, useSelector } from 'react-redux'
 import { useChatNavigate as useNavigate } from '../ChatSelection/ChatSelectionProvider'
@@ -34,10 +34,10 @@ import type { Conversation } from '../../features/conversations/conversationType
 import { Message } from '@/features/chats'
 import { ConversationId, MessageId } from '../../../../../shared/types'
 import { useHoverIntent } from '../../hooks/useHoverIntent'
-import { useIsMobile } from '../../hooks/useMediaQuery'
 import { useConversations, useProjects } from '../../hooks/useQueries'
 import { groupConversationsByProject } from './conversationProjectGroups'
 import { NoteColorLegend } from './NoteColorLegend'
+import { ResizableMessagePreview } from './ResizableMessagePreview'
 import { calculateDockedPreviewLayout, observeHeimdallViewport } from './heimdallViewport'
 import { expandHeimdallSelectionToBranchMessages, getHeimdallTransferScopes, selectHeimdallContextMenuNodes } from './heimdallSelection'
 import { TransferScopeChooser } from './TransferScopeChooser'
@@ -49,7 +49,6 @@ import type { RootState } from '../../store/store'
 import { parseId } from '../../utils/helpers'
 import stripMarkdownToText from '../../utils/markdownStripper'
 import { getCompactionPlaceholder } from '../../features/chats/summaryPresentation'
-// import { MarkdownLink } from '../MarkdownLink/MarkdownLink'
 import { localApi } from '../../utils/api'
 import { isNativeShell } from '../../platform/clientCapabilities'
 import { DeleteConfirmModal } from '../DeleteConfirmModal/DeleteConfirmModal'
@@ -324,8 +323,6 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   )
   // Track total messages to detect a truly empty conversation
   const messagesCount = useSelector((state: RootState) => state.chat.conversation.messages.length)
-  // Track if on mobile device for responsive tooltip behavior
-  const isMobile = useIsMobile()
 
   const svgRef = useRef<SVGSVGElement>(null)
   const keyboardId = React.useId()
@@ -391,6 +388,10 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   // Docked previews sit across the graph from their anchor, so the path to them
   // crosses other nodes/pills. Hover intent holds swaps/closes while heading there.
   const messagePreviewCardRef = useRef<HTMLDivElement | null>(null)
+  const messagePreviewDraggingRef = useRef(false)
+  const messagePreviewSizeRef = useRef<{ width?: number; height?: number } | null>(null)
+  const isMessagePreviewHeld = useCallback(() => messagePreviewDraggingRef.current ||
+    !!messagePreviewCardRef.current?.contains(document.activeElement), [])
   const notePreviewCardRef = useRef<HTMLDivElement | null>(null)
   const messagePreviewIntent = useHoverIntent({
     enabled: selectedNode !== null,
@@ -1055,9 +1056,9 @@ export const Heimdall: React.FC<HeimdallProps> = ({
           y: event.clientY - containerRect.top,
         },
       }
-      notePreviewIntent.run(() => setHoveredNote(nextHoveredNote))
+      notePreviewIntent.run(() => { if (!isMessagePreviewHeld()) setHoveredNote(nextHoveredNote) })
     },
-    [clearNotePreviewCloseTimeout, notePreviewIntent]
+    [clearNotePreviewCloseTimeout, notePreviewIntent, isMessagePreviewHeld]
   )
 
   // Leaving a pill drops any swap still deferred for it, then starts the close timer.
@@ -1697,6 +1698,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
 
   useEffect(() => {
     setSubagentPanel(null)
+    setSelectedNode(null)
     setHoveredNote(null)
     // A deferred swap must not reopen a preview from the previous conversation.
     messagePreviewIntent.cancel()
@@ -2864,9 +2866,9 @@ export const Heimdall: React.FC<HeimdallProps> = ({
     clearMessagePreviewCloseTimeout()
     messagePreviewCloseTimeoutRef.current = window.setTimeout(() => {
       messagePreviewCloseTimeoutRef.current = null
-      messagePreviewIntent.run(() => setSelectedNode(null))
+      messagePreviewIntent.run(() => { if (!isMessagePreviewHeld()) setSelectedNode(null) })
     }, DOCKED_PREVIEW_CLOSE_DELAY_MS)
-  }, [clearMessagePreviewCloseTimeout, messagePreviewIntent])
+  }, [clearMessagePreviewCloseTimeout, messagePreviewIntent, isMessagePreviewHeld])
 
   const handleNodeMouseEnter = useCallback(
     (e: React.MouseEvent<SVGElement>) => {
@@ -2880,11 +2882,12 @@ export const Heimdall: React.FC<HeimdallProps> = ({
         : null
 
       messagePreviewIntent.run(() => {
+        if (isMessagePreviewHeld()) return
         if (node) setSelectedNode(node)
         if (nextMousePosition) setMousePosition(nextMousePosition)
       })
     },
-    [clearMessagePreviewCloseTimeout, getNodeIdFromTarget, messagePreviewIntent, positions]
+    [clearMessagePreviewCloseTimeout, getNodeIdFromTarget, messagePreviewIntent, positions, isMessagePreviewHeld]
   )
 
   // Moving off the node starts the close timer; entering the docked card cancels it
@@ -2899,7 +2902,8 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   const handleMessagePreviewEnter = useCallback(() => {
     clearMessagePreviewCloseTimeout()
     messagePreviewIntent.cancel()
-  }, [clearMessagePreviewCloseTimeout, messagePreviewIntent])
+    notePreviewIntent.cancel()
+  }, [clearMessagePreviewCloseTimeout, messagePreviewIntent, notePreviewIntent])
 
   const handleMessagePreviewLeave = useCallback(() => {
     scheduleCloseMessagePreview()
@@ -4808,23 +4812,19 @@ export const Heimdall: React.FC<HeimdallProps> = ({
           const dockedPreview = getDockedPreviewLayout(selectedNode.id, popupWidth, popupMaxHeight, mousePosition)
 
           return (
-            <div
-              className='pointer-events-none absolute z-20'
-              style={{ left: dockedPreview.left, top: dockedPreview.top }}
+            <ResizableMessagePreview
+              previewKey={`${conversationId}:${selectedNode.id}`}
+              layout={dockedPreview}
+              dimensions={dimensions}
+              containerRef={containerRef}
+              cardRef={messagePreviewCardRef}
+              preferredRef={messagePreviewSizeRef}
+              draggingRef={messagePreviewDraggingRef}
+              style={heimdallHoverPreviewStyle}
+              accent={customThemeEnabled ? getThemeModeColor(customTheme.colors.composerToggleActiveText, isDarkMode) : isDarkMode ? '#fb923c' : '#3b82f6'}
+              onEnter={handleMessagePreviewEnter}
+              onLeave={handleMessagePreviewLeave}
             >
-              <div
-                ref={messagePreviewCardRef}
-                className='pointer-events-auto rounded-[20px] border border-stone-200/55 bg-white/75 p-4 shadow-[0_18px_36px_-22px_rgba(0,0,0,0.18)] backdrop-blur-2xl no-scrollbar dark:border-neutral-700/55 dark:bg-neutral-900/75 dark:shadow-[0_30px_60px_-12px_rgba(0,0,0,0.6)]'
-                data-heimdall-wheel-exempt='true'
-                onMouseEnter={handleMessagePreviewEnter}
-                onMouseLeave={handleMessagePreviewLeave}
-                style={{
-                  width: `${dockedPreview.width}px`,
-                  maxHeight: `${dockedPreview.maxHeight}px`,
-                  overflow: 'auto',
-                  ...heimdallHoverPreviewStyle,
-                }}
-              >
               <div className='text-sm mb-2 font-medium' style={{ color: heimdallNodeHoverModalTitleTextColor }}>
                 {selectedNode.sender === 'user' ? 'User' : selectedNode.sender === 'ex_agent' ? 'Agent' : 'Assistant'}
               </div>
@@ -4858,15 +4858,15 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                           return (
                             <div
                               key={`text-${idx}`}
-                              className='prose prose-sm dark:prose-invert max-w-none text-sm break-words overflow-hidden ygg-line-clamp-8'
+                              className='prose prose-sm dark:prose-invert max-w-none text-sm break-words overflow-hidden'
                             >
-                              <ReactMarkdown
+                              <AppMarkdown
                                 components={SCROLLABLE_MARKDOWN_COMPONENTS}
                                 remarkPlugins={[remarkGfm]}
                                 rehypePlugins={[[rehypeHighlight, { detect: true }]]}
                               >
                                 {block.text}
-                              </ReactMarkdown>
+                              </AppMarkdown>
                             </div>
                           )
                         }
@@ -4936,14 +4936,14 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                       {selectedNode.message &&
                         selectedNode.message.trim().length > 0 &&
                         !contentBlocks.some((b: any) => b.type === 'text' && b.text) && (
-                          <div className='prose prose-sm dark:prose-invert max-w-none text-sm break-words overflow-hidden ygg-line-clamp-8'>
-                            <ReactMarkdown
+                          <div className='prose prose-sm dark:prose-invert max-w-none text-sm break-words overflow-hidden'>
+                            <AppMarkdown
                               components={SCROLLABLE_MARKDOWN_COMPONENTS}
                               remarkPlugins={[remarkGfm]}
                               rehypePlugins={[[rehypeHighlight, { detect: true }]]}
                             >
                               {selectedNode.message}
-                            </ReactMarkdown>
+                            </AppMarkdown>
                           </div>
                         )}
                     </div>
@@ -4953,24 +4953,19 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                 // Fallback to message content
                 return (
                   <div
-                    className={`prose prose-sm dark:prose-invert max-w-none text-sm break-words ${
-                      isMobile
-                        ? 'max-h-80 overflow-y-auto overflow-x-hidden thin-scrollbar'
-                        : 'overflow-hidden overflow-x-hidden ygg-line-clamp-15'
-                    }`}
+                    className='prose prose-sm dark:prose-invert max-w-none text-sm break-words overflow-x-hidden'
                   >
-                    <ReactMarkdown
+                    <AppMarkdown
                       components={SCROLLABLE_MARKDOWN_COMPONENTS}
                       remarkPlugins={[remarkGfm]}
                       rehypePlugins={[[rehypeHighlight, { detect: true }]]}
                     >
                       {selectedNode.message || '...'}
-                    </ReactMarkdown>
+                    </AppMarkdown>
                   </div>
                 )
               })()}
-              </div>
-            </div>
+            </ResizableMessagePreview>
           )
         })()}
       {hoveredNote &&
@@ -5008,9 +5003,9 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                   : 'Assistant Note'}
             </div>
             <div className='prose prose-sm dark:prose-invert max-w-none text-sm break-words overflow-y-auto thin-scrollbar'>
-              <ReactMarkdown components={SCROLLABLE_MARKDOWN_COMPONENTS} remarkPlugins={[remarkGfm]} rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
+              <AppMarkdown components={SCROLLABLE_MARKDOWN_COMPONENTS} remarkPlugins={[remarkGfm]} rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
                 {hoveredNote.note}
-              </ReactMarkdown>
+              </AppMarkdown>
             </div>
           </div>
         </div>
@@ -5074,9 +5069,9 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                       Parent Task
                     </div>
                     <div className='prose prose-sm dark:prose-invert max-w-none text-stone-700 dark:text-stone-300 prose-p:my-1 prose-headings:my-2 prose-pre:my-2 prose-pre:bg-stone-100 dark:prose-pre:bg-neutral-800 prose-code:text-orange-600 dark:prose-code:text-orange-400'>
-                      <ReactMarkdown components={SCROLLABLE_MARKDOWN_COMPONENTS} remarkPlugins={[remarkGfm]} rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
+                      <AppMarkdown components={SCROLLABLE_MARKDOWN_COMPONENTS} remarkPlugins={[remarkGfm]} rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
                         {parentMessage?.content || 'Parent Task'}
-                      </ReactMarkdown>
+                      </AppMarkdown>
                     </div>
                   </div>
 
@@ -5118,9 +5113,9 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                           {/* Show prompt/message first when it is not already present in content blocks */}
                           {shouldRenderNodeMessage && (
                             <div className='prose prose-sm dark:prose-invert max-w-none text-stone-800 dark:text-stone-200 prose-p:my-1 prose-headings:my-2 prose-pre:my-2 prose-pre:bg-stone-100 dark:prose-pre:bg-neutral-800 prose-code:text-orange-600 dark:prose-code:text-orange-400 prose-pre:text-xs prose-pre:overflow-x-auto mb-3'>
-                              <ReactMarkdown components={SCROLLABLE_MARKDOWN_COMPONENTS} remarkPlugins={[remarkGfm]} rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
+                              <AppMarkdown components={SCROLLABLE_MARKDOWN_COMPONENTS} remarkPlugins={[remarkGfm]} rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
                                 {node.message}
-                              </ReactMarkdown>
+                              </AppMarkdown>
                             </div>
                           )}
 
@@ -5137,9 +5132,9 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                                       key={blockIdx}
                                       className='prose prose-sm dark:prose-invert max-w-none text-stone-700 dark:text-stone-300 prose-p:my-1 prose-pre:my-2 prose-pre:bg-stone-100 dark:prose-pre:bg-neutral-800 prose-code:text-orange-600 dark:prose-code:text-orange-400 prose-pre:text-xs prose-pre:overflow-x-auto'
                                     >
-                                      <ReactMarkdown components={SCROLLABLE_MARKDOWN_COMPONENTS} remarkPlugins={[remarkGfm]} rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
+                                      <AppMarkdown components={SCROLLABLE_MARKDOWN_COMPONENTS} remarkPlugins={[remarkGfm]} rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
                                         {textContent}
-                                      </ReactMarkdown>
+                                      </AppMarkdown>
                                     </div>
                                   )
                                 }
@@ -5230,7 +5225,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                                         </span>
                                       </summary>
                                       <div className='mt-2 prose prose-sm dark:prose-invert max-w-none text-stone-600 dark:text-stone-400 prose-p:my-1'>
-                                        <ReactMarkdown components={SCROLLABLE_MARKDOWN_COMPONENTS} remarkPlugins={[remarkGfm]}>{block.content}</ReactMarkdown>
+                                        <AppMarkdown components={SCROLLABLE_MARKDOWN_COMPONENTS} remarkPlugins={[remarkGfm]}>{block.content}</AppMarkdown>
                                       </div>
                                     </details>
                                   )
