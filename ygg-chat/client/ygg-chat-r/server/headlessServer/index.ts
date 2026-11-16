@@ -20,7 +20,7 @@ import { registerCapabilityRoutes } from './routes/capabilityRoutes.js'
 import { registerChatRoutes, launchQueuedSuccessor } from './routes/chatRoutes.js'
 import { registerCrudRoutes } from './routes/crudRoutes.js'
 import { registerProviderAuthRoutes } from './routes/providerAuthRoutes.js'
-import { registerMobileUiRoutes } from './routes/mobileUiRoutes.js'
+import { registerLegacyMobileRedirect } from './routes/legacyMobileRedirect.js'
 import { registerHostRuntimeRoutes } from '../routes/hostRuntimeRoutes.js'
 import { registerCustomToolsRoutes } from './routes/customToolsRoutes.js'
 import { registerCustomToolRpcRoutes } from './routes/customToolRpcRoutes.js'
@@ -338,7 +338,7 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
 
   registerCrudRoutes(app, deps)
   registerProviderAuthRoutes(app, { tokenStore })
-  registerMobileUiRoutes(app)
+  registerLegacyMobileRedirect(app)
   registerHostRuntimeRoutes(app)
   registerCustomToolsRoutes(app)
   registerCustomToolRpcRoutes(app)

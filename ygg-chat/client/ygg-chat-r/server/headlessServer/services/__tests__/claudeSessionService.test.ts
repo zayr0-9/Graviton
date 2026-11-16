@@ -894,6 +894,27 @@ describe('native plan mode', () => {
     expect(final.meta).toMatchObject({ claudePlanMode: false, claudePermissionMode: 'auto' })
   })
 
+  it('moves the run to auto mode when a permission prompt is answered with Auto', async () => {
+    const f = fixture()
+    let decision: Promise<any> | undefined
+    f.sdk.query.mockImplementation(({ options }: any) => Object.assign((async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 's' }
+      yield assistant('p')
+      decision = options.canUseTool('Bash', { command: 'ls' }, { signal: new AbortController().signal, toolUseID: 'bash' })
+      await vi.waitFor(() => expect(f.broker.hasPending('stream', 'bash')).toBe(true))
+      expect(f.broker.resolve('stream', 'bash', 'allow_auto')).toBe(true)
+      await decision
+      yield assistant('q')
+      yield success
+    })(), { close: vi.fn() }) as any)
+    const final = await f.service.run(f.input)
+    await expect(decision).resolves.toMatchObject({ behavior: 'allow', updatedInput: { command: 'ls' },
+      updatedPermissions: [{ type: 'setMode', mode: 'auto', destination: 'session' }] })
+    expect(f.rows[0].meta).toMatchObject({ claudePermissionMode: 'default' })
+    // The branch's next send reads this back and keeps auto mode.
+    expect(final.meta).toMatchObject({ claudePermissionMode: 'auto' })
+  })
+
   it('keeps default mode after an approved plan when Allow all is on', async () => {
     const { f, exit } = await nativePlanFixture('execute')
     f.broker.initSession('stream', { autoApproveAll: true })

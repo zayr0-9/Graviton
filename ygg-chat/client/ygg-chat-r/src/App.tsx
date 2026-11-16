@@ -55,6 +55,8 @@ const getRouteAnimationKey = (pathname: string) => {
   return pathname
 }
 
+import { AgentsHeaderProvider } from './components/ChatPane/QuietComposerLayout'
+
 const HtmlToolsShell = ({ enabled }: { enabled: boolean }) => {
   const location = useLocation()
   const registry = useHtmlIframeRegistry()
@@ -324,7 +326,7 @@ function App() {
           <NavigationCommands>
             <ChatSelectionProvider>
               {isHostClient ? (
-                <HtmlIframeRegistryProvider resetKey={resetKey}>{appShell}</HtmlIframeRegistryProvider>
+                <HtmlIframeRegistryProvider resetKey={resetKey}><AgentsHeaderProvider>{appShell}</AgentsHeaderProvider></HtmlIframeRegistryProvider>
               ) : (
                 appShell
               )}

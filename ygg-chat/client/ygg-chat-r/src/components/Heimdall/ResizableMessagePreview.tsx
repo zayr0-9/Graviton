@@ -157,7 +157,7 @@ export function ResizableMessagePreview(props: Props) {
       <div
         ref={cardRef}
         data-heimdall-wheel-exempt='true'
-        className='pointer-events-auto relative flex flex-col overflow-hidden rounded-[20px] border border-stone-200/55 bg-white/75 backdrop-blur-2xl dark:border-neutral-700/55 dark:bg-neutral-900/75'
+        className='pointer-events-auto relative flex flex-col overflow-hidden rounded-[26px] bg-white/90 backdrop-blur-2xl dark:bg-neutral-900/90'
         style={{ ...style, width: rect?.width ?? layout.width, height: manualRect || preferred?.height !== undefined ? rect?.height : undefined, maxHeight: rect?.height ?? layout.maxHeight }}
         onMouseEnter={props.onEnter}
         onMouseLeave={props.onLeave}

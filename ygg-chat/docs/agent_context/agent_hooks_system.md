@@ -64,7 +64,7 @@ Awaited hook `additionalContext` accumulates into a shared `hookContext[]` buffe
 
 ## Gating
 
-The hook session is built only when **all three** hold (`chatOrchestrator.ts:314`): a `hookRunner` is wired, the request set `hooksEnabled === true`, AND a `DecisionBroker` exists (hooks live on the pausing executor, which requires the broker). Subagents, the mobile LAN UI, and tests never enable it → their loop is byte-for-byte unchanged. The renderer sets `hooksEnabled: isElectronMode`, but that local variable includes `isLocalServerRuntime()`, so Electron and the existing standalone browser target both opt in.
+The hook session is built only when **all three** hold (`chatOrchestrator.ts:314`): a `hookRunner` is wired, the request set `hooksEnabled === true`, AND a `DecisionBroker` exists (hooks live on the pausing executor, which requires the broker). Subagents, direct API callers, and tests never enable it → their loop is byte-for-byte unchanged. The renderer sets `hooksEnabled: isElectronMode`, but that local variable includes `isLocalServerRuntime()`, so Electron and the existing standalone browser target both opt in.
 
 Wiring: the executor Pre/Post/Failure hooks are interleaved inside `createChatPausingExecutor` when a `hookSession` is passed; the loop side receives `hookSession.toolLoopHooks()` → `{ hookContext, foldSystemPrompt, runStop, runPreCompact, runSessionStart }` as `input.hooks` (`chatOrchestrator.ts:472`).
 

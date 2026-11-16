@@ -20,6 +20,7 @@ interface ExpandedModelViewProps {
   selectedModelName?: string
   onSelect: (modelName: string) => void
   disabledOptions?: string[]
+  zIndex?: number
 }
 
 type TabId = 'top' | 'new' | 'coding' | 'research' | 'image-gen' | 'all' | string // string for company names
@@ -37,6 +38,7 @@ export const ExpandedModelView: React.FC<ExpandedModelViewProps> = ({
   selectedModelName,
   onSelect,
   disabledOptions = [],
+  zIndex,
 }) => {
   const [activeTab, setActiveTab] = useState<TabId>('top')
   const [searchTerm, setSearchTerm] = useState('')
@@ -141,10 +143,12 @@ export const ExpandedModelView: React.FC<ExpandedModelViewProps> = ({
       {createPortal(
         <div
           className='fixed inset-0 z-[150] flex items-center justify-center bg-black/50 backdrop-blur-sm'
+          style={{ zIndex }}
+          data-ygg-overlay='expanded-model'
           onClick={onClose}
         >
           <div
-            className='bg-white dark:bg-neutral-900 rounded-2xl shadow-2xl max-w-4xl w-full mx-4 max-h-[85vh] flex flex-col overflow-hidden'
+            className='bg-white dark:bg-neutral-900 text-neutral-900 dark:text-neutral-100 rounded-2xl shadow-2xl max-w-4xl w-full mx-4 max-h-[85vh] flex flex-col overflow-hidden'
             onClick={e => e.stopPropagation()}
           >
             {/* Header */}
@@ -152,7 +156,7 @@ export const ExpandedModelView: React.FC<ExpandedModelViewProps> = ({
               <h2 className='text-xl font-semibold text-neutral-900 dark:text-neutral-100'>Select Model</h2>
               <button
                 onClick={onClose}
-                className='text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300 transition-colors'
+                className='text-neutral-500 hover:text-neutral-700 dark:text-neutral-400 dark:hover:text-neutral-300 transition-colors'
                 aria-label='Close modal'
               >
                 <i className='bx bx-x text-2xl' />
@@ -353,6 +357,7 @@ export const ExpandedModelView: React.FC<ExpandedModelViewProps> = ({
       )}
       <ModelInfoModal
         model={selectedModelForInfo}
+        zIndex={zIndex === undefined ? undefined : zIndex + 1}
         provider={provider}
         isOpen={showModelInfo}
         onClose={() => setShowModelInfo(false)}

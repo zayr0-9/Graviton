@@ -5,7 +5,7 @@ import { isCommittedCompaction } from '../../../../../shared/compaction'
 import { useQueryClient } from '@tanstack/react-query'
 import { isContextInjectionMessage } from '../../../../../shared/contextInjection'
 import 'boxicons/css/boxicons.min.css'
-import { ChevronRight, Flame, ListFilter, RotateCcw, ZoomIn, ZoomOut } from 'lucide-react'
+import { ChevronRight, Flame, Layers, ListFilter, RotateCcw, UnfoldVertical, ZoomIn, ZoomOut } from 'lucide-react'
 import type { JSX } from 'react'
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AppMarkdown } from '../MarkdownContent/AppMarkdown'
@@ -40,7 +40,15 @@ import { NoteColorLegend } from './NoteColorLegend'
 import { ResizableMessagePreview } from './ResizableMessagePreview'
 import { calculateDockedPreviewLayout, observeHeimdallViewport } from './heimdallViewport'
 import { expandHeimdallSelectionToBranchMessages, getHeimdallTransferScopes, selectHeimdallContextMenuNodes } from './heimdallSelection'
+import {
+  applyHeimdallCollapse,
+  getHeimdallCollapseGroupsInSelection,
+  planHeimdallCollapse,
+  type HeimdallCollapseGroup,
+} from './heimdallCollapse'
+import { useHeimdallCollapseGroups } from './useHeimdallCollapseGroups'
 import { TransferScopeChooser } from './TransferScopeChooser'
+import { HeimdallPreviewBlock, HeimdallPreviewCode, HeimdallPreviewMuted, type HeimdallPreviewPalette } from './HeimdallPreviewBlock'
 import { useCommandBlocker, useCommands } from '../../keyboard/KeyboardProvider'
 import { formatShortcut, isMacKeyboard } from '../../keyboard/commands'
 import { useShortcutOverrides } from '../../keyboard/useShortcutOverrides'
@@ -456,6 +464,12 @@ export const Heimdall: React.FC<HeimdallProps> = ({
       return next
     })
   }, [])
+
+  // Visual-only collapse groups, persisted per conversation in SQLite.
+  const { groups: collapseGroups, updateGroups: updateCollapseGroups } = useHeimdallCollapseGroups(conversationId)
+  // Resolves a rendered collapse node to the message ids it stands for. Assigned after
+  // the collapsed tree is built; handlers declared earlier read it at call time.
+  const collapseMemberIdsRef = useRef<(nodeId: string) => MessageId[] | null>(() => null)
 
   // Keep a stable inner offset so the whole tree does not shift when nodes are added/removed
   const offsetRef = useRef<{ x: number; y: number } | null>(null)
@@ -1339,7 +1353,8 @@ export const Heimdall: React.FC<HeimdallProps> = ({
     (params: { nodeId: string; clientX: number; clientY: number; ctrlKey?: boolean; metaKey?: boolean }): void => {
       const { nodeId, clientX, clientY, ctrlKey = false, metaKey = false } = params
       const nodeIdParsed = parseId(nodeId)
-      const newSelectedNodes = selectHeimdallContextMenuNodes(selectedNodes, nodeIdParsed, ctrlKey || metaKey)
+      const newSelectedNodes = selectHeimdallContextMenuNodes(selectedNodes, nodeIdParsed, ctrlKey || metaKey,
+        collapseMemberIdsRef.current(nodeId) ?? undefined)
 
       dispatch(chatSliceActions.nodesSelected(newSelectedNodes))
       setContextNodeId(nodeIdParsed)
@@ -1766,33 +1781,42 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   }, false, boundaries)
 
   // Use provided data or fallback to last known (prevents flash on refresh). Do NOT show a fake empty node.
-  const { currentChatData, compactionBoundaries } = useMemo(() => {
+  const { filteredChatData, compactionBoundaries } = useMemo(() => {
     const rawData = chatData ?? lastDataRef.current ?? null
     const compactionBoundaries: HiddenTreeBoundary[] = []
-    if (!rawData) return { currentChatData: null, compactionBoundaries }
+    if (!rawData) return { filteredChatData: null, compactionBoundaries }
 
     if (filterEmptyMessages || messageById.size > 0) {
       const intermediateTextIds = filterEmptyMessages ? getIntermediateAgentTextIds(rawData, messageById) : new Set<string>()
       const result = filterEmptyNodes(rawData, compactionBoundaries, intermediateTextIds)
 
       // Multiple promoted branches need a synthetic root, not the hidden message.
-      return { currentChatData: buildHeimdallVisibleRoot(result), compactionBoundaries }
+      return { filteredChatData: buildHeimdallVisibleRoot(result), compactionBoundaries }
     }
 
-    return { currentChatData: rawData, compactionBoundaries }
+    return { filteredChatData: rawData, compactionBoundaries }
   }, [chatData, messageById, filterEmptyMessages])
 
+  // Collapse groups apply after filtering. The rendered/laid-out tree is the collapsed
+  // one; selection and actions still resolve against the filtered tree and flat messages.
+  const {
+    root: currentChatData,
+    collapsedById: collapsedNodeById,
+    headByMemberId: collapseHeadByMemberId,
+  } = useMemo(() => applyHeimdallCollapse(filteredChatData, collapseGroups), [filteredChatData, collapseGroups])
+
   // Use the complete filtered tree, never viewport-culling results, for action visibility.
+  // Collapsed members count as visible so selection expansion never treats them as hidden tails.
   const visibleMessageIds = useMemo(() => {
     const ids = new Set<string>()
-    const pending = currentChatData ? [currentChatData] : []
+    const pending = filteredChatData ? [filteredChatData] : []
     while (pending.length > 0) {
       const node = pending.pop()!
       ids.add(String(node.id))
       pending.push(...node.children)
     }
     return ids
-  }, [currentChatData])
+  }, [filteredChatData])
 
   // Get the complete branch path for a selected node
   // Uses unfiltered flatMessages to ensure filtered nodes are included in the path
@@ -1990,7 +2014,8 @@ export const Heimdall: React.FC<HeimdallProps> = ({
     {
       id: 'heimdall.select', scope: keyboardScope, enabled: canUseKeyboardTree,
       run: () => {
-        if (keyboardCursor) dispatch(chatSliceActions.nodesSelected(selectHeimdallContextMenuNodes(selectedNodes, parseId(keyboardCursor), true)))
+        if (keyboardCursor) dispatch(chatSliceActions.nodesSelected(selectHeimdallContextMenuNodes(selectedNodes, parseId(keyboardCursor), true,
+          collapseMemberIdsRef.current(keyboardCursor) ?? undefined)))
       },
     },
     {
@@ -2020,7 +2045,8 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   // React to focusedChatMessageId changes by centering the corresponding node when present
   useEffect(() => {
     if (!focusedChatMessageId) return
-    const idStr = String(focusedChatMessageId)
+    // A message inside a collapse node centers on that node.
+    const idStr = collapseHeadByMemberId.get(String(focusedChatMessageId)) ?? String(focusedChatMessageId)
     if (!positions[idStr]) return
     // Only auto-center if this focus was initiated by the search bar
     if (!searchFocusPendingRef.current) return
@@ -2028,7 +2054,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
     centerOnNode(idStr)
     lastCenteredIdRef.current = idStr
     searchFocusPendingRef.current = false
-  }, [focusedChatMessageId, positions, dimensions.width, dimensions.height, offsetX, offsetY])
+  }, [focusedChatMessageId, positions, collapseHeadByMemberId, dimensions.width, dimensions.height, offsetX, offsetY])
 
   // Center the view on the root node once, after layout and container dimensions are ready
   useEffect(() => {
@@ -2165,6 +2191,18 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   const expandSelectionToHiddenBranchMessages = (selectedVisibleIds: MessageId[]): MessageId[] =>
     expandHeimdallSelectionToBranchMessages(allMessages, selectedVisibleIds, visibleMessageIds)
 
+  // A collapse node stands for its visible members plus their hidden connector rows.
+  const getCollapseMemberIds = (nodeId: string): MessageId[] | null => {
+    const collapsed = collapsedNodeById.get(String(nodeId))
+    if (!collapsed) return null
+    const ids = collapsed.visibleMemberIds.flatMap(id => {
+      const message = messageById.get(id)
+      return message ? [message.id] : []
+    })
+    return ids.length > 0 ? expandSelectionToHiddenBranchMessages(ids) : null
+  }
+  collapseMemberIdsRef.current = getCollapseMemberIds
+
   // Function to determine which nodes are within the selection rectangle
   const getNodesInSelectionRectangle = (): MessageId[] => {
     const selectedNodeIds: MessageId[] = []
@@ -2208,6 +2246,11 @@ export const Heimdall: React.FC<HeimdallProps> = ({
       // Intersect test between node bounds and selection rectangle (all in screen space)
       const intersects = right >= minX && left <= maxX && bottom >= minY && top <= maxY
       if (intersects) {
+        const collapsedMemberIds = getCollapseMemberIds(node.id)
+        if (collapsedMemberIds) {
+          selectedNodeIds.push(...collapsedMemberIds)
+          return
+        }
         const nodeIdParsed = parseId(node.id)
         if ((typeof nodeIdParsed === 'number' && !isNaN(nodeIdParsed)) || typeof nodeIdParsed === 'string') {
           selectedNodeIds.push(nodeIdParsed)
@@ -2385,13 +2428,13 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   const handleCopySelectedPaths = async (): Promise<void> => {
     try {
       const ids = selectedNodes || []
-      if (!currentChatData || ids.length === 0) {
+      if (!filteredChatData || ids.length === 0) {
         setShowContextMenu(false)
         return
       }
-      // Build id -> message map from the current tree
+      // Build id -> message map from the uncollapsed visible tree
       const messagesById = new Map<string, string>()
-      for (const node of walkChatTree(currentChatData)) {
+      for (const node of walkChatTree(filteredChatData)) {
         // Display placeholders must not replace real content in clipboard actions.
         messagesById.set(node.id, messageById.get(String(node.id))?.content ?? node.message)
       }
@@ -2440,6 +2483,38 @@ export const Heimdall: React.FC<HeimdallProps> = ({
       : { selectionIds: [], activeBranchIds: [] },
     [showContextMenu, allMessages, selectedNodes, currentPathIds, contextNodeId, visibleMessageIds]
   )
+  const collapsePlan = useMemo(
+    () => showContextMenu
+      ? planHeimdallCollapse({ visibleRoot: filteredChatData, messages: allMessages, selectedIds: selectedNodes || [], groups: collapseGroups })
+      : null,
+    [showContextMenu, filteredChatData, allMessages, selectedNodes, collapseGroups]
+  )
+  const collapseGroupsInSelection = useMemo(
+    () => showContextMenu ? getHeimdallCollapseGroupsInSelection(collapseGroups, selectedNodes || []) : [],
+    [showContextMenu, collapseGroups, selectedNodes]
+  )
+
+  const handleCollapseSelection = (): void => {
+    if (collapsePlan?.kind !== 'collapse') return
+    const replaced = new Set(collapsePlan.replacedGroupIds)
+    // Drop rows deleted since a group was saved so stored groups do not grow stale.
+    const known = (group: HeimdallCollapseGroup) => ({ ...group, memberIds: group.memberIds.filter(id => messageById.has(id)) })
+    updateCollapseGroups([
+      ...collapseGroups.filter(group => !replaced.has(group.id)).map(known).filter(group => group.memberIds.length >= 2),
+      collapsePlan.group,
+    ])
+    setShowContextMenu(false)
+    dispatch(chatSliceActions.nodesSelected([]))
+  }
+
+  const handleExpandSelection = (): void => {
+    if (collapseGroupsInSelection.length === 0) return
+    const expanded = new Set(collapseGroupsInSelection.map(group => group.id))
+    updateCollapseGroups(collapseGroups.filter(group => !expanded.has(group.id)))
+    setShowContextMenu(false)
+    dispatch(chatSliceActions.nodesSelected([]))
+  }
+
   const activeBranchMoveBlocked = transferScopeAction === 'move' &&
     hasUnselectedDescendants(allMessages, transferScopes.activeBranchIds)
   const transferRefusals = useMemo(
@@ -3276,6 +3351,42 @@ export const Heimdall: React.FC<HeimdallProps> = ({
         color: heimdallContextMenuTextColor,
       }
     : undefined
+  // Hover-preview blocks borrow the tool-jobs/settings palette, like the agent options popover.
+  const heimdallPreviewPalette = useMemo<HeimdallPreviewPalette | null>(() => {
+    if (!customThemeEnabled) return null
+    const color = (pair: Parameters<typeof getThemeModeColor>[0]) => getThemeModeColor(pair, isDarkMode)
+    const colors = customTheme.colors
+    return {
+      cardBg: getTranslucentCssColor(color(colors.settingsCustomThemesInnerCardBg), 0.72),
+      codeBg: color(colors.toolJobsCodeBg),
+      codeText: color(colors.toolJobsCodeText),
+      badgeBg: color(colors.settingsCustomThemesButtonBg),
+      badgeText: color(colors.settingsCustomThemesButtonText),
+      primaryText: color(colors.toolJobsPrimaryText),
+      mutedText: color(colors.toolJobsMutedText),
+      successBg: color(colors.toolJobsStatusCompletedBg),
+      successText: color(colors.toolJobsStatusCompletedText),
+      errorBg: color(colors.toolJobsErrorBg),
+      errorText: color(colors.toolJobsErrorText),
+    }
+  }, [customThemeEnabled, customTheme, isDarkMode])
+  // Prose sets its own (invert) colors; pin them to the hover-modal text tokens so
+  // markdown in the preview follows the theme in light and dark mode.
+  const heimdallPreviewProseStyle = useMemo(() => {
+    const body = heimdallNodeHoverModalTextColor
+    const strong = heimdallNodeHoverModalTitleTextColor
+    const muted = heimdallPreviewPalette?.mutedText ?? (isDarkMode ? '#a8a29e' : '#78716c')
+    const vars: Record<string, string> = {}
+    const set = (name: string, value: string) => {
+      vars[`--tw-prose-${name}`] = value
+      vars[`--tw-prose-invert-${name}`] = value
+    }
+    set('body', body)
+    set('quotes', body)
+    for (const name of ['headings', 'bold', 'links', 'code']) set(name, strong)
+    for (const name of ['bullets', 'counters', 'captions']) set(name, muted)
+    return { ...vars, color: body } as React.CSSProperties
+  }, [heimdallNodeHoverModalTextColor, heimdallNodeHoverModalTitleTextColor, heimdallPreviewPalette, isDarkMode])
   const heimdallContextMenuDividerStyle: React.CSSProperties | undefined = customThemeEnabled
     ? { backgroundColor: heimdallContextMenuDividerColor }
     : undefined
@@ -3505,9 +3616,11 @@ export const Heimdall: React.FC<HeimdallProps> = ({
       // const isOnCurrentPath =
       //   ((typeof nodeIdParsed === 'number' && !isNaN(nodeIdParsed)) || typeof nodeIdParsed === 'string') &&
       //   currentPathSet.has(nodeIdParsed)
+      const collapsed = collapsedNodeById.get(String(node.id))
       const isVisible =
-        ((typeof nodeIdParsed === 'number' && !isNaN(nodeIdParsed)) || typeof nodeIdParsed === 'string') &&
-        visibleMessageId === nodeIdParsed
+        (((typeof nodeIdParsed === 'number' && !isNaN(nodeIdParsed)) || typeof nodeIdParsed === 'string') &&
+          visibleMessageId === nodeIdParsed) ||
+        (Boolean(collapsed) && visibleMessageId != null && collapseHeadByMemberId.get(String(visibleMessageId)) === String(node.id))
       const themedNodeColors = getNodeThemeColors(node.sender, isVisible)
       const heatmapNodeColors = getHeatmapNodeColors(String(node.id), isVisible)
       const effectiveNodeColors = heatmapNodeColors ?? themedNodeColors
@@ -3523,7 +3636,10 @@ export const Heimdall: React.FC<HeimdallProps> = ({
         return (
           <g key={node.id} transform={`translate(${x - nodeWidth / 2}, ${y})`}
             id={keyboardItemId(node.id)} role={node.id === 'root' ? undefined : 'treeitem'}
-            aria-label={node.message.slice(0, 240)} aria-level={keyboardTree.get(node.id)?.level}
+            aria-label={collapsed
+              ? `${collapsed.visibleMemberIds.length} collapsed messages, starting with: ${node.message.slice(0, 200)}`
+              : node.message.slice(0, 240)}
+            aria-level={keyboardTree.get(node.id)?.level}
             aria-selected={isNodeSelected}
             aria-posinset={(keyboardTree.get(node.id)?.siblings.indexOf(node.id) ?? 0) + 1}
             aria-setsize={keyboardTree.get(node.id)?.siblings.length}
@@ -3542,6 +3658,21 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                 }`}
               />
             )} */}
+            {/* Collapse node: two offset plates read as a stack of hidden messages. */}
+            {collapsed && [10, 5].map(offset => (
+              <rect
+                key={offset}
+                x={offset}
+                y={offset}
+                width={nodeWidth}
+                height={nodeHeight}
+                rx={HEIMDALL_NODE_RADIUS}
+                strokeWidth='0'
+                opacity={offset === 10 ? 0.35 : 0.6}
+                className={effectiveNodeColors ? '' : getHeimdallNodeFallbackFillClass(node.sender, isVisible, isDarkMode)}
+                style={{ pointerEvents: 'none', ...(effectiveNodeColors ? { fill: effectiveNodeColors.fill } : {}) }}
+              />
+            ))}
             {/* Selected/current highlight: the only visible node outline in the minimal style. */}
             {(isNodeSelected || isVisible) && (
               <rect
@@ -3636,6 +3767,19 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                     return <p className='line-clamp-3'>...</p>
                   }
                   const msg = getCurrentMessage(nodeIdParsed)
+
+                  if (collapsed) {
+                    const preview = getCompactionPlaceholder(msg) ?? (node.message?.trim() || '...')
+                    return (
+                      <div className='flex min-w-0 flex-col gap-1'>
+                        <span className='flex items-center gap-1.5 text-xs font-semibold opacity-80'>
+                          <Layers size={12} strokeWidth={2.25} aria-hidden='true' />
+                          {collapsed.visibleMemberIds.length} messages collapsed
+                        </span>
+                        <p className='line-clamp-2'>{preview}</p>
+                      </div>
+                    )
+                  }
 
                   if (getCompactionPlaceholder(msg)) return <p className='line-clamp-3'>{getCompactionPlaceholder(msg)}</p>
 
@@ -3779,7 +3923,10 @@ export const Heimdall: React.FC<HeimdallProps> = ({
         return (
           <g key={node.id}
             id={keyboardItemId(node.id)} role={node.id === 'root' ? undefined : 'treeitem'}
-            aria-label={node.message.slice(0, 240)} aria-level={keyboardTree.get(node.id)?.level}
+            aria-label={collapsed
+              ? `${collapsed.visibleMemberIds.length} collapsed messages, starting with: ${node.message.slice(0, 200)}`
+              : node.message.slice(0, 240)}
+            aria-level={keyboardTree.get(node.id)?.level}
             aria-selected={isNodeSelected}
             aria-posinset={(keyboardTree.get(node.id)?.siblings.indexOf(node.id) ?? 0) + 1}
             aria-setsize={keyboardTree.get(node.id)?.siblings.length}
@@ -3810,6 +3957,18 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                 className='stroke-cyan-400 dark:stroke-amber-300'
               />
             )} */}
+            {collapsed && [7, 3.5].map(offset => (
+              <circle
+                key={offset}
+                cx={x + offset}
+                cy={y + circleRadius + offset}
+                r={circleRadius}
+                strokeWidth='0'
+                opacity={offset === 7 ? 0.35 : 0.6}
+                className={effectiveNodeColors ? '' : getHeimdallNodeFallbackFillClass(node.sender, isVisible, isDarkMode)}
+                style={{ pointerEvents: 'none', ...(effectiveNodeColors ? { fill: effectiveNodeColors.fill } : {}) }}
+              />
+            ))}
             {/* Selected/current highlight: the only visible node outline in compact mode. */}
             {(isNodeSelected || isVisible) && (
               <circle
@@ -3854,6 +4013,17 @@ export const Heimdall: React.FC<HeimdallProps> = ({
               onMouseEnter={handleNodeMouseEnter}
               onMouseLeave={handleNodeMouseLeave}
             />
+            {collapsed && (
+              <text
+                x={x}
+                y={y + circleRadius + 4}
+                textAnchor='middle'
+                className={`text-[11px] font-semibold ${getHeimdallNodeTextClass(node.sender, isVisible)}`}
+                style={{ fill: heatmapNodeColors?.text ?? 'currentColor', pointerEvents: 'none', userSelect: 'none' }}
+              >
+                {collapsed.visibleMemberIds.length}
+              </text>
+            )}
             {showSubagentBadge &&
               (() => {
                 const badge = getSubagentBadgeMetrics(subagentCount)
@@ -4013,6 +4183,8 @@ export const Heimdall: React.FC<HeimdallProps> = ({
     [
       visiblePositionValues,
       keyboardTree,
+      collapsedNodeById,
+      collapseHeadByMemberId,
       compactMode,
       focusedNodeId,
       selectedNodeSet,
@@ -4606,6 +4778,36 @@ export const Heimdall: React.FC<HeimdallProps> = ({
             Message actions
           </div>
 
+          {collapseGroupsInSelection.length > 0 && (
+            <button
+              className={heimdallContextMenuItemClass}
+              style={getHeimdallContextMenuItemStyle()}
+              onClick={handleExpandSelection}
+            >
+              <UnfoldVertical size={16} strokeWidth={2} className='opacity-50 group-hover:opacity-100 transition-opacity' />
+              <span>{collapseGroupsInSelection.length > 1 ? `Expand ${collapseGroupsInSelection.length} groups` : 'Expand nodes'}</span>
+            </button>
+          )}
+
+          {/* A single right-clicked node never offers Collapse; a multi-node selection
+              that cannot collapse shows the item disabled with the reason. */}
+          {collapsePlan && (collapsePlan.kind === 'collapse' || (collapsePlan.kind === 'unavailable' && selectedNodes.length > 1)) && (
+            <button
+              className={`${heimdallContextMenuItemClass} disabled:cursor-not-allowed disabled:opacity-50`}
+              style={getHeimdallContextMenuItemStyle()}
+              disabled={collapsePlan.kind !== 'collapse'}
+              onClick={handleCollapseSelection}
+            >
+              <Layers size={16} strokeWidth={2} className='opacity-50 group-hover:opacity-100 transition-opacity' />
+              <span>{collapsePlan.kind === 'collapse' ? `Collapse ${collapsePlan.visibleCount} nodes` : 'Collapse nodes'}</span>
+            </button>
+          )}
+          {collapsePlan?.kind === 'unavailable' && selectedNodes.length > 1 && (
+            <p className='px-3 pb-1 text-xs text-stone-500 dark:text-neutral-400' style={heimdallContextMenuHeaderStyle}>
+              {collapsePlan.reason}
+            </p>
+          )}
+
           <button
             className={heimdallContextMenuItemClass}
             style={getHeimdallContextMenuItemStyle()}
@@ -4859,6 +5061,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                             <div
                               key={`text-${idx}`}
                               className='prose prose-sm dark:prose-invert max-w-none text-sm break-words overflow-hidden'
+                              style={heimdallPreviewProseStyle}
                             >
                               <AppMarkdown
                                 components={SCROLLABLE_MARKDOWN_COMPONENTS}
@@ -4874,20 +5077,13 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                         // Tool use block
                         if (block.type === 'tool_use' && block.name) {
                           return (
-                            <div
-                              key={`tool-${idx}`}
-                              className='bg-amber-50 dark:bg-neutral-900/30 border border-amber-200 dark:border-neutral-900 rounded-lg p-2'
-                            >
-                              <div className='flex items-center gap-1.5 text-xs font-medium text-amber-700 dark:text-amber-300 mb-1'>
-                                <span>🔧</span>
-                                {block.name}
-                              </div>
-                              {block.input && (
-                                <pre className='text-xs bg-amber-100/50 dark:bg-neutral-900/20 rounded p-1.5 overflow-x-auto no-scrollbar max-h-24 overflow-y-auto'>
+                            <HeimdallPreviewBlock key={`tool-${idx}`} kind='tool' title={block.name} palette={heimdallPreviewPalette}>
+                              {block.input != null && block.input !== '' && (
+                                <HeimdallPreviewCode palette={heimdallPreviewPalette}>
                                   {typeof block.input === 'string' ? block.input : JSON.stringify(block.input, null, 2)}
-                                </pre>
+                                </HeimdallPreviewCode>
                               )}
-                            </div>
+                            </HeimdallPreviewBlock>
                           )
                         }
 
@@ -4895,38 +5091,30 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                         if (block.type === 'tool_result') {
                           const resultContent =
                             typeof block.content === 'string' ? block.content : JSON.stringify(block.content, null, 2)
+                          const isError = Boolean(block.is_error)
                           return (
-                            <div
+                            <HeimdallPreviewBlock
                               key={`result-${idx}`}
-                              className='bg-emerald-50 dark:bg-emerald-900/30 border border-emerald-200 dark:border-emerald-700 rounded-lg p-2'
+                              kind={isError ? 'error' : 'result'}
+                              title={isError ? 'Tool error' : 'Tool result'}
+                              palette={heimdallPreviewPalette}
                             >
-                              <div className='flex items-center gap-1.5 text-xs font-medium text-emerald-700 dark:text-emerald-300 mb-1'>
-                                <span>✓</span>
-                                Tool Result
-                              </div>
-                              <pre className='text-xs bg-emerald-100/50 dark:bg-emerald-900/20 rounded p-1.5 overflow-x-auto no-scrollbar max-h-24 overflow-y-auto whitespace-pre-wrap break-words'>
-                                {resultContent?.slice(0, 500)}
-                                {resultContent?.length > 500 ? '...' : ''}
-                              </pre>
-                            </div>
+                              {resultContent && (
+                                <HeimdallPreviewCode palette={heimdallPreviewPalette}>
+                                  {resultContent.slice(0, 500)}
+                                  {resultContent.length > 500 ? '…' : ''}
+                                </HeimdallPreviewCode>
+                              )}
+                            </HeimdallPreviewBlock>
                           )
                         }
 
                         // Thinking block
                         if (block.type === 'thinking' && block.thinking) {
                           return (
-                            <div
-                              key={`think-${idx}`}
-                              className='bg-purple-50 dark:bg-purple-900/30 border border-purple-200 dark:border-purple-700 rounded-lg p-2'
-                            >
-                              <div className='flex items-center gap-1.5 text-xs font-medium text-purple-700 dark:text-purple-300 mb-1'>
-                                <span>💭</span>
-                                Thinking
-                              </div>
-                              <p className='text-xs text-purple-600 dark:text-purple-300 line-clamp-4'>
-                                {block.thinking}
-                              </p>
-                            </div>
+                            <HeimdallPreviewBlock key={`think-${idx}`} kind='thinking' title='Thinking' palette={heimdallPreviewPalette}>
+                              <HeimdallPreviewMuted palette={heimdallPreviewPalette}>{block.thinking}</HeimdallPreviewMuted>
+                            </HeimdallPreviewBlock>
                           )
                         }
 
@@ -4936,7 +5124,10 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                       {selectedNode.message &&
                         selectedNode.message.trim().length > 0 &&
                         !contentBlocks.some((b: any) => b.type === 'text' && b.text) && (
-                          <div className='prose prose-sm dark:prose-invert max-w-none text-sm break-words overflow-hidden'>
+                          <div
+                            className='prose prose-sm dark:prose-invert max-w-none text-sm break-words overflow-hidden'
+                            style={heimdallPreviewProseStyle}
+                          >
                             <AppMarkdown
                               components={SCROLLABLE_MARKDOWN_COMPONENTS}
                               remarkPlugins={[remarkGfm]}
@@ -4954,6 +5145,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
                 return (
                   <div
                     className='prose prose-sm dark:prose-invert max-w-none text-sm break-words overflow-x-hidden'
+                    style={heimdallPreviewProseStyle}
                   >
                     <AppMarkdown
                       components={SCROLLABLE_MARKDOWN_COMPONENTS}

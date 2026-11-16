@@ -1,4 +1,6 @@
 import React, { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
+import { useAgentsHeader } from '../ChatPane/QuietComposerLayout'
 import { useLocation } from 'react-router-dom'
 import { useChatNavigate as useNavigate } from '../ChatSelection/ChatSelectionProvider'
 import { getChatSelectionHref } from '../../features/chats/chatSelection'
@@ -23,7 +25,7 @@ import './agentsPillMotion.css'
 import type { AgentPreviewScrollState } from './AgentRunPreview'
 import { AgentForkCard, cardIconButtonClass, resolvePreviewFork } from './AgentForkCard'
 import { AgentMessageTooltip } from './AgentMessageTooltip'
-import { ArrowLeft, Expand, EyeOff, Layers } from 'lucide-react'
+import { ArrowLeft, Bot, X, Expand, EyeOff, Layers } from 'lucide-react'
 import { AgentsViewSwitch } from './AgentsViewSwitch'
 import { AgentsMonitorGrid, useAgentGridForks } from './AgentsMonitorGrid'
 import { useAgentsPillResize } from './useAgentsPillResize'
@@ -405,9 +407,12 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
   const currentConversationId = useAppSelector(selectCurrentConversationId)
   const currentPath = useAppSelector(selectCurrentPath)
   const branchDebugQuery = useConversationBranchDebugData(codexDevLogsEnabled ? currentConversationId : null)
+  const headerTargets = useAgentsHeader()
+  const headerMode = Boolean(onChatRoute && headerTargets.launcher?.isConnected)
+  const compactTriggerRef = useRef<HTMLButtonElement>(null)
   const [expanded, setExpanded] = useState(false)
   const [gridView, setGridView] = useState(true)
-  const pillResize = useAgentsPillResize(expanded, className)
+  const pillResize = useAgentsPillResize(expanded, className, !headerMode)
   const [selectedRun, setSelectedRun] = useState<AgentStreamListItem | null>(null)
   const [previewWholeFork, setPreviewWholeFork] = useState(false)
   const [groupPreviewSteps, setGroupPreviewSteps] = useState(() => {
@@ -449,7 +454,7 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
   // both dimensions, including a saved user size, without layout transforms.
   useLayoutEffect(() => {
     const content = contentRef.current
-    if (!content) return
+    if (!content || headerMode) return
     const measure = () => {
       const rect = content.getBoundingClientRect()
       const width = rect.width + 2
@@ -460,7 +465,7 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
     const observer = new ResizeObserver(measure)
     observer.observe(content)
     return () => observer.disconnect()
-  }, [expanded, gridBody, inlineNotification, pillResize.size?.width, pillResize.size?.height])
+  }, [expanded, gridBody, inlineNotification, pillResize.size?.width, pillResize.size?.height, headerMode])
 
   const seenNotificationIdsRef = useRef<Set<string>>(new Set())
   const notificationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -706,6 +711,40 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
     setExpanded(value => !value)
   }
 
+  useEffect(() => {
+    if (!headerMode || !expanded) return
+    const shell = pillResize.shellRef.current
+    const key = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || document.querySelector('[data-ygg-overlay="select-dropdown"]')) return
+      if (event.key === 'Escape') { event.preventDefault(); setExpanded(false) }
+      if (event.key === 'Tab') {
+        const nodes = [...(shell?.querySelectorAll<HTMLElement>('button:not(:disabled), a[href], textarea, input, [tabindex="0"]') ?? [])].filter(node => node.getClientRects().length && !node.closest('[inert]'))
+        if (event.shiftKey && document.activeElement === nodes[0]) { event.preventDefault(); nodes.at(-1)?.focus() }
+        else if (!event.shiftKey && document.activeElement === nodes.at(-1)) { event.preventDefault(); nodes[0]?.focus() }
+      }
+    }
+    const viewport = () => {
+      if (!shell) return
+      shell.style.setProperty('max-height', `${(window.visualViewport?.height ?? window.innerHeight) - 16}px`)
+      shell.style.setProperty('top', `${(window.visualViewport?.offsetTop ?? 0) + 8}px`, 'important')
+    }
+    viewport()
+    shell?.querySelector<HTMLButtonElement>('.quiet-agent-close')?.focus({ preventScroll: true })
+    document.addEventListener('keydown', key)
+    window.visualViewport?.addEventListener('resize', viewport)
+    window.visualViewport?.addEventListener('scroll', viewport)
+    return () => {
+      document.removeEventListener('keydown', key)
+      window.visualViewport?.removeEventListener('resize', viewport)
+      window.visualViewport?.removeEventListener('scroll', viewport)
+      shell?.style.removeProperty('top'); shell?.style.removeProperty('max-height')
+      requestAnimationFrame(() => {
+        const target = compactTriggerRef.current ?? document.querySelector<HTMLButtonElement>('[data-quiet-add]')
+        target?.focus({ preventScroll: true })
+      })
+    }
+  }, [headerMode, expanded, pillResize.shellRef])
+
   const openBranchDebug = (event: React.MouseEvent) => {
     event.stopPropagation()
     setBranchDebugOpen(true)
@@ -713,6 +752,16 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
 
   return (
     <>
+      {headerMode && headerTargets.launcher && createPortal(<button ref={compactTriggerRef} type='button' className='quiet-icon relative' style={floatingControlButtonStyle}
+        title={ariaLabel} aria-label={ariaLabel} aria-expanded={expanded} onClick={() => inlineNotification ? openNotification(inlineNotification) : toggleExpanded()}>
+        <Bot size={20} /><span className={`absolute right-1 top-1 h-2 w-2 rounded-full ${statusTone}`} style={floatingStatusDotStyle} />
+        {activeForks.length > 0 && <span className='absolute bottom-0 right-0 rounded-full bg-neutral-100 px-1 text-[10px] text-neutral-800 dark:bg-neutral-800 dark:text-neutral-100' style={floatingControlButtonStyle}>{activeForks.length}</span>}
+      </button>, headerTargets.launcher)}
+      {headerMode && headerTargets.notice && createPortal(<>
+        <span className='sr-only' role='status' aria-atomic='true'>{inlineNotification?.title ?? ''}</span>
+        {inlineNotification && <button type='button' className='quiet-agent-notice' style={floatingShellStyle} onClick={() => openNotification(inlineNotification)}>{inlineNotification.title}</button>}
+      </>, headerTargets.notice)}
+      {headerMode && expanded && <div className='quiet-agents-backdrop' onClick={() => setExpanded(false)} />}
       <BranchDebugModal
         open={branchDebugOpen}
         data={branchDebugQuery.data}
@@ -723,11 +772,16 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
       />
       <div
       ref={pillResize.shellRef}
+      hidden={headerMode && !expanded}
+      data-quiet-panel={headerMode || undefined}
+      role={headerMode ? 'dialog' : undefined}
+      aria-label={headerMode ? 'Running agents' : undefined}
       className={`t-resize agents-pill fixed z-[1500] ${className}`}
       data-dragging={pillResize.dragging}
       style={{ width: shellSize?.width, height: shellSize?.height }}
       >
-      {expanded && <button type='button' {...pillResize.handleProps}
+      {headerMode && expanded && <button type='button' className='quiet-icon quiet-agent-close' style={floatingControlButtonStyle} title='Close agents' aria-label='Close agents' onClick={() => setExpanded(false)}><X size={18} /></button>}
+      {expanded && !headerMode && <button type='button' {...pillResize.handleProps}
         onClick={event => event.stopPropagation()}
         aria-label='Resize agents panel. Arrow keys resize; Shift resizes faster; Home resets.'
         title='Drag to resize · Double-click to reset'

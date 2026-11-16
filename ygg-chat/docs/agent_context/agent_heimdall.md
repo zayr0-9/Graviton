@@ -4,12 +4,14 @@ paths:
   - "client/ygg-chat-r/src/features/chats/pathUtils.ts"
   - "client/ygg-chat-r/src/features/chats/messageTransfer.ts"
   - "client/ygg-chat-r/server/headlessServer/persistence/messageTransfer.ts"
+  - "client/ygg-chat-r/server/headlessServer/persistence/heimdallCollapseRepo.ts"
+  - "client/ygg-chat-r/server/routes/heimdallCollapseRoutes.ts"
   - "shared/claudeTransfer.ts"
 ---
 
 # Agent Context: Heimdall Conversation Tree
 
-Last reviewed: 2026-06-16
+Last reviewed: 2026-11-14
 
 ## Purpose
 
@@ -100,6 +102,7 @@ Current actions include:
 - **Copy to Existing Chat**: copies selected messages into another conversation via `insertBulkMessages`.
 - **Move to Existing Chat**: copies selected messages into another conversation, then deletes the source selection after successful insert.
 - **Delete Permanently**: deletes selected message IDs with optional confirmation and refreshes the current message tree.
+- **Collapse N nodes** / **Expand nodes**: visual tree management; see "Collapse nodes" below.
 
 For selected-message copying/moving:
 - Heimdall builds one structured clone payload for all three transfer actions.
@@ -114,6 +117,21 @@ For selected-message copying/moving:
 - Move runs through `moveSelection` (`src/features/chats/transferSelection.ts`). It first asks the server for a dry-run delete (`POST /messages/deleteMany` with `dryRun: true`, which returns `planned` ids or the refusal). If Claude would refuse the source cut, or the delete would also remove unselected rows (launch scaffolding), nothing is copied. If the real delete still fails after copying, the copies are deleted again and the error says "Nothing was moved". A failed refresh after a successful move is only logged, so a retry can't copy twice.
 - New Chat keeps the menu open until it succeeds. A failure (including the workspace folder not being set) deletes the half-created chat (`createChatFromSelection`) and shows the reason in the menu; the buttons are disabled while it runs. It no longer dispatches `fetchMessageTree` for the new chat; the chat route loads it after navigation. Transfer thunks reject with the server's own `error` text.
 
+### Collapse nodes
+
+- Tree-management aid: selecting two or more connected visible nodes offers **Collapse N nodes** in the context menu. The run becomes one stacked node; right-click it (or any selection touching it) and choose **Expand nodes** to restore it.
+- Visual-only, like filtering: messages, paths and transfer/delete inputs do not change. Groups (`{ id, memberIds }`) persist per conversation in SQLite.
+  - Table `heimdall_collapse_groups` (migration v13, `server/headlessServer/persistence/heimdallCollapseRepo.ts`); it cascades with the conversation.
+  - Routes `GET`/`PUT /api/local/conversations/:id/heimdall-collapse-groups` (`server/routes/heimdallCollapseRoutes.ts`). PUT replaces the whole set.
+  - The server drops ids that are not live messages of that conversation, and groups left with fewer than two members, on both read and write.
+  - Renderer: `useHeimdallCollapseGroups.ts`, Query key `['conversations', id, 'heimdall-collapse-groups']`. Edits update the cache optimistically; saves are serialized; a failed save refetches.
+  - The table is not in the `client_changes` outbox, so other open clients pick up changes on their next refetch.
+- Pipeline: `filteredChatData` (filter) → `applyHeimdallCollapse` (`heimdallCollapse.ts`) → `currentChatData` (layout, render, keyboard). `visibleMessageIds`, Copy Text and `planHeimdallCollapse` use the uncollapsed filtered tree.
+- A collapse node **reuses its head message id**, so clicks, Enter and `getPathWithDescendants` work unchanged. Children of members that are not in the group become the node's children, in preorder. A segment with fewer than two visible members is not collapsed (stale or deleted ids are inert).
+- Selecting a collapse node (right-click, Ctrl/Meta toggle, rectangle, Space) selects all of its members plus hidden connector rows. So Copy, transfer and Delete act on the whole group. Note and Open in Parallel stay single-message only.
+- Collapsing requires exactly one head (one connected visible run). Groups the selection touches merge into the new group. Stored members include filtered connector rows, so turning the filter off still shows one connected group.
+- Search/focus centering and the visible-message outline map a member to its collapse node (`collapseHeadByMemberId`).
+
 ### Notes
 
 - Note data lives on the message row: `note` and `note_color`.
@@ -123,6 +141,7 @@ For selected-message copying/moving:
 - Message and note-pill hover previews share opposite-side docking: an anchor in the left half of the panel docks its preview right, and an anchor in the right half docks left. The shared layout derives the anchor's on-screen position from the same transform as `visiblePositions`, preventing the card from covering the interactive node or note pill. Preview width is capped to the opposite half on narrow panels.
 - Leaving a node or note pill starts the shared `DOCKED_PREVIEW_CLOSE_DELAY_MS` timer; entering its docked card cancels it so the card can be reached and scrolled, and leaving the card restarts it. A new hover replaces the displayed content.
 - Because the card docks across the graph, the path to it crosses other nodes/pills. Each preview has a `useHoverIntent` controller (safe triangle, `src/hooks/useHoverIntent.ts`): node/pill-enter swaps and timer-driven closes go through `run()` and are deferred while the pointer moves toward the card, then applied when it turns away or stalls (~250ms). Leaving a node/pill or entering the card calls `cancel()`; conversation changes cancel both.
+- Message preview content follows `agent_design.md`: the shell is borderless. Tool call, tool result/error and thinking blocks use `HeimdallPreviewBlock.tsx`, a tonal card with a circular Lucide badge and no outline. With a custom theme they borrow `settingsCustomThemesInnerCardBg`, `settingsCustomThemesButton*`, `toolJobsCode*`, `toolJobsPrimary/MutedText`, `toolJobsStatusCompleted*` and `toolJobsError*`. Markdown prose has its `--tw-prose-*` (and invert) variables pinned to `heimdallNodeHoverModalText`/`TitleText`, so dark-mode text follows the theme.
 - Preview positioning wrappers are pointer-transparent; only the visible preview cards capture input, cancel the pending close timer, and remain marked `data-heimdall-wheel-exempt='true'`.
 
 ### Search

@@ -12,6 +12,8 @@ interface ActionPopoverProps {
   children: React.ReactNode
   isActive?: boolean
   footer?: React.ReactNode
+  /** Render the same controls inside the compact composer's existing overlay. */
+  inline?: boolean
 }
 
 type PopoverPosition = ReturnType<typeof getActionPopoverPosition>
@@ -19,7 +21,7 @@ const popoverEase = [0.22, 1, 0.36, 1] as const
 const actionRowClass = 'action-cloud-actions'
 const footerClass = 'action-cloud-footer'
 
-export const ActionPopover: React.FC<ActionPopoverProps> = ({ children, isActive = false, footer }) => {
+export const ActionPopover: React.FC<ActionPopoverProps> = ({ children, isActive = false, footer, inline = false }) => {
   const [open, setOpen] = useState(false)
   const shouldReduceMotion = useReducedMotion()
   const prefersReducedMotion = shouldReduceMotion ?? false
@@ -126,6 +128,11 @@ export const ActionPopover: React.FC<ActionPopoverProps> = ({ children, isActive
   const handleToggle = useCallback(() => {
     setOpen(o => !o)
   }, [])
+
+  if (inline) return <div className='action-cloud-inline' style={cloudThemeStyle}>
+    <div className={actionRowClass}>{children}</div>
+    {footer && <div className={footerClass}>{footer}</div>}
+  </div>
 
   return (
     <div className='relative'>

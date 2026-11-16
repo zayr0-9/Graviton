@@ -73,3 +73,23 @@ describe('ConversationToolbar', () => {
     expect(html).toContain('background-color:#456789;color:#56789a')
   })
 })
+
+describe('Quiet composer header', () => {
+  it('keeps secondary actions in overflow and registers agents outside the title content', () => {
+    const html = renderToStaticMarkup(<ConversationToolbar {...props} compact headerAgents modelName='Claude Opus' onOpenModel={vi.fn()} />)
+    expect(html).toContain('aria-label="Model: Claude Opus, open controls"')
+    expect(html).toContain('aria-label="Conversation actions"')
+    expect(html).toContain('Rename conversation')
+    expect(html).toContain('Refresh messages')
+    expect(html).toContain('quiet-agents-slot')
+    expect(html).toContain('quiet-notice-slot')
+    expect(html).not.toContain('aria-label="Edit conversation title"')
+  })
+
+  it('retains launcher and notice targets while renaming', () => {
+    vi.mocked(useState).mockReturnValueOnce([true, vi.fn()])
+    const html = renderToStaticMarkup(<ConversationToolbar {...props} compact headerAgents />)
+    expect(html).toContain('aria-label="Rename conversation"')
+    expect(html).toContain('</form></div><span class="quiet-agents-slot"')
+  })
+})

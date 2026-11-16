@@ -906,7 +906,17 @@ export class ClaudeSessionService {
       const pending = this.deps.broker.requestDecision<PermissionDecision>({ streamId: request.streamId!, toolCallId: id,
         kind: 'permission', signal: context.signal, prompt: event })
       if (this.deps.broker.hasPending(request.streamId!, id)) emit(event)
-      if (await pending !== 'deny') return { behavior: 'allow', updatedInput: args }
+      const decision = await pending
+      if (decision === 'allow_auto' && !this.deps.broker.isAutoApproveAll(request.streamId!)) {
+        // Approve this call and hand the rest of the run to Claude's auto classifier. Rows record
+        // it (permissionMeta), so the branch's next send and a queued successor stay in auto mode.
+        // In plan mode the switch waits for the approved plan, which moves the session to auto.
+        planState.auto = true
+        if (!planState.active) {
+          return { behavior: 'allow', updatedInput: args, updatedPermissions: [{ type: 'setMode', mode: 'auto', destination: 'session' }] }
+        }
+      }
+      if (decision !== 'deny') return { behavior: 'allow', updatedInput: args }
       // A switch to Chat mode denies edit prompts that were still waiting.
       return { behavior: 'deny', message: (await editDenial(name, args)) ?? 'Denied by user' }
     }

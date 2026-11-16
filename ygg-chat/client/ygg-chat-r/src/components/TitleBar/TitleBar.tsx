@@ -12,7 +12,7 @@ import { getTitleBarProjectId } from './titleBarProject'
 import { getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from '../ThemeManager/themeConfig'
 import { chatSliceActions, selectCcCwd, selectCurrentConversationId } from '../../features/chats'
 import { selectSelectedProject } from '../../features/projects'
-import { buildRemoteMobileUrl, loadRemoteServerSettings } from '../../helpers/remoteServerSettingsStorage'
+import { buildSharedBrowserUrl, loadRemoteServerSettings } from '../../helpers/remoteServerSettingsStorage'
 import { useAppDispatch, useAppSelector } from '../../hooks/redux'
 import { useProjects } from '../../hooks/useQueries'
 import { getLocalServerLanOrigin, getLocalServerOrigin } from '../../utils/api'
@@ -163,14 +163,13 @@ export const TitleBar = () => {
 
   const handleOpenRemoteServerUi = async () => {
     try {
+      // Shared React UI served at the host root. Prefer the LAN origin so the
+      // opened URL also works when copied to a phone on the same network.
       const configuredRemoteBaseUrl = loadRemoteServerSettings().remoteBaseUrl
-      const configuredMobileUrl = buildRemoteMobileUrl(configuredRemoteBaseUrl)
-
-      const lanOrigin = await getLocalServerLanOrigin()
-      const lanMobileUrl = buildRemoteMobileUrl(lanOrigin)
-      const fallbackOrigin = await getLocalServerOrigin()
-      const fallbackMobileUrl = buildRemoteMobileUrl(fallbackOrigin)
-      const url = lanMobileUrl || configuredMobileUrl || fallbackMobileUrl
+      const url =
+        buildSharedBrowserUrl(await getLocalServerLanOrigin()) ||
+        buildSharedBrowserUrl(configuredRemoteBaseUrl) ||
+        buildSharedBrowserUrl(await getLocalServerOrigin())
 
       if (!url) {
         throw new Error('Unable to resolve remote server URL')
@@ -241,7 +240,7 @@ export const TitleBar = () => {
           type='button'
           className='titlebar-pill titlebar-remote-pill acrylic-light'
           onClick={handleOpenRemoteServerUi}
-          title='Open remote server UI (/mobile) in default browser'
+          title='Open shared remote UI in default browser'
         >
           <span className='titlebar-pill-label'>remote</span>
         </button>

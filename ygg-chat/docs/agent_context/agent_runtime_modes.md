@@ -73,7 +73,7 @@ Use this when changing:
   `lmstudio`, `zai`, `deepseek`, `bedrock`; Claude Code uses its own session backend). The renderer is a thin
   SSE client. See `agent_headless_server.md`.
 - `/api/gw/*` is a local data facade over `/api/app/*`. There is no `/api/cloud/*` proxy.
-- Mobile LAN UI is served from the headless server under `server/headlessServer/ui/mobile`.
+- Remote/LAN clients use the shared React renderer served at the host root (`dist-browser`). The legacy `/mobile` UI was removed; `/mobile` redirects to `/`.
 
 ## Resumable runs
 

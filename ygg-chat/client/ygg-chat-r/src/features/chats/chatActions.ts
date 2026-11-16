@@ -2956,11 +2956,13 @@ export const changeOperationMode = createAsyncThunk<
 
 export const respondToToolPermission = createAsyncThunk<
   void,
-  { allowed: boolean; streamId?: string },
+  // auto: Claude runs only — approve this call and switch the run to Claude's auto classifier.
+  // The server records it on the run's rows, so the branch's next send stays in auto mode.
+  { allowed: boolean; auto?: boolean; streamId?: string },
   { state: RootState; extra: ThunkExtraArgument }
 >(
   'chat/respondToToolPermission',
-  async ({ allowed, streamId }, { dispatch, getState }) => {
+  async ({ allowed, auto, streamId }, { dispatch, getState }) => {
     const chat = getState().chat
     const req = streamId ? (chat.toolPermissionRequestsByStream[streamId] ?? null) : chat.toolCallPermissionRequest
     if (req?.streamId && req?.toolCallId) {
@@ -2968,7 +2970,7 @@ export const respondToToolPermission = createAsyncThunk<
       const outcome = await postDecisionResume({
         streamId: req.streamId,
         toolCallId: req.toolCallId,
-        decision: allowed ? 'allow_once' : 'deny',
+        decision: !allowed ? 'deny' : auto ? 'allow_auto' : 'allow_once',
       })
       // Records the failure first; keeps the dialog open when another click could work.
       if (!settleDecisionResume(dispatch, getState(), req.streamId, outcome).closeDialog) return

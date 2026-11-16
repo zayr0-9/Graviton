@@ -27,6 +27,7 @@ const migrations = runInNewContext(`${migrationCode}\n({ SCHEMA_MIGRATIONS, runS
   OPERATION_RECEIPT_SCHEMA: 'SELECT 1',
   DECISION_RECEIPT_SCHEMA: 'SELECT 1',
   CLAUDE_SESSION_SCHEMA: 'SELECT 1', // Native session schema has dedicated real SQLite tests.
+  HEIMDALL_COLLAPSE_SCHEMA: 'SELECT 1', // Covered by heimdallCollapseRepo.test.ts.
   installDecisionReceiptSchema: vi.fn(),
 }) as {
   SCHEMA_MIGRATIONS: { version: number; name: string; up: (db: any) => void }[]

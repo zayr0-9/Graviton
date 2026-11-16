@@ -8,6 +8,8 @@ interface ToolPermissionDialogProps {
   onGrant: () => void
   onDeny: () => void
   onAllowAll?: () => void
+  /** Claude runs only: approve this call and let Claude's auto classifier handle the rest of the run. */
+  onAllowAuto?: () => void
   variant?: 'permission' | 'operation-mode-upgrade'
 }
 
@@ -16,6 +18,7 @@ export const ToolPermissionDialog: React.FC<ToolPermissionDialogProps> = ({
   onGrant,
   onDeny,
   onAllowAll,
+  onAllowAuto,
   variant = 'permission',
 }) => {
   const claudePlan = variant === 'operation-mode-upgrade' ? claudePlanFromToolCall(toolCall.name, toolCall.arguments) : null
@@ -202,6 +205,21 @@ export const ToolPermissionDialog: React.FC<ToolPermissionDialogProps> = ({
         >
           {isClaudePlanExit ? 'Approve Plan' : variant === 'operation-mode-upgrade' ? 'Switch to Agent Mode' : 'Allow Once'}
         </button>
+        {variant === 'permission' && onAllowAuto && (
+          <button
+            type='button'
+            onClick={onAllowAuto}
+            title="Allow this call, then let Claude's auto classifier approve routine actions for the rest of the run (it still asks when unsure)"
+            className='rounded-full border px-3 py-1.5 text-[11px] font-medium leading-none backdrop-blur-xl transition-all duration-200 hover:-translate-y-0.5 hover:scale-[1.02] hover:bg-current/5 active:translate-y-0 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/70 focus-visible:ring-offset-2 focus-visible:ring-offset-neutral-50 dark:focus-visible:ring-orange-400/70 dark:focus-visible:ring-offset-yBlack-900'
+            style={{
+              backgroundColor: 'transparent',
+              borderColor: allowButtonBorderColor,
+              color: allowButtonTextColor,
+            }}
+          >
+            Auto
+          </button>
+        )}
         {variant === 'permission' && onAllowAll && (
           <button
             type='button'

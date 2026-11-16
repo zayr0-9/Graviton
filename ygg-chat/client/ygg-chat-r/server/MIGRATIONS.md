@@ -129,3 +129,11 @@ Accepted commands from earlier epochs become interrupted/uncertain, never automa
 | Version | Name | Change | Why | Added |
 | --- | --- | --- | --- | --- |
 | 12 | `claude_branch_sessions` | Adds `claude_branch_sessions` and `claude_message_checkpoints`, cascading with local conversations/messages/lineages. | Persist locked model/workspace, native session ownership and exact-message historical fork checkpoints. No transcript rewrites. | 2026-10-25 |
+
+## Heimdall collapse groups (v13)
+
+| Version | Name | Change | Why | Added |
+| --- | --- | --- | --- | --- |
+| 13 | `heimdall_collapse_groups` | Adds `heimdall_collapse_groups` (`id`, `conversation_id` → conversations ON DELETE CASCADE, JSON `member_ids`, `position`, `created_at`) and a `(conversation_id, position)` index. `CREATE ... IF NOT EXISTS` only. | Heimdall collapse nodes (visual tree management) persist with the conversation, across reloads, devices and the browser shared UI. Messages are never changed. | 2026-11-14 |
+
+Member ids of messages deleted later are filtered out on read and write; rows are not rewritten. The table is not observed by the `client_changes` outbox, so other open clients see changes on their next refetch.

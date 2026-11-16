@@ -475,6 +475,7 @@ export const Select: React.FC<SelectProps> = ({
 
       <ModelInfoModal
         model={selectedModelForInfo}
+        zIndex={Math.max(200, dropdownZIndex + 1)}
         provider={modelProvider}
         isOpen={showModelInfo}
         onClose={() => setShowModelInfo(false)}
