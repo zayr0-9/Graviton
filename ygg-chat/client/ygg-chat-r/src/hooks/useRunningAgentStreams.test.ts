@@ -6,6 +6,7 @@ import {
   buildAgentForkGroups,
   excludeViewedAgentFork,
   getAgentForkKey,
+  getLineageForkKey,
   limitFinishedAgentHistory,
   retainAgentParentPreview,
   refreshAgentStreamHistory,
@@ -173,13 +174,40 @@ describe('excludeViewedAgentFork', () => {
     expect(excludeViewedAgentFork([viewed, other], [], 'viewed').activeStreams).toEqual([other])
   })
 
-  it('changes nothing when no run is viewed or the viewed run is no longer active', () => {
+  it('changes nothing when no run or branch is viewed', () => {
     const active = [run('a')]
     const history = [completed('b')]
     expect(excludeViewedAgentFork(active, history, null)).toEqual({ activeStreams: active, streamHistory: history })
     const unchanged = excludeViewedAgentFork(active, history, 'b')
     expect(unchanged.activeStreams).toBe(active)
     expect(unchanged.streamHistory).toBe(history)
+  })
+
+  it('hides the completed runs of a viewed branch that is no longer running', () => {
+    const otherActive = run('other', { lineageId: 'fork-b' })
+    const pastViewed = completed('past-viewed')
+    const pastOther = completed('past-other', { lineageId: 'fork-b' })
+    const result = excludeViewedAgentFork(
+      [otherActive], [pastViewed, pastOther], null, getLineageForkKey('conversation-a', 'fork-a')
+    )
+    expect(result.activeStreams).toEqual([otherActive])
+    expect(result.streamHistory).toEqual([pastOther])
+  })
+
+  it('keeps unconfirmed runs and other conversations when hiding a viewed branch', () => {
+    const unconfirmed = completed('unconfirmed', { lineageIdConfirmed: false })
+    const otherConversation = completed('other-conversation', { conversationId: 'conversation-b' })
+    const history = [unconfirmed, otherConversation]
+    const result = excludeViewedAgentFork([], history, null, getLineageForkKey('conversation-a', 'fork-a'))
+    expect(result.streamHistory).toBe(history)
+  })
+
+  it('hides both the viewed branch and an unconfirmed live run on it', () => {
+    const live = run('live', { lineageIdConfirmed: false })
+    const past = completed('past')
+    const result = excludeViewedAgentFork([live], [past], 'live', getLineageForkKey('conversation-a', 'fork-a'))
+    expect(result.activeStreams).toEqual([])
+    expect(result.streamHistory).toEqual([])
   })
 })
 

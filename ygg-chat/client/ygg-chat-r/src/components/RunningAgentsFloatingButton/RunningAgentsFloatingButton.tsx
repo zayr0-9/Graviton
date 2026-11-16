@@ -14,6 +14,7 @@ import {
   buildAgentForkGroups,
   excludeViewedAgentFork,
   getAgentActivityBadgeClasses,
+  getLineageForkKey,
   type AgentForkGroup,
   summarizeAgentStreamId,
   useRunningAgentStreams,
@@ -393,9 +394,17 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
       ? selectCurrentViewStream(state)?.id ?? null
       : null
   )
+  // The branch open in Chat, live or finished, so its completed runs are hidden too.
+  const viewedForkKey = useAppSelector(state => {
+    if (!onChatRoute || state.chat.selection.status === 'pending' || state.chat.selection.status === 'error') return null
+    const { currentConversationId, currentLineageId } = state.chat.conversation
+    return currentConversationId != null && currentLineageId != null
+      ? getLineageForkKey(String(currentConversationId), String(currentLineageId))
+      : null
+  })
   const { activeStreams, streamHistory } = useMemo(
-    () => excludeViewedAgentFork(allActiveStreams, allStreamHistory, viewedStreamId),
-    [allActiveStreams, allStreamHistory, viewedStreamId]
+    () => excludeViewedAgentFork(allActiveStreams, allStreamHistory, viewedStreamId, viewedForkKey),
+    [allActiveStreams, allStreamHistory, viewedStreamId, viewedForkKey]
   )
   const { activeForks, historyForks } = useMemo(
     () => buildAgentForkGroups(activeStreams, streamHistory),

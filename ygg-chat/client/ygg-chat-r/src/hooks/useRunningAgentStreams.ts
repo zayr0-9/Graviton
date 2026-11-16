@@ -56,27 +56,38 @@ export type AgentForkGroup = {
   hasError: boolean
 }
 
+/** Fork key for a confirmed conversation lineage; matches getAgentForkKey for its runs. */
+export const getLineageForkKey = (conversationId: string, lineageId: string): string =>
+  JSON.stringify(['fork', conversationId, lineageId])
+
 export const getAgentForkKey = (stream: AgentStreamListItem): string =>
   stream.conversationId && stream.lineageId && stream.lineageIdConfirmed
-    ? JSON.stringify(['fork', stream.conversationId, stream.lineageId])
+    ? getLineageForkKey(stream.conversationId, stream.lineageId)
     : JSON.stringify(['run', stream.streamId])
 
 /**
- * Drop the whole fork of the run Chat is currently showing, so the pill does not show
- * the same live stream twice. Its completed runs go too, so the fork never reads as
- * finished while it is still running on screen. Presentation only.
+ * Drop the whole fork Chat is currently showing, live or finished, so the pill never
+ * repeats what is already on screen. `viewedForkKey` is the branch open in Chat (from its
+ * conversation + lineage) and catches finished forks; `viewedStreamId` is the live run on
+ * that branch and still catches it while its lineage is unconfirmed. Presentation only.
  */
 export const excludeViewedAgentFork = (
   activeStreams: AgentStreamListItem[],
   streamHistory: AgentStreamListItem[],
-  viewedStreamId: string | null
+  viewedStreamId: string | null,
+  viewedForkKey: string | null = null
 ): { activeStreams: AgentStreamListItem[]; streamHistory: AgentStreamListItem[] } => {
+  const hiddenKeys = new Set<string>()
+  if (viewedForkKey) hiddenKeys.add(viewedForkKey)
   const viewed = viewedStreamId == null ? undefined : activeStreams.find(stream => stream.streamId === viewedStreamId)
-  if (!viewed) return { activeStreams, streamHistory }
-  const viewedKey = getAgentForkKey(viewed)
+  if (viewed) hiddenKeys.add(getAgentForkKey(viewed))
+  if (hiddenKeys.size === 0) return { activeStreams, streamHistory }
+  const keep = (stream: AgentStreamListItem) => !hiddenKeys.has(getAgentForkKey(stream))
+  const nextActive = activeStreams.filter(keep)
+  const nextHistory = streamHistory.filter(keep)
   return {
-    activeStreams: activeStreams.filter(stream => getAgentForkKey(stream) !== viewedKey),
-    streamHistory: streamHistory.filter(stream => getAgentForkKey(stream) !== viewedKey),
+    activeStreams: nextActive.length === activeStreams.length ? activeStreams : nextActive,
+    streamHistory: nextHistory.length === streamHistory.length ? streamHistory : nextHistory,
   }
 }
 

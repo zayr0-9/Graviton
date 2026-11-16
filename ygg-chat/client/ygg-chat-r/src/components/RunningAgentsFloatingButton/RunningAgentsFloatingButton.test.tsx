@@ -33,6 +33,7 @@ vi.mock('../../hooks/useRunningAgentStreams', () => ({
   useRunningAgentStreams: () => ({ activeStreams: [], streamHistory: [], streamingRoot: { byId: {} } }),
   buildAgentForkGroups: () => ({ activeForks: [], historyForks: [] }),
   excludeViewedAgentFork: (activeStreams: unknown[], streamHistory: unknown[]) => ({ activeStreams, streamHistory }),
+  getLineageForkKey: (conversationId: string, lineageId: string) => JSON.stringify(['fork', conversationId, lineageId]),
 }))
 vi.mock('../../hooks/useQueries', () => ({ useConversationBranchDebugData: () => ({}) }))
 vi.mock('./useAgentsPillResize', () => ({
