@@ -47,29 +47,6 @@ What it does:
 - Keeps UI state in memory only (no browser localStorage)
 - Uses default model: `gpt-5.5`
 
-## Mobile LAN interface (React)
-- Entry URL: `http://<local-server-host>:<port>/mobile`
-- Source lives under: `electron/headlessServer/ui/mobile/src`
-- Built bundle output: `electron/headlessServer/ui/mobile/assets/mobile-app.js`
-- Build command: `npm run build:electron:main` (now bundles mobile UI along with main/preload)
+## Remote / LAN interface
+The legacy `/mobile` UI was removed (2026-11-14). Remote clients use the shared React renderer served at the host root (`http://<local-server-host>:<port>/`, built by `npm run build:browser-client`). `/mobile` now redirects to `/` (`routes/legacyMobileRedirect.ts`).
 
-The mobile client is intentionally simpler than desktop chat, but preserves structured rendering for reasoning/tool blocks inspired by:
-- `src/containers/Chat.tsx`
-- `src/components/ChatMessage/ChatMessage.tsx`
-
-### Mobile UI design system refresh (shadcn-style)
-- Added local shadcn-style primitive components under `electron/headlessServer/ui/mobile/src/components/ui/*`
-  - `Button`, `Input`, `Textarea`, `Select`, `Badge`, `Card`
-- Added `components.json`, `tailwind.config.ts`, and `postcss.config.js` scaffolding in `electron/headlessServer/ui/mobile/`
-- Migrated key mobile surfaces to primitives while preserving behavior:
-  - Header auth/model controls
-  - Profile picker
-  - Composer and branch controls
-  - Tool panel toggles
-  - Project/conversation modal actions
-  - Message action buttons
-  - Tree drawer controls
-- Theme token overhaul in `assets/mobile.css`:
-  - Full light/dark semantic token palette
-  - Removed hardcoded dark-only element backgrounds/borders from interactive controls and message list surfaces
-  - Tree canvas and graph colors now tokenized for light/dark parity

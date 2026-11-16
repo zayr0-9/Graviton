@@ -13,10 +13,11 @@ interface ModelInfoModalProps {
   model: BaseModel | null
   provider?: string | null
   isOpen: boolean
+  zIndex?: number
   onClose: () => void
 }
 
-export const ModelInfoModal: React.FC<ModelInfoModalProps> = ({ model, provider, isOpen, onClose }) => {
+export const ModelInfoModal: React.FC<ModelInfoModalProps> = ({ model, provider, isOpen, onClose, zIndex }) => {
   const [shortcutSlots, setShortcutSlots] = useState<ModelShortcutSlots>(loadModelShortcutSlots)
 
   useEffect(() => {
@@ -123,10 +124,12 @@ export const ModelInfoModal: React.FC<ModelInfoModalProps> = ({ model, provider,
   return createPortal(
     <div
       className='fixed inset-0 z-[200] flex items-center justify-center bg-black/50 backdrop-blur-sm'
+      style={{ zIndex }}
+      data-ygg-overlay='model-info'
       onClick={onClose}
     >
       <div
-        className='bg-white dark:bg-neutral-900 rounded-2xl shadow-2xl max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto thin-scrollbar'
+        className='bg-white dark:bg-neutral-900 text-neutral-900 dark:text-neutral-100 rounded-2xl shadow-2xl max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto thin-scrollbar'
         onClick={e => e.stopPropagation()}
       >
         {/* Header */}
@@ -134,7 +137,7 @@ export const ModelInfoModal: React.FC<ModelInfoModalProps> = ({ model, provider,
           <h2 className='text-xl font-semibold text-neutral-900 dark:text-neutral-100'>Model Information</h2>
           <button
             onClick={onClose}
-            className='text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300 transition-colors'
+            className='text-neutral-500 hover:text-neutral-700 dark:text-neutral-400 dark:hover:text-neutral-300 transition-colors'
             aria-label='Close modal'
           >
             <i className='bx bx-x text-2xl' />

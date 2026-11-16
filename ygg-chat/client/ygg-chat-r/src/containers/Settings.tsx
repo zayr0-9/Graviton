@@ -115,7 +115,6 @@ import {
   saveProviderSettings,
 } from '../helpers/providerSettingsStorage'
 import {
-  buildRemoteMobileUrl,
   loadRemoteServerSettings,
   normalizeRemoteBaseUrl,
   REMOTE_SERVER_SETTINGS_CHANGE_EVENT,
@@ -479,8 +478,6 @@ const Settings: React.FC = () => {
     applyContextDirectories({ readDirs, writeDir: contextDirectories.writeDir }, 'custom')
   }
   const normalizedRemoteBaseUrlInput = normalizeRemoteBaseUrl(remoteBaseUrlInput)
-  const effectiveRemoteMobileUrl =
-    buildRemoteMobileUrl(normalizedRemoteBaseUrlInput) || buildRemoteMobileUrl(detectedLocalServerOrigin)
   const effectiveSharedBrowserUrl = buildSharedBrowserUrl(normalizedRemoteBaseUrlInput || detectedLocalServerOrigin)
   const remoteQrCodeImageUrl = effectiveSharedBrowserUrl
     ? `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(effectiveSharedBrowserUrl)}`
@@ -1444,27 +1441,6 @@ const Settings: React.FC = () => {
     const saved = saveRemoteServerSettings({ remoteBaseUrl: normalized })
     setRemoteBaseUrlInput(saved.remoteBaseUrl ?? '')
     showStatus({ type: 'success', text: `Remote server URL saved: ${saved.remoteBaseUrl}` })
-  }
-
-  const handleOpenRemoteMobileUi = async () => {
-    if (!effectiveRemoteMobileUrl) {
-      showStatus({ type: 'error', text: 'No remote mobile URL available.' })
-      return
-    }
-
-    try {
-      if (window.electronAPI?.shell?.openExternal) {
-        const result = await window.electronAPI.shell.openExternal(effectiveRemoteMobileUrl)
-        if (!result?.success) {
-          window.open(effectiveRemoteMobileUrl, '_blank', 'noopener,noreferrer')
-        }
-      } else {
-        window.open(effectiveRemoteMobileUrl, '_blank', 'noopener,noreferrer')
-      }
-    } catch (error) {
-      console.error('Failed to open remote mobile UI:', error)
-      showStatus({ type: 'error', text: 'Failed to open remote mobile URL in browser.' })
-    }
   }
 
   const handleCopySharedBrowserUi = async () => {
@@ -3982,7 +3958,7 @@ const Settings: React.FC = () => {
           <SettingsSection
             title='Remote UI Access'
             description='Keep Graviton running. Open the shared UI URL on another device on your trusted network. This grants host access without device authentication.'
-            features={['Remote server URL', 'Mobile URL actions', 'QR code', 'Detected local origin']}
+            features={['Remote server URL', 'Shared UI actions', 'QR code', 'Detected local origin']}
           >
             <div className='grid gap-5 lg:grid-cols-[minmax(0,1fr)_240px]'>
               <div className='flex flex-col gap-3'>
@@ -4019,14 +3995,6 @@ const Settings: React.FC = () => {
                   >
                     Clear
                   </Button>
-                  <Button
-                    variant='outline2'
-                    size='small'
-                    onClick={handleOpenRemoteMobileUi}
-                    disabled={!effectiveRemoteMobileUrl}
-                  >
-                    Open legacy mobile UI
-                  </Button>
                   <Button variant='outline2' size='small' disabled={!effectiveSharedBrowserUrl} onClick={async () => {
                     if (!effectiveSharedBrowserUrl) return
                     if (!window.confirm('Experimental shared UI: reachable clients can access host files and tools. Use a trusted network only. Continue?')) return
@@ -4048,7 +4016,6 @@ const Settings: React.FC = () => {
                 <div className='rounded-[1.75rem] bg-white/45 px-3 py-2 text-xs text-stone-600 dark:bg-stone-800/40 dark:text-stone-300 break-all'>
                   <p className='font-medium mb-1 text-stone-700 dark:text-stone-200'>Shared UI URL</p>
                   <p>{effectiveSharedBrowserUrl || 'Unavailable'}</p>
-                  <p className='mt-1'>Legacy mobile: {effectiveRemoteMobileUrl || 'Unavailable'}</p>
                 </div>
               </div>
 

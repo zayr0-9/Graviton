@@ -137,7 +137,17 @@ if (!process.versions.electron) {
       await wait(window, `!!document.querySelector('textarea[placeholder="Type your message..."]')`, 'Composer missing')
       if (await window.webContents.executeJavaScript('!!window.electronAPI')) throw new Error('Unexpected preload')
     }
-    // Real layout bounds: selectors must remain visible and usable on small web viewports.
+    // Actual textarea identity and draft/caret survive both directions of the breakpoint.
+    await fill(windows[1], 'retained compact draft')
+    await windows[1].webContents.executeJavaScript(`window.quietTextarea=document.querySelector('textarea[placeholder="Type your message..."]'); window.quietTextarea.focus(); window.quietTextarea.setSelectionRange(4,9)`)
+    for (const width of [1100, 390]) {
+      windows[1].setContentSize(width, 900)
+      await new Promise(resolve => setTimeout(resolve, 400))
+      const stable = await windows[1].webContents.executeJavaScript(`window.quietTextarea === document.querySelector('textarea[placeholder="Type your message..."]') && window.quietTextarea.value==='retained compact draft' && window.quietTextarea.selectionStart===4 && window.quietTextarea.selectionEnd===9`)
+      if (!stable) throw new Error('Responsive layout remounted or reset the textarea')
+    }
+    await windows[1].webContents.executeJavaScript(`window.quietTextarea.select(); document.execCommand('delete')`)
+    // Real layout bounds: compact controls remain reachable through the menu.
     for (const width of [320, 390, 767, 820]) {
       windows[1].setContentSize(width, 900)
       await new Promise(resolve => setTimeout(resolve, 400))
@@ -148,11 +158,79 @@ if (!process.versions.electron) {
         return { width:innerWidth, rail:rect(rail), railOverflow:rail.scrollHeight > rail.clientHeight, chat:rect(document.querySelector('.chat-layout')),
           buttons:[...selectors.querySelectorAll(':scope > div > button')].map(rect), display:getComputedStyle(selectors).display };
       })()`)
-      if (layout.display === 'none' || layout.buttons.length < 2 || layout.buttons.some(r => r.width < 42 || r.left < 0 || r.right > layout.width + 1 || r.bottom > 901)) throw new Error(`Phone selectors clipped: ${JSON.stringify(layout)}`)
+      const compact = await windows[1].webContents.executeJavaScript(`!!document.querySelector('[data-composer-layout="compact"]')`)
+      const paneWidth = await windows[1].webContents.executeJavaScript(`document.querySelector('[data-chat-pane-kind="primary"]').clientWidth`)
+      if (compact !== (paneWidth < 768)) throw new Error('Composer did not follow actual pane width')
+      if (compact) {
+        await click(windows[1], '[data-quiet-add]')
+        await wait(windows[1], `!!document.querySelector('[aria-label="Add to message"][role="dialog"]')`, 'Compact menu missing')
+        await wait(windows[1], `(()=>{const menu=document.querySelector('.quiet-menu').getBoundingClientRect(),input=document.querySelector('.quiet-input-grid').getBoundingClientRect();return menu.bottom <= input.top-6 && menu.bottom >= input.top-12 && menu.top>=0})()`, 'Menu is not anchored above input')
+        await windows[1].webContents.executeJavaScript(`[...document.querySelectorAll('.quiet-menu-items button')].find(b=>b.textContent==='Model and controls').click()`)
+        await wait(windows[1], `document.querySelectorAll('.quiet-controls-content [role="combobox"]').length > 0 || document.querySelectorAll('.quiet-controls-content button').length > 3`, 'Compact controls missing')
+        await wait(windows[1], `document.activeElement?.getAttribute('aria-label')==='Back to previous menu'`, 'Submenu focus missing')
+        await windows[1].webContents.executeJavaScript(`[...document.querySelectorAll('.quiet-controls-content button')].find(b=>b.textContent.includes('glm-5.1'))?.click()`)
+        await wait(windows[1], `!!document.querySelector('[data-ygg-overlay="select-dropdown"] [role="option"]')`, 'Model options did not open')
+        const optionReady = await windows[1].webContents.executeJavaScript(`(()=>{const option=document.querySelector('[data-ygg-overlay="select-dropdown"] [role="option"]');const r=option.getBoundingClientRect();return option.contains(document.elementFromPoint(r.left+r.width/2,r.top+r.height/2))})()`)
+        if (!optionReady) throw new Error('Model dropdown is covered by compact overlay')
+        await click(windows[1], '[data-ygg-overlay="select-dropdown"] [role="option"]')
+        await wait(windows[1], `!document.querySelector('[data-ygg-overlay="select-dropdown"]')`, 'Model selection did not dismiss dropdown')
+        await click(windows[1], '[aria-label="Back to previous menu"]')
+        await wait(windows[1], `!!document.querySelector('.quiet-menu-items') && document.activeElement?.textContent==='Model and controls'`, 'Menu Back did not restore parent row focus')
+        await click(windows[1], '[data-menu-row="activity"]')
+        await wait(windows[1], `(()=>{const menu=document.querySelector('.quiet-menu'),pane=document.querySelector('[data-chat-pane-kind="primary"]');return menu?.getAttribute('aria-label')==='Activity' && Math.abs(menu.getBoundingClientRect().width-(pane.getBoundingClientRect().width-16))<2})()`, 'Activity did not expand to pane width')
+        await click(windows[1], '[aria-label="Back to previous menu"]')
+        await wait(windows[1], `document.activeElement?.dataset.menuRow==='activity'`, 'Activity Back did not restore focus')
+        await click(windows[1], '[aria-label="Close composer menu"]')
+        await wait(windows[1], `!document.querySelector('.quiet-menu')`, 'Menu failed to close')
+        const geometry = await windows[1].webContents.executeJavaScript(`(()=>{const grid=document.querySelector('.quiet-input-grid'), t=grid.querySelector('textarea'), send=grid.querySelector('[title="Send message"]'); const r=grid.getBoundingClientRect();return {height:r.height,width:r.width,right:r.right,send:!!send,textareaHeight:t.offsetHeight,header:!!document.querySelector('.quiet-agents-slot button')}})()`)
+        const centered = await windows[1].webContents.executeJavaScript(`(()=>{const grid=document.querySelector('.quiet-input-grid'), input=grid.querySelector('textarea');if(input.value)return true;const r=input.getBoundingClientRect(),cy=r.top+r.height/2;return [grid.querySelector('[data-quiet-add]'),grid.querySelector('.quiet-inline-send')].every(el=>{const b=el.getBoundingClientRect();return Math.abs(b.top+b.height/2-cy)<1})})()`)
+        if (!centered) throw new Error('Empty composer buttons are not vertically centered with input')
+        if (!geometry.send || geometry.right > width || geometry.height > 80 || (width < 768 && !geometry.header)) throw new Error('Quiet composer invalid: '+JSON.stringify(geometry))
+      } else if (layout.display === 'none' || layout.buttons.length < 2 || layout.buttons.some(r => r.width < 42 || r.left < 0 || r.right > layout.width + 1 || r.bottom > 901)) throw new Error(`Phone selectors clipped: ${JSON.stringify(layout)}`)
       if (width < 768 && (layout.railOverflow || layout.rail.height > 70 || layout.rail.width < width - 1 || layout.chat.top < layout.rail.bottom - 1 || layout.chat.width > width + 1)) throw new Error(`Phone top bar/layout invalid: ${JSON.stringify(layout)}`)
     }
     windows[1].setContentSize(390, 844)
     await new Promise(resolve => setTimeout(resolve, 300))
+    for (const dark of [false, true]) {
+      await windows[1].webContents.executeJavaScript(`document.documentElement.classList.toggle('dark', ${dark});localStorage.setItem('chat:customThemeEnabled','false');window.dispatchEvent(new Event('chatCustomThemeChange'))`)
+      await new Promise(resolve => setTimeout(resolve, 100))
+      await click(windows[1], '[aria-label="Conversation actions"]')
+      const headerColors = await windows[1].webContents.executeJavaScript(`Array.from(document.querySelectorAll('[data-quiet-header] h1, .quiet-model-trigger, .quiet-model-trigger svg, .quiet-header-actions button')).map(el=>{const c=document.createElement('canvas');c.width=c.height=1;const ctx=c.getContext('2d');ctx.fillStyle=getComputedStyle(el).color;ctx.fillRect(0,0,1,1);const [r,g,b]=ctx.getImageData(0,0,1,1).data;return 'rgb('+r+', '+g+', '+b+')'})`)
+      const expectedHeaderColor = dark ? 'rgb(245, 245, 244)' : 'rgb(41, 37, 36)'
+      if (headerColors.length !== 6 || headerColors.some(color => color !== expectedHeaderColor)) throw new Error('Default header text mismatch: '+JSON.stringify({dark,headerColors}))
+      await click(windows[1], '[aria-label="Conversation actions"]')
+      await click(windows[1], '[data-quiet-add]')
+      await wait(windows[1], `!!document.querySelector('.quiet-menu')`, 'Default theme menu missing')
+      const menuColors = await windows[1].webContents.executeJavaScript(`Array.from(document.querySelectorAll('.quiet-menu-heading h2, .quiet-menu-heading button, .quiet-menu-items > button')).map(el=>getComputedStyle(el).color)`)
+      if (!menuColors.length || menuColors.some(color => color !== (dark ? 'rgb(242, 243, 245)' : 'rgb(37, 38, 42)'))) throw new Error('Default menu text mismatch: '+JSON.stringify({dark,menuColors}))
+      await click(windows[1], '[aria-label="Close composer menu"]')
+      await wait(windows[1], `!document.querySelector('.quiet-menu')`, 'Default theme menu failed to close')
+      await windows[1].webContents.executeJavaScript(`(()=>{
+        document.documentElement.classList.toggle('dark', ${dark});
+        localStorage.setItem('chat:customThemeEnabled','true');
+        localStorage.setItem('chat:customTheme',JSON.stringify({colors:{settingsCustomThemesCardBg:{light:'#e0e8f0',dark:'#243448'},toolJobsPrimaryText:{light:'#123456',dark:'#e1e2e3'},toolJobsMutedText:{light:'#456789',dark:'#a1b2c3'},settingsCustomThemesButtonText:{light:'#234567',dark:'#c1d2e3'}}}));
+        window.dispatchEvent(new Event('chatCustomThemeChange'));
+      })()`)
+      await click(windows[1], '[data-quiet-add]')
+      await wait(windows[1], `!!document.querySelector('.quiet-menu')`, 'Theme menu missing')
+      await new Promise(resolve=>setTimeout(resolve,300))
+      const colors = await windows[1].webContents.executeJavaScript(`(()=>{
+        const menu=document.querySelector('.quiet-menu'),input=document.querySelector('.quiet-input-slot textarea');
+        const style=getComputedStyle(menu),canvas=document.createElement('canvas');canvas.width=canvas.height=1;const ctx=canvas.getContext('2d');ctx.fillStyle=style.backgroundColor;ctx.fillRect(0,0,1,1);
+        return {menu:getComputedStyle(menu.querySelector('h2')).color,add:getComputedStyle(document.querySelector('[data-quiet-add]')).color,input:getComputedStyle(input).color,placeholder:getComputedStyle(input,'::placeholder').color,blur:style.backdropFilter,alpha:ctx.getImageData(0,0,1,1).data[3]};
+      })()`)
+      if (colors.menu !== (dark?'rgb(225, 226, 227)':'rgb(18, 52, 86)') || colors.input!==colors.menu || colors.add!==(dark?'rgb(193, 210, 227)':'rgb(35, 69, 103)') || colors.placeholder!==(dark?'rgb(161, 178, 195)':'rgb(69, 103, 137)') || !colors.blur.includes('blur(28px)') || colors.alpha>=255 || colors.alpha<200) throw new Error('Quiet theme/glass mismatch '+JSON.stringify(colors))
+      await click(windows[1], '[aria-label="Close composer menu"]')
+      await wait(windows[1], `!document.querySelector('.quiet-menu')`, 'Theme menu failed to close')
+    }
+    await windows[1].webContents.executeJavaScript(`localStorage.setItem('chat:customThemeEnabled','false');document.documentElement.classList.remove('dark');window.dispatchEvent(new Event('chatCustomThemeChange'))`)
+    console.log('PASS above-input popup anchoring and light/dark custom text/icon/placeholder colors with translucent blur')
+    await click(windows[1], '.quiet-agents-slot button')
+    await wait(windows[1], `!!document.querySelector('[data-quiet-panel="true"]:not([hidden])')`, 'Header agents failed to open')
+    await click(windows[1], '[aria-label="Close agents"]')
+    await wait(windows[1], `document.activeElement?.closest('.quiet-agents-slot') && document.querySelector('[data-quiet-panel="true"]').hidden`, 'Agents did not close/restore focus')
+    const sameAgents = await windows[1].webContents.executeJavaScript(`document.querySelectorAll('.agents-pill').length===1`)
+    if (!sameAgents) throw new Error('Duplicate agents owner')
     await click(windows[1], '[aria-label="Open sidebar panel"]')
     await wait(windows[1], `(()=>{const panel=document.querySelector('[role="dialog"][aria-label="Sidebar panel"]'); if(!panel)return false; const r=panel.getBoundingClientRect(); return r.width > 200 && r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight;})()`, 'Phone sidebar panel not visible within viewport')
     await click(windows[1], 'button[aria-label="Close sidebar panel"]')
@@ -182,6 +260,8 @@ if (!process.versions.electron) {
     }
     console.log('PASS solid browser canvas: default/custom light+dark, alpha stripped, transparent/invalid fallback, saved video mode')
     await fill(windows[1], 'phone private draft')
+    const draftBeforeStream = await windows[1].webContents.executeJavaScript(`({value:document.querySelector('textarea[placeholder="Type your message..."]').value,active:document.activeElement.outerHTML.slice(0,400)})`)
+    if (draftBeforeStream.value !== 'phone private draft') throw new Error('Phone draft fill failed before stream: '+JSON.stringify(draftBeforeStream))
     await fill(windows[0], 'first synthetic prompt');
     await click(windows[0], 'button[title="Send message"]')
     await wait(windows[0], `document.body.innerText.includes('Permission requested')`, 'Permission missing')
@@ -195,6 +275,7 @@ if (!process.versions.electron) {
     })()`, 'Commentary lost its live-tail activity footer')
     if (subscribers.size !== 2) throw new Error(`Expected two live subscribers; got ${subscribers.size}`)
     if (await windows[1].webContents.executeJavaScript(`document.querySelector('textarea').value`) !== 'phone private draft') throw new Error('Remote event stole phone draft')
+    await wait(windows[1], `(()=>{const queue=document.querySelector('.quiet-inline-send [title="Queue message"]'),loading=document.querySelector('.quiet-inline-send .send-btn-loading');if(!queue||!loading)return false;const q=queue.getBoundingClientRect(),s=loading.getBoundingClientRect();return Math.abs(q.width-s.width)<1 && Math.abs(q.height-s.height)<1 && Math.abs(q.top-s.top)<1})()`, 'Compact Queue and visible Stop circle differ in size/alignment')
     await fill(windows[0], 'second synthetic prompt'); await click(windows[0], 'button[title="Queue message"]')
     await wait(windows[0], `document.body.innerText.includes('Queued')`, 'Queue missing')
     if (!queued || executions !== 1) throw new Error('Queue started duplicate execution')

@@ -46,6 +46,7 @@ interface TextAreaProps {
   width?: textAreaWidth
   className?: string
   minRows?: number
+  minFontSize?: number
   maxRows?: number
   autoFocus?: boolean
   showCharCount?: boolean
@@ -156,6 +157,7 @@ export const InputTextArea: React.FC<TextAreaProps> = ({
   width = 'max-w-3xl',
   className = '',
   minRows = 1,
+  minFontSize,
   maxRows = 25,
   autoFocus = false,
   showCharCount = false,
@@ -710,6 +712,7 @@ export const InputTextArea: React.FC<TextAreaProps> = ({
   const textareaStyle = {
     ...style,
     ...getChatFontSizeOffsetStyle(fontSizeOffset),
+    ...(minFontSize ? { fontSize: `max(${minFontSize}px, calc(1em + ${fontSizeOffset}px))` } : {}),
   }
   const baseStyles = outline
     ? `${width} px-3 py-2 sm:px-4 sm:py-2 md:px-4 md:py-2 lg:px-4 lg:py-2 2xl:px-4 2xl:py-2 overflow-hidden bg-transparent ${CHAT_NORMAL_TEXT_SIZE_CLASS} ${variantStyles[variant]}`

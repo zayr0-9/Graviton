@@ -80,22 +80,6 @@ tasks.push(() => esbuild.build({
   resolveExtensions: ['.ts', '.js', '.mjs', '.json'],
 }).then(() => console.log('✅ localAnalyticsWorker.ts bundled to localAnalyticsWorker.mjs')))
 
-// Bundle mobile headless UI (React) for LAN access
-tasks.push(() => esbuild.build({
-  entryPoints: [path.join(__dirname, '..', 'server', 'headlessServer', 'ui', 'mobile', 'src', 'main.tsx')],
-  bundle: true,
-  platform: 'browser',
-  target: 'es2020',
-  outfile: path.join(__dirname, '..', 'server', 'headlessServer', 'ui', 'mobile', 'assets', 'mobile-app.js'),
-  format: 'esm',
-  sourcemap: true,
-  define: {
-    'process.env.NODE_ENV': '"production"',
-  },
-  resolveExtensions: ['.tsx', '.ts', '.js', '.mjs', '.json'],
-  logLevel: 'info',
-}).then(() => console.log('✅ mobile React UI bundled to server/headlessServer/ui/mobile/assets/mobile-app.js')))
-
 await runTasks(tasks)
 
 // esbuild does not validate declarations injected through banners.

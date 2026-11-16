@@ -3,6 +3,7 @@
 // This server prefers port 3002 and falls back to available local ports.
 
 import { CLAUDE_SESSION_SCHEMA } from './headlessServer/persistence/claudeSessionRepo.js'
+import { HEIMDALL_COLLAPSE_SCHEMA } from './headlessServer/persistence/heimdallCollapseRepo.js'
 import { opaqueMutationFence } from './nativeClientFence.js'
 import { allowsClientUpgrade } from './clientOriginPolicy.js'
 import { DECISION_RECEIPT_SCHEMA, installDecisionReceiptSchema } from './headlessServer/persistence/decisionReceiptRepo.js'
@@ -76,6 +77,7 @@ import { registerAnalyticsRoutes } from './routes/analyticsRoutes.js'
 import { registerUserProjectRoutes } from './routes/userProjectRoutes.js'
 import { registerNoteSearchRoutes } from './routes/noteSearchRoutes.js'
 import { registerConversationRoutes } from './routes/conversationRoutes.js'
+import { registerHeimdallCollapseRoutes } from './routes/heimdallCollapseRoutes.js'
 import { TOP_LEVEL_PREVIEW_MESSAGES_SQL, TOP_LEVEL_USER_MESSAGES_SQL, TOP_LEVEL_USER_MESSAGE_SEARCH_SCHEMA_SQL } from './topLevelUserMessages.js'
 import { NOTE_SEARCH_FTS_SQL, NOTE_SEARCH_TABLES_SQL, rebuildSearchIndexes } from './searchIndexSchema.js'
 import { skillRegistry } from './skills/skillLoader.js'
@@ -523,6 +525,11 @@ const SCHEMA_MIGRATIONS: SchemaMigration[] = [
     version: 12,
     name: 'claude_branch_sessions',
     up: database => database.exec(CLAUDE_SESSION_SCHEMA),
+  },  {
+    version: 13,
+    name: 'heimdall_collapse_groups',
+    // Visual-only Heimdall collapse groups per conversation (CREATE ... IF NOT EXISTS).
+    up: database => database.exec(HEIMDALL_COLLAPSE_SCHEMA),
   },
 ]
 
@@ -898,6 +905,7 @@ function initializeLocalDatabase(dbPath: string) {
   db.exec(OPERATION_RECEIPT_SCHEMA)
   db.exec(DECISION_RECEIPT_SCHEMA)
   db.exec(CLAUDE_SESSION_SCHEMA)
+  db.exec(HEIMDALL_COLLAPSE_SCHEMA)
   runSchemaMigrations(db)
 
   db.exec(`
@@ -1787,6 +1795,7 @@ function setupServer() {
   // Conversation + message CRUD routes live in routes/conversationRoutes.ts.
   // Registered after the note-search routes so /search* wins over /:id.
   registerConversationRoutes(app, { db: db!, statements })
+  registerHeimdallCollapseRoutes(app, { db: db! })
   registerBrowserUiRoutes(app, tryGetServerConfig()?.browserUiDir)
 
   // ============================================================================

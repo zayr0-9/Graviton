@@ -198,6 +198,7 @@ export const ReasoningLevelControl = ({ supported, level, onLevelChange, allowOf
                 ref={popoverRef}
                 role='dialog'
                 aria-label='Reasoning level'
+                data-ygg-overlay='reasoning-level'
                 className='fixed z-[100001] overflow-hidden rounded-2xl bg-white/90 px-3 py-3 backdrop-blur-xl dark:bg-neutral-900/90'
                 initial={reducedMotion ? { opacity: 0 } : { opacity: 0, scale: 0.96 }}
                 animate={reducedMotion ? { opacity: 1 } : { opacity: 1, scale: 1 }}

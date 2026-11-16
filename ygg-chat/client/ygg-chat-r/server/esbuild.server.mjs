@@ -6,7 +6,6 @@
 //   toolRuntimeUtility.mjs              tool sandbox child (Node ABI, forked
 //                                       by NodeToolRuntimeHost as a sibling)
 //   prompts/*.md                        operation-mode prompt assets
-//   headlessServer/ui/mobile/**         mobile LAN UI static assets
 //   headlessServer/routes/testHarnessPage.html
 //   .ygg/custom-themes/**               bundled theme templates (if present)
 //
@@ -90,15 +89,6 @@ if (promptCount === 0) {
   throw new Error(`No prompt assets found in ${promptsSource}`)
 }
 console.log(`✅ copied ${promptCount} prompt assets to dist-server/prompts`)
-
-const mobileUiCopied = copyDir(
-  path.join(__dirname, 'headlessServer', 'ui', 'mobile'),
-  path.join(outDir, 'headlessServer', 'ui', 'mobile')
-)
-if (!mobileUiCopied) {
-  throw new Error('Mobile UI assets missing; run build:electron:main once to produce them')
-}
-console.log('✅ copied mobile UI assets')
 
 copyFile(
   path.join(__dirname, 'headlessServer', 'routes', 'testHarnessPage.html'),

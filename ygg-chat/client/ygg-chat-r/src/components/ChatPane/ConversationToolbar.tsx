@@ -1,10 +1,15 @@
 import React, { useEffect, useId, useRef, useState } from 'react'
-import { Check, GitBranch, Pencil, RefreshCw, X } from 'lucide-react'
+import { AgentsHeaderSlots } from './QuietComposerLayout'
+import { Check, ChevronDown, MoreHorizontal, GitBranch, Pencil, RefreshCw, X } from 'lucide-react'
 import { formatShortcut, isMacKeyboard } from '../../keyboard/commands'
 import { useShortcutOverrides } from '../../keyboard/useShortcutOverrides'
 import { getThemeModeColor, type CustomChatTheme, type ThemeColorPair } from '../ThemeManager/themeConfig'
 
 interface ConversationToolbarProps {
+  compact?: boolean
+  headerAgents?: boolean
+  modelName?: string
+  onOpenModel?: () => void
   title: string
   backgroundColor: string
   treeVisible: boolean
@@ -27,8 +32,10 @@ const controlClass = 'flex h-11 w-11 shrink-0 items-center justify-center rounde
 export function ConversationToolbar({
   title, backgroundColor, treeVisible, customTheme, customThemeEnabled, isDarkMode,
   onToggleTree, onRefresh, onRename, onEditingChange,
+  compact = false, headerAgents = false, modelName, onOpenModel,
 }: ConversationToolbarProps) {
   const [editing, setEditing] = useState(false)
+  const overflowRef = useRef<HTMLDetailsElement>(null)
   const [draft, setDraft] = useState(title)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -62,12 +69,24 @@ export function ConversationToolbar({
     }
   }, [editing])
 
+  useEffect(() => {
+    if (!compact) return
+    const dismiss = (event: PointerEvent) => {
+      if (overflowRef.current && !overflowRef.current.contains(event.target as Node)) overflowRef.current.open = false
+    }
+    document.addEventListener('pointerdown', dismiss)
+    return () => document.removeEventListener('pointerdown', dismiss)
+  }, [compact])
+
   const finishEditing = () => {
     setEditing(false)
     setError(null)
     onEditingChange(false)
     requestAnimationFrame(() => {
-      if (mountedRef.current) editRef.current?.focus()
+      if (mountedRef.current) {
+        if (compact) overflowRef.current?.querySelector('summary')?.focus()
+        else editRef.current?.focus()
+      }
     })
   }
 
@@ -105,10 +124,12 @@ export function ConversationToolbar({
 
   return (
     <div
-      className={`min-w-0 p-1.5 backdrop-blur-[12px] ${editing && (error || saving) ? 'rounded-3xl' : 'rounded-full'}`}
+      className={`min-w-0 p-1.5 text-stone-800 dark:text-stone-100 backdrop-blur-[12px] ${editing && (error || saving) ? 'rounded-3xl' : 'rounded-full'}`}
       style={{ backgroundColor, color: color('toolJobsPrimaryText') }}
       data-conversation-toolbar='true'
+      data-quiet-header={compact || undefined}
     >
+      <div className='quiet-header-main'>
       {editing ? (
         <form onSubmit={save} aria-label='Rename conversation' aria-busy={saving} onKeyDown={event => {
           if (event.key === 'Escape' && !savingRef.current) {
@@ -147,6 +168,22 @@ export function ConversationToolbar({
             </p>
           )}
         </form>
+      ) : compact ? (
+        <div className='flex min-w-0 items-center gap-1'>
+          <h1 className='min-w-0 flex-1 truncate px-2 text-sm' title={title}>{title || 'Untitled conversation'}</h1>
+          <button type='button' className='quiet-model-trigger' style={controlStyle} onClick={onOpenModel} title={modelName} aria-label={`Model: ${modelName}, open controls`}><span>{modelName}</span><ChevronDown size={14} /></button>
+          <details ref={overflowRef} className='quiet-header-overflow' onKeyDown={event => { if (event.key === 'Escape' && overflowRef.current) { overflowRef.current.open = false; overflowRef.current.querySelector('summary')?.focus() } }}>
+            <summary className={controlClass} style={controlStyle} aria-label='Conversation actions' title='Conversation actions'><MoreHorizontal size={18} /></summary>
+            <div className='quiet-header-actions' style={{
+              backgroundColor: isDarkMode ? '#262626' : '#fff',
+              backgroundImage: customThemeEnabled ? `linear-gradient(${color('settingsCustomThemesCardBg')}, ${color('settingsCustomThemesCardBg')})` : undefined,
+            }}>
+              <button type='button' onClick={() => { if (overflowRef.current) overflowRef.current.open = false; onToggleTree() }}><GitBranch size={18} />{treeVisible ? 'Hide tree view' : 'Show tree view'}</button>
+              <button ref={editRef} type='button' onClick={() => { if (overflowRef.current) overflowRef.current.open = false; setDraft(title); setError(null); setEditing(true); onEditingChange(true) }}><Pencil size={18} />Rename conversation</button>
+              <button type='button' onClick={() => { if (overflowRef.current) overflowRef.current.open = false; onRefresh() }}><RefreshCw size={18} />Refresh messages</button>
+            </div>
+          </details>
+        </div>
       ) : (
         <div className='flex min-w-0 items-center gap-1'>
           <button type='button' className={`${controlClass} ${treeVisible ? 'bg-blue-50 text-blue-700 dark:bg-orange-500/15 dark:text-orange-100' : ''}`} style={treeVisible ? { backgroundColor: color('composerToggleActiveBg'), color: color('composerToggleActiveText') } : controlStyle}
@@ -171,6 +208,8 @@ export function ConversationToolbar({
           </button>
         </div>
       )}
+      </div>
+      {headerAgents && <AgentsHeaderSlots />}
     </div>
   )
 }

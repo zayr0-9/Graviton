@@ -15,7 +15,6 @@
     "electron/toolRuntimeUtility.mjs",
     "electron/localAnalyticsWorker.mjs",
     "src/features/chats/prompts/*.md",
-    "server/headlessServer/ui/mobile/**/*",
     "server/headlessServer/routes/**/*.html"
   ],
   "asarUnpack": [

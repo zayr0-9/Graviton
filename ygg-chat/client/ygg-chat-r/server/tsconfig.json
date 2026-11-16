@@ -23,14 +23,10 @@
     "noImplicitReturns": true
   },
   "include": ["./**/*.ts"],
-  // This project checks the runtime-neutral server graph only. Two areas are
+  // This project checks the runtime-neutral server graph only. __tests__ is
   // deliberately out of scope:
   //
-  // 1. headlessServer/ui/mobile — a separate React app (main.tsx + tailwind)
-  //    bundled by electron/esbuild.main.mjs. It needs jsx + DOM libs, which do
-  //    not belong in a Node-only project. It has its own tsconfig
-  //    (typecheck:mobile). No server module imports its source.
-  // 2. __tests__ — six server test files import renderer modules from ../src
+  // __tests__ — six server test files import renderer modules from ../src
   //    (e.g. operationModeSystemPrompt.test.ts -> src/features/chats/subagentClient),
   //    which transitively pulls in the Redux store and needs DOM + vite/client
   //    types. Adding DOM here would let server code reference `document` unchecked.
@@ -41,7 +37,6 @@
     "dist",
     "dist-electron",
     "dist-server",
-    "headlessServer/ui/mobile",
     "**/__tests__/**",
     "**/*.test.ts"
   ]

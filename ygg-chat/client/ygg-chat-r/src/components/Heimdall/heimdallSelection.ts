@@ -1,18 +1,23 @@
 import type { Message } from '../../features/chats/chatTypes'
 
-/** Ordinary right-click opens actions for the selection; modifiers still toggle nodes. */
+/**
+ * Ordinary right-click opens actions for the selection; modifiers still toggle nodes.
+ * A collapse node passes all of its member ids so they select/toggle together.
+ */
 export function selectHeimdallContextMenuNodes(
   selectedIds: Message['id'][],
   nodeId: Message['id'],
-  toggleSelection: boolean
+  toggleSelection: boolean,
+  memberIds: Message['id'][] = [nodeId]
 ): Message['id'][] {
   const isSelected = selectedIds.some(id => String(id) === String(nodeId))
+  const members = new Set(memberIds.map(String))
   if (toggleSelection) {
     return isSelected
-      ? selectedIds.filter(id => String(id) !== String(nodeId))
-      : [...selectedIds, nodeId]
+      ? selectedIds.filter(id => !members.has(String(id)))
+      : [...selectedIds.filter(id => !members.has(String(id))), ...memberIds]
   }
-  return isSelected ? selectedIds : [nodeId]
+  return isSelected ? selectedIds : memberIds
 }
 
 /** Include connecting rows and hidden-only tails, but never unselected visible descendants. */

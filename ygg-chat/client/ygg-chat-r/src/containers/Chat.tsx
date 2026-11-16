@@ -19,6 +19,11 @@ import 'boxicons' // Types
 import 'boxicons/css/boxicons.min.css'
 import { AnimatePresence, motion } from 'framer-motion'
 import { Lock, LockOpen, Settings } from 'lucide-react'
+import { getCompactComposerThemeStyle } from '../components/ChatPane/compactComposerPresentation'
+import { useCompactComposer } from '../components/ChatPane/QuietComposerLayout'
+import { CompactComposerMenu, type ComposerMenuPage } from '../components/ChatPane/CompactComposerMenu'
+import { ComposerControlSlot } from '../components/ChatPane/ComposerControlSlot'
+import '../components/ChatPane/quietComposer.css'
 import { ConversationToolbar } from '../components/ChatPane/ConversationToolbar'
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useParams } from 'react-router-dom'
@@ -57,7 +62,7 @@ import {
 } from '../components'
 import { ChatErrorBubble } from '../components/ChatErrorBubble/ChatErrorBubble'
 import { ActionPopoverButton, ActionPopoverDisclosure, ActionPopoverSwitch } from '../components/ActionPopover/ActionPopoverControls'
-import { ClipboardCheck, ClipboardPaste, CodeXml, MessageSquare, Plus, ShieldCheck, ShieldHalf, ShieldQuestion, X } from 'lucide-react'
+import { ListPlus, ClipboardCheck, ClipboardPaste, CodeXml, MessageSquare, Plus, ShieldCheck, ShieldHalf, ShieldQuestion, X } from 'lucide-react'
 import { useConversationRunStatistics } from '../hooks/useConversationRunStatistics'
 import { deriveRunStatistics, placeRunFooters, interleaveRunFooters, type RunStatisticsFooterData } from '../features/chats/runStatistics'
 import { RunStatisticsFooter } from '../components/ChatMessage/RunStatisticsFooter'
@@ -2160,6 +2165,15 @@ function Chat() {
   const updateVisibleMessageRef = useRef<(() => void) | null>(null)
   // Ref for input area to measure its height dynamically
   const inputAreaRef = useRef<HTMLDivElement>(null)
+  const primaryPaneRef = useRef<HTMLDivElement>(null)
+  const quietInputAnchorRef = useRef<HTMLDivElement>(null)
+  const compactComposer = useCompactComposer(primaryPaneRef)
+  const [composerMenuPages, setComposerMenuPages] = useState<ComposerMenuPage[]>([])
+  const [compactControlsTarget, setCompactControlsTarget] = useState<HTMLDivElement | null>(null)
+  const [compactActivityTarget, setCompactActivityTarget] = useState<HTMLDivElement | null>(null)
+  const [compactSendTarget, setCompactSendTarget] = useState<HTMLDivElement | null>(null)
+  const closeComposerMenu = useCallback(() => setComposerMenuPages([]), [])
+  useEffect(() => { closeComposerMenu() }, [compactComposer, currentConversationId, closeComposerMenu])
 
   const attachmentInputRef = useRef<HTMLInputElement>(null)
 
@@ -6566,6 +6580,7 @@ function Chat() {
       <div
         data-chat-pane-surface='true'
         data-chat-pane-kind='primary'
+        ref={primaryPaneRef}
         data-chat-pane-active={activeChatPane === 'primary' ? 'true' : 'false'}
         onMouseDown={() => setActiveChatPane('primary')}
         onFocusCapture={() => setActiveChatPane('primary')}
@@ -6595,6 +6610,10 @@ function Chat() {
               <ConversationToolbar
                 key={String(currentConversationId)}
                 title={currentConversation?.title ?? ''}
+                compact={compactComposer}
+                headerAgents={compactComposer && isMobile}
+                modelName={selectedModel?.name || 'Model'}
+                onOpenModel={() => setComposerMenuPages(['controls'])}
                 backgroundColor={conversationToolbarBackgroundColor}
                 treeVisible={heimdallVisible}
                 customTheme={customTheme}
@@ -7199,7 +7218,7 @@ function Chat() {
           )}
 
           {/* Textarea (bottom, grows upward because wrapper is bottom-pinned) */}
-          <div className='relative isolate'>
+          <div className='relative isolate' data-composer-layout={compactComposer ? 'compact' : 'spacious'} style={compactComposer && customThemeEnabled ? getCompactComposerThemeStyle(customTheme, isDarkMode) : undefined}>
             {!isBrowserClient && selection.status === 'pending' && (
               <div role='status' className='px-3 py-1 text-xs opacity-70'>Opening conversation…</div>
             )}
@@ -7217,7 +7236,7 @@ function Chat() {
             <ComposerSurface
               surfaceClassName='slate-input-wrapper bg-neutral-100/40 dark:bg-neutral-900/40 backdrop-blur-xl'
               strokeClassName={composerStrokeClasses}
-              className='px-2 pt-3 pb-2'
+              className={compactComposer ? 'quiet-composer-surface p-1' : 'px-2 pt-3 pb-2'}
               tab={activityIndicatorOwner.kind === 'input-tab' && (showThinkingIndicator || backgroundTasksView) && (
                 <>
                   {showThinkingIndicator && (
@@ -7249,6 +7268,9 @@ function Chat() {
                     dispatch(respondToToolPermission({ allowed: false, streamId: toolCallPermissionRequest.streamId }))
                   }
                   onAllowAll={() => dispatch(respondToToolPermissionAndEnableAll(toolCallPermissionRequest.streamId))}
+                  onAllowAuto={isClaudeSession ? () =>
+                    dispatch(respondToToolPermission({ allowed: true, auto: true, streamId: toolCallPermissionRequest.streamId }))
+                    : undefined}
                 />
               )}
               {planClarificationRequest && (
@@ -7261,6 +7283,7 @@ function Chat() {
                 />
               )}
               {/* Todo List / Modified Files Display */}
+              <ComposerControlSlot compact={compactComposer} target={compactActivityTarget}>
               {showComposerSummaryPanels && (
                 <div
                   className={`mx-2 ${toolCallPermissionRequest || operationModeUpgradeRequest ? 'mt-1' : 'mt-2'} mb-1 ${
@@ -7423,6 +7446,7 @@ function Chat() {
                   )}
                 </div>
               )}
+              </ComposerControlSlot>
               {showOpenAIUsagePanel && (
                 <div className='mx-2 mt-2 mb-1 rounded-[24px] bg-neutral-100/75 px-3 py-3 backdrop-blur-xl dark:bg-neutral-900/55'>
                   <div className='flex items-start justify-between gap-3'>
@@ -7530,9 +7554,12 @@ function Chat() {
                     streamId: queuedMessages.streamId, requestId })).unwrap()} />
               )}
               {/* Textarea with shortcut hint */}
-              <div className=''>
+              <div ref={quietInputAnchorRef} className='quiet-input-grid'>
+                {compactComposer && <button type='button' data-quiet-add className='quiet-icon' title='Add to message' aria-label='Add to message' aria-expanded={composerMenuPages.length > 0} onClick={() => setComposerMenuPages(['add'])}><Plus size={20} /></button>}
+                <div className='quiet-input-slot'>
                 <ChatInputController
                   ref={inputControllerRef}
+                  compact={compactComposer}
                   conversationId={currentConversationId}
                   initialValue={messageInput.content}
                   onHasTextChange={setHasLocalInput}
@@ -7547,8 +7574,27 @@ function Chat() {
                   imageDraftTarget={{ kind: 'composer' }}
                   fontSizeOffset={fontSizeOffset}
                 />
+                </div>
+                <div ref={setCompactSendTarget} className='quiet-inline-send' />
               </div>
             </ComposerSurface>
+            {compactComposer && <CompactComposerMenu paneRef={primaryPaneRef} anchorRef={quietInputAnchorRef} pages={composerMenuPages} onClose={closeComposerMenu} onBack={() => setComposerMenuPages(pages => pages.slice(0, -1))}>
+              {composerMenuPages.at(-1) === 'add' && <div className='quiet-menu-items'>
+                <button type='button' onClick={() => attachmentInputRef.current?.click()}>Photos and files</button>
+                {showClipboardImageButton && <button type='button' onClick={() => void handlePasteClipboardImage()}>Paste image</button>}
+                {clipboardImageNotice && <p role='status'>{clipboardImageNotice}</p>}
+                <button type='button' onClick={() => { addCurrentIdeContextToMessage(); closeComposerMenu() }}>Add workspace context</button>
+                <button type='button' data-menu-row='controls' onClick={() => setComposerMenuPages(pages => [...pages, 'controls'])}>Model and controls</button>
+                <button type='button' data-menu-row='activity' onClick={() => setComposerMenuPages(pages => [...pages, 'activity'])}>Activity and context usage</button>
+                <button type='button' onClick={() => { closeComposerMenu(); setSettingsOpen(true) }}>Chat settings</button>
+              </div>}
+              {composerMenuPages.at(-1) === 'controls' && <div ref={setCompactControlsTarget} className='quiet-controls-content' />}
+              {composerMenuPages.at(-1) === 'activity' && <div>
+                <p className='p-3 text-sm'>Context: {tokenUsage.totalContextTokens.toLocaleString()} / {tokenLimits.totalBudget.toLocaleString()}</p>
+                <div ref={setCompactActivityTarget} />
+                {!showComposerSummaryPanels && <p className='p-3 text-sm'>No activity summaries yet.</p>}
+              </div>}
+            </CompactComposerMenu>}
 
             {/* Controls row */}
             <div className='composer-controls-row relative z-10 mt-2 flex items-center justify-between gap-3'>
@@ -7576,6 +7622,7 @@ function Chat() {
                     />
                   </button>
                   <div className='composer-controls-left-selectors relative z-10 flex min-w-0 shrink items-center gap-1 flex-nowrap overflow-hidden'>
+                    <ComposerControlSlot compact={compactComposer} target={compactControlsTarget}>
                     {isHostClient && extensions.length > 0 && (
                       <Select
                         value={selectedExtensionId || ''}
@@ -7595,6 +7642,7 @@ function Chat() {
                         searchBarVisible={true}
                         size='large'
                         dropdownMinWidth={220}
+                        dropdownZIndex={compactComposer ? ACTION_POPOVER_SELECT_DROPDOWN_Z_INDEX : undefined}
                       />
                     )}
 
@@ -7611,6 +7659,7 @@ function Chat() {
                         searchBarVisible={true}
                         size='large'
                         dropdownMinWidth={220}
+                        dropdownZIndex={compactComposer ? ACTION_POPOVER_SELECT_DROPDOWN_Z_INDEX : undefined}
                       />
                     )}
                     {isClaudeSession && (
@@ -7635,7 +7684,10 @@ function Chat() {
                       blur='low'
                       className='w-[120px] min-w-[42px] max-w-[170px] shrink transition-[width,transform] duration-150 hover:w-[170px] focus-within:w-[170px] data-[open=true]:w-[170px] active:scale-99 [&>button]:!rounded-full'
                       showFilters={true}
+                      dropdownWidthOffset={compactComposer ? 0 : undefined}
+                      dropdownZIndex={compactComposer ? ACTION_POPOVER_SELECT_DROPDOWN_Z_INDEX : undefined}
                     />
+                    </ComposerControlSlot>
                   </div>
                   {/*
                     Hover target for the context usage popover, and the reason this row carries a
@@ -7724,10 +7776,11 @@ function Chat() {
                       theme={customThemeEnabled ? customTheme : undefined}
                     />
                   )}
+                  <ComposerControlSlot compact={compactComposer} target={compactControlsTarget}>
                   {(isImageGenerationModel ||
                     think ||
                     (isHostClient && conversationIdFromUrl)) && (
-                    <ActionPopover
+                    <ActionPopover inline={compactComposer}
                       isActive={
                         toolAutoApprove ||
                         (isClaudeSession && claudeAutoMode) ||
@@ -8010,13 +8063,14 @@ function Chat() {
                       setReasoningConfig(prev => ({ ...prev, effort: level }))
                     }}
                   />
+                  </ComposerControlSlot>
                   {/* Attachment upload button */}
                   <input
                     ref={attachmentInputRef}
                     type='file'
                     accept='application/pdf,image/*'
                     multiple
-                    onChange={handleAttachmentInputChange}
+                    onChange={event => { handleAttachmentInputChange(event); closeComposerMenu() }}
                     className='hidden'
                     aria-hidden='true'
                   />
@@ -8045,12 +8099,13 @@ function Chat() {
                       {clipboardImageNotice}
                     </span>
                   )}
+                  <ComposerControlSlot compact={compactComposer} target={compactSendTarget}>
                   {streamState.active && hasLocalInput && (
                     <button type='button' onClick={() => handleSend(1)} disabled={!canQueueLocal}
-                      title='Queue message' aria-label='Queue message'
+                      title='Queue message' aria-label={queueSubmitting ? 'Queueing message' : 'Queue message'} aria-busy={queueSubmitting}
                       className='rounded-full px-3 py-2 text-xs bg-black/5 dark:bg-white/10 disabled:opacity-40 focus-visible:outline focus-visible:outline-2'
                       style={customThemeEnabled ? composerToggleActiveStyle : undefined}>
-                      {queueSubmitting ? 'Queueing…' : 'Queue'}
+                      {compactComposer ? <ListPlus size={24} aria-hidden='true' /> : queueSubmitting ? 'Queueing…' : 'Queue'}
                     </button>
                   )}
                   {!currentConversationId ? (
@@ -8058,6 +8113,7 @@ function Chat() {
                   ) : showGenerationLoadingAnimation ? (
                     <button
                       onClick={handleStopGeneration}
+                      aria-label={canStopCompaction ? 'Stop compaction' : 'Stop generation'}
                       disabled={selection.status === 'pending' || (!streamState.active && !canStopCompaction)}
                       title={
                         canStopCompaction
@@ -8083,7 +8139,14 @@ function Chat() {
                           : 'bg-neutral-300 dark:bg-neutral-700 text-neutral-500 dark:text-neutral-400 cursor-not-allowed'
                       }`}
                       disabled={!canSendLocal || !currentConversationId}
+                      style={compactComposer && !streamState.active ? {
+                        backgroundColor: leftControlsTokenTintBaseColor,
+                        ...rightControlsTintStyle,
+                        color: customThemeEnabled ? getThemeModeColor(customTheme.colors.toolJobsPrimaryText, isDarkMode) : isDarkMode ? '#f5f5f4' : '#292524',
+                        opacity: canSendLocal && currentConversationId ? 1 : 0.45,
+                      } : undefined}
                       title='Send message'
+                      aria-label='Send message'
                       onClick={() => {
                         handleSend(multiReplyCount)
                       }}
@@ -8100,6 +8163,7 @@ function Chat() {
                       </svg>
                     </button>
                   )}
+                  </ComposerControlSlot>
                 </div>
                 {/* <Button
                   variant={canSendLocal && currentConversationId ? 'primary' : 'secondary'}

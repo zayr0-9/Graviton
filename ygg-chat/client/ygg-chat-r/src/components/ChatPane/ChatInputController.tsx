@@ -38,6 +38,7 @@ export type ChatInputControllerProps = {
   enableFileMentions?: boolean
   fontSizeOffset?: number
   autoFocus?: boolean
+  compact?: boolean
 }
 
 /**
@@ -64,6 +65,7 @@ export const ChatInputController = React.memo(
         enableFileMentions = true,
         fontSizeOffset = 0,
         autoFocus = true,
+        compact = false,
       },
       ref
     ) => {
@@ -262,9 +264,11 @@ export const ChatInputController = React.memo(
             state='default'
             width='w-full'
             minRows={1}
+            maxRows={compact ? 4 : 25}
+            minFontSize={compact ? 16 : undefined}
             autoFocus={autoFocus}
             showCharCount={false}
-            showHelp={!isTouchPrimary}
+            showHelp={!isTouchPrimary && !compact}
             slashCommands={slashCommands}
             onSlashCommandSelect={onSlashCommandSelect}
             onAddCurrentIdeContext={onAddCurrentIdeContext}

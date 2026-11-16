@@ -17,12 +17,6 @@ export const normalizeRemoteBaseUrl = (value: string | null | undefined): string
   return trimmed
 }
 
-export const buildRemoteMobileUrl = (baseUrl: string | null | undefined): string | null => {
-  const normalized = normalizeRemoteBaseUrl(baseUrl)
-  if (!normalized) return null
-  return `${normalized}/mobile`
-}
-
 export const loadRemoteServerSettings = (): RemoteServerSettings => {
   try {
     const stored = localStorage.getItem(REMOTE_SERVER_SETTINGS_STORAGE_KEY)

@@ -3,7 +3,7 @@ import { useAppDispatch, useAppSelector } from '../../hooks/redux'
 import { runningAgentsUiActions, type AgentsPillSize } from '../../features/ui/runningAgentsUiSlice'
 import { clampAgentsPillSize, resizeAgentsPillFromCorner, type PillSpace } from './agentsPillResize'
 
-export function useAgentsPillResize(expanded: boolean, anchorKey: string) {
+export function useAgentsPillResize(expanded: boolean, anchorKey: string, enabled = true) {
   const dispatch = useAppDispatch()
   const preferred = useAppSelector(state => state.runningAgentsUi.expandedSize)
   const shellRef = useRef<HTMLDivElement>(null)
@@ -41,7 +41,7 @@ export function useAgentsPillResize(expanded: boolean, anchorKey: string) {
   }, [])
 
   useLayoutEffect(() => {
-    if (!expanded) {
+    if (!expanded || !enabled) {
       cancelDrag()
       setDragging(false)
       return
@@ -61,7 +61,7 @@ export function useAgentsPillResize(expanded: boolean, anchorKey: string) {
     })
     if (headerRef.current) observer.observe(headerRef.current)
     return () => { window.removeEventListener('resize', update); observer.disconnect(); cancelDrag() }
-  }, [expanded, preferred, anchorKey, measureSpace, cancelDrag])
+  }, [expanded, preferred, anchorKey, enabled, measureSpace, cancelDrag])
 
   const finish = (event: PointerEvent<HTMLButtonElement>, save: boolean) => {
     if (dragRef.current?.pointerId !== event.pointerId) return
@@ -117,7 +117,7 @@ export function useAgentsPillResize(expanded: boolean, anchorKey: string) {
     dispatch(runningAgentsUiActions.sizeChanged(size))
   }
 
-  return { shellRef, headerRef, headerHeight, limits, size: expanded ? resolved : null, dragging,
+  return { shellRef, headerRef, headerHeight, limits, size: expanded && enabled ? resolved : null, dragging,
     handleProps: { onPointerDown, onPointerMove, onPointerUp: (event: PointerEvent<HTMLButtonElement>) => finish(event, true),
       onPointerCancel: (event: PointerEvent<HTMLButtonElement>) => finish(event, false),
       onLostPointerCapture: (event: PointerEvent<HTMLButtonElement>) => finish(event, true),

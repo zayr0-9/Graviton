@@ -16,6 +16,8 @@ type ModelSelectControlProps = {
   showFilters?: boolean
   footerContent?: React.ReactNode
   disabled?: boolean
+  dropdownZIndex?: number
+  dropdownWidthOffset?: number
 }
 
 export const ModelSelectControl: React.FC<ModelSelectControlProps> = ({
@@ -29,6 +31,8 @@ export const ModelSelectControl: React.FC<ModelSelectControlProps> = ({
   showFilters = false,
   footerContent,
   disabled = false,
+  dropdownZIndex,
+  dropdownWidthOffset,
 }) => {
   const { filteredModels, filters, sortOptions, applyFilters, clearFilters, applySorting, refreshFavorites } =
     useFilteredModels(provider)
@@ -47,6 +51,8 @@ export const ModelSelectControl: React.FC<ModelSelectControlProps> = ({
     <>
       <Select
         value={selectedModelName || ''}
+        dropdownZIndex={dropdownZIndex}
+        dropdownWidthOffset={dropdownWidthOffset}
         modelProvider={provider}
         onChange={onChange}
         options={sortedFilteredModels.map(m => m.name)}
@@ -78,6 +84,7 @@ export const ModelSelectControl: React.FC<ModelSelectControlProps> = ({
 
       <ExpandedModelView
         isOpen={expandedViewOpen}
+        zIndex={dropdownZIndex}
         onClose={() => setExpandedViewOpen(false)}
         models={sortedFilteredModels}
         provider={provider}

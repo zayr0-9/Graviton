@@ -50,7 +50,7 @@ Start here, then open the smallest relevant subsystem context file before editin
 ## Agent Runtime
 
 - `agent_global_persistent_agent.md` - **RETIRED** tombstone: the renderer-owned global agent loop was deleted in the headless migration; the agent loop is now server-owned.
-- `agent_headless_server.md` - the local `:3002` server that now **owns the main chat agent loop** for all providers (pause/resume, in-loop hooks, compaction), plus the local data gateway (`/api/gw/*`), subagents, and mobile UI.
+- `agent_headless_server.md` - the local `:3002` server that now **owns the main chat agent loop** for all providers (pause/resume, in-loop hooks, compaction), plus the local data gateway (`/api/gw/*`) and subagents.
 - `agent_subagents_orchestration.md` - the `subagent` tool: renderer thin client + the shared server-side engine (the same `ToolLoopService` that now runs the main chat loop — subagents auto-approve, the main loop pauses), transcript persistence, SSE route.
 
 ## Platform and Integration

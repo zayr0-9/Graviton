@@ -25,7 +25,9 @@ import type { HeadlessStreamEvent } from '../../../../../shared/headlessApi.js'
 type DecisionPrompt = Extract<HeadlessStreamEvent, { type: 'permission_required' | 'clarify_required' | 'operation_mode_upgrade_required' | 'tool_request' }>
 type Settlement = Extract<HeadlessStreamEvent, { type: 'decision_settled' }>
 
-export type PermissionDecision = 'allow_once' | 'allow_always' | 'deny'
+// allow_auto: Claude runs only. Approves this call and moves the run to Claude's auto classifier;
+// other runs treat it as allow_once.
+export type PermissionDecision = 'allow_once' | 'allow_always' | 'allow_auto' | 'deny'
 export type OperationModeUpgradeDecision = 'switch_to_execute' | 'deny'
 
 export interface ClarifyDecision {
@@ -43,7 +45,7 @@ export type DecisionKind = 'permission' | 'operation_mode_upgrade' | 'clarify' |
 
 function decisionMatchesKind(kind: DecisionKind, decision: Decision): boolean {
   if (kind === 'any') return true
-  if (kind === 'permission') return decision === 'allow_once' || decision === 'allow_always' || decision === 'deny'
+  if (kind === 'permission') return decision === 'allow_once' || decision === 'allow_always' || decision === 'allow_auto' || decision === 'deny'
   if (kind === 'operation_mode_upgrade') return decision === 'switch_to_execute' || decision === 'deny'
   if (!decision || typeof decision !== 'object' || Array.isArray(decision)) return false
   if (kind === 'clarify') return 'answers' in decision || 'cancelled' in decision

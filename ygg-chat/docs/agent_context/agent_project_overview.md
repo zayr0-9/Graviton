@@ -14,7 +14,7 @@ Last reviewed: 2026-11-10
 
 ## Purpose
 
-High-level orientation for `ygg-chat`, a full-stack AI chat and agent harness with a React UI, Electron desktop runtime, local Express/SQLite server, agentic tools, custom tools, MCP, hooks, and headless/mobile surfaces.
+High-level orientation for `ygg-chat`, a full-stack AI chat and agent harness with a React UI, Electron desktop runtime, local Express/SQLite server, agentic tools, custom tools, MCP, hooks, and headless/shared-browser surfaces.
 
 ## When to Open This File
 
@@ -42,7 +42,7 @@ Electron is the primary target. The Electron main process hosts the shared **hea
 - **Pause/resume.** The loop pauses mid-turn for tool-permission and `plan_md` clarify decisions via `services/decisionBroker.ts` (`DecisionBroker`, keyed `${streamId}::${toolCallId}`), emitting `permission_required` / `clarify_required` SSE events; the renderer answers with `POST /api/resume`. In-process hooks fire at eight lifecycle events in `services/chatHookService.ts` (same Electron process, no HTTP).
 - **Local data gateway.** The renderer talks ONLY to `:3002`. `server/headlessServer/routes/gatewayRoutes.ts` (`/api/gw/*`) is a local facade over `/api/app/*` for conversations/projects/messages/attachments. There is no cloud leg, `/api/cloud/*` proxy, gateway feature flag or storage mode; all data lives in local SQLite.
 - **Network.** Outbound traffic is limited to user-configured model providers, MCP servers, the app-store catalog (`agent_app_store.md`) and GitHub Releases for updates.
-- **Headless/mobile.** The same local server exposes headless chat/provider/tool APIs and a mobile LAN UI; subagents run through the same engine.
+- **Headless/mobile.** The same local server exposes headless chat/provider/tool APIs and serves the shared React renderer to LAN browsers at `/`; subagents run through the same engine.
 - **No web product.** Delivery surfaces come from `__BUILD_TARGET__` (`electron`, `browser-client`, `standalone`); all are host clients of the local server.
 
 **Retired / removed** (do not look for these):

@@ -52,7 +52,7 @@ Data gateway + run sessions:
 Subagents / other:
 - `services/subagentRunService.ts` + `services/subagentToolExecutor.ts` + `routes/subagentRoutes.ts` — the shared subagent engine, the parent-chat in-process dispatcher, and the direct `POST /api/headless/subagent/stream` SSE route (see `agent_subagents_orchestration.md`). Reuses `ToolLoopService`.
 - `shared/headlessApi.ts` — `HeadlessMessageRequest`, `HeadlessStreamEvent` union (§SSE below), `HeadlessSubagentStreamEvent`.
-- `providers/*`, `stream/*` (SSE writer), `ui/mobile/src/*` (mobile LAN UI), `README.md`, `HEADLESS_API_GUIDE.md`.
+- `providers/*`, `stream/*` (SSE writer), `routes/legacyMobileRedirect.ts` (`/mobile` → `/`; the legacy mobile UI is removed), `README.md`, `HEADLESS_API_GUIDE.md`.
 
 ## Server API map
 
@@ -79,7 +79,7 @@ Each SSE request creates one `AbortController`. In the **legacy** path it is abo
 The renderer's data surface for **conversations, projects, messages, attachments, research notes**. Every route forwards over in-process loopback to the local `/api/app/*` routes (byte-for-byte reuse) and translates the renderer's canonical camelCase bodies to local snake_case. `GET /api/gw/conversations/:id/messages/tree` calls `buildConversationMessagesTreePayload` (`appAutomationRoutes.ts`) directly because it is the hot read refetched on every stream end. `/paginated` is real offset paging (`limit`/`cursor`). Attachment reads/links/unlinks use SQLite statements directly; `GET /api/gw/attachments/:id` returns 404 when missing. Legacy `?storageMode=` hints are ignored. New conversations are created with `storage_mode='local'` (the column default is `'cloud'` and list queries filter `'local'`).
 
 ### Other route modules (unchanged by this migration)
-`crudRoutes` (`/api/app/*` local SQLite CRUD — the gateway's target), `providerAuthRoutes`, `mobileUiRoutes`, `customToolsRoutes`, `customToolRpcRoutes`, `capabilityRoutes`, `ephemeralGenerateRoutes`, `testHarnessRoutes`, `subagentRoutes`.
+`crudRoutes` (`/api/app/*` local SQLite CRUD — the gateway's target), `providerAuthRoutes`, `legacyMobileRedirect`, `customToolsRoutes`, `customToolRpcRoutes`, `capabilityRoutes`, `ephemeralGenerateRoutes`, `testHarnessRoutes`, `subagentRoutes`.
 
 ## Orchestration (`ChatOrchestrator.runMessage`)
 
@@ -89,7 +89,7 @@ Data flow, in order:
 3. **UserPromptSubmit** hook runs *before* persisting the user message (`send`/`branch`/`edit-branch` only); may rewrite `request.content` or block → run finishes `error`.
 4. `resolveExecution` → `BranchOrchestrator.resolve` persists the user message (except `repeat`).
 5. `streamingRunRepo.upsert(...)` → final `trackedStreamId`.
-6. `decisionBroker.initSession(trackedStreamId, { autoApproveAll: request.toolAutoApprove !== false })` (`chatOrchestrator.ts:360`) — **default auto-approve; ordinary tool-permission prompts occur only when a caller explicitly sends `toolAutoApprove: false`.** The mobile LAN UI never sends it, so ordinary tool permissions auto-approve; clarify and mode-upgrade decisions remain separate interactive channels.
+6. `decisionBroker.initSession(trackedStreamId, { autoApproveAll: request.toolAutoApprove !== false })` (`chatOrchestrator.ts:360`) — **default auto-approve; ordinary tool-permission prompts occur only when a caller explicitly sends `toolAutoApprove: false`.** Direct API callers that omit it get auto-approve, so ordinary tool permissions auto-approve; clarify and mode-upgrade decisions remain separate interactive channels.
 7. Emit `started`, `user_message_persisted` (if any), `provider_routed`.
 8. Build history, resolved tools (`filterToolsForOperationMode`), and system prompt (server-assembled; the renderer deliberately omits `systemPrompt`).
 9. Per-run loop build: fresh `ToolLoopService` with `sink = TreeMessageSink`, `executeTool = createChatPausingExecutor(...)`, and `input.hooks = hookSession.toolLoopHooks()`.
@@ -210,7 +210,7 @@ The renderer's 3 chat thunks (`sendMessage`, `editMessageWithBranching`, `sendMe
 - The renderer is a thin client: no server-owned loop control, tool execution, or permission/hook/compaction orchestration in the renderer. The chat thunks require a host client.
 - `toolAutoApprove` is undefined-by-default and ordinary permission prompts occur only on an explicit `false` (`!== false` test at `chatOrchestrator.ts:360`). Never coerce absence to `false`.
 - `DecisionBroker` key is `${streamId}::${toolCallId}` — `conversationId` is not part of it. Always drain with `rejectAllForStream` in the run's finally.
-- Any change to the `HeadlessStreamEvent` union needs a matching renderer projection (`sseProjection.ts`) + mobile/test harness update.
+- Any change to the `HeadlessStreamEvent` union needs a matching renderer projection (`sseProjection.ts`) + test harness update.
 - ChatGPT credential ownership/refresh serialization stays in the process-wide `AuthSessionManager` (codex slot only).
 - Graviton has no hosted backend; the only remote services are user-configured providers/MCP servers, the anonymous app-store listing and the GitHub update feed.
 - Persistence repos own DB details; routes/services should not scatter SQL. Keep route-level parity with desktop conversation/message tree semantics. For split-channel tool results, persist/stream only compact `persistedContent`; send ephemeral `modelContent` only in continuation history.
@@ -250,7 +250,7 @@ Historical single-subscriber/idle-reaper/opt-out statements above are superseded
 
 `runAdmissionService.ts` and `operationReceiptRepo.ts` own JSON ordinary-send acceptance and durable retry tombstones. Compatible active-lineage sends queue, access-policy changes require acknowledgement, and interrupted commands are not replayed after restart. `runSnapshotProjector.ts` provides main-run bootstrap at S with exact host revisions and current decisions/queue. Fresh reducers cannot reuse only a persisted cursor. `DecisionBroker` registers before emitting prompts and broadcasts metadata-only settlements to all run readers. Receipt outcome recording is independent of projector failures.
 
-Child/oversized snapshot support, full settings/iframe parity and mobile retirement remain incomplete. Runtime still advertises `sharedRuns:false`; see `../shared-ui-implementation-status.md` for acceptance limits and actual validation.
+Child/oversized snapshot support, full settings/iframe parity remain incomplete. The legacy mobile UI was removed on 2026-11-14; `/mobile` redirects to the shared root UI. Runtime still advertises `sharedRuns:false`; see `../shared-ui-implementation-status.md` for acceptance limits and actual validation.
 
 ## Snapshot payload and receipt continuation
 
