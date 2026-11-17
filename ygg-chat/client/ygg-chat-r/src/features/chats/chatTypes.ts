@@ -283,6 +283,8 @@ export interface StreamState {
   // and should stay visible/interruptible in branch-local UIs.
   status: StreamLifecycleStatus
   compactionStatus?: 'started' | 'completed' | 'failed'
+  /** Chat/Agent mode the run is executing in, from its `started` event and later live switches. */
+  operationMode?: OperationMode
   /** Claude runs: the background tasks keeping the session open (a backgrounded shell, workflow, child agent). */
   backgroundTasks?: HeadlessBackgroundTask[]
   /** Claude finished its turn; the run stays open only for `backgroundTasks`. */
@@ -568,6 +570,7 @@ export interface ChatState {
   branchModelDrafts?: Record<string, import('./branchModelSelection').BranchModelSelection>
   branchFastModeDrafts?: Record<string, boolean>
   branchToolApprovalDrafts?: Record<string, boolean>
+  /** Pending live switches, keyed by `operationModeChangeKey(conversationId, streamId)`. */
   operationModeChanges: Record<string, {
     mode: OperationMode
     status: 'requesting' | 'pending'

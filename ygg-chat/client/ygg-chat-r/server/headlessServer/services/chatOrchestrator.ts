@@ -6,6 +6,7 @@ import { ClaudeSessionRepo, assertClaudeBranchSelection } from '../persistence/c
 import { CHAT_MODE_BLOCKED_TOOLS, ClaudeSessionService, claudeImageBlock, parseClaudeSlashCommand, type ClaudeModeSwitch, type ClaudeQueuedInput, type ClaudeTaskControl } from './claudeSessionService.js'
 import type { HostClaudeMcpPreferences } from '../../../../../shared/claudeNativeMcp.js'
 import type { ClaudeWarmConfig } from './claudeWarmProcess.js'
+import { enabledGravitonTools } from './claudeGravitonTools.js'
 import { compactionInstruction } from '../../../../../shared/compaction.js'
 import type { AdmissionMismatchReason } from '../../../../../shared/runAdmission.js'
 import { v4 as uuidv4 } from 'uuid'
@@ -86,6 +87,11 @@ interface ChatOrchestratorDeps {
   claudeNativeMcp?: () => HostClaudeMcpPreferences
   /** Keep a Claude branch's CLI open between runs; absent (tests, subagents) starts a CLI per run. */
   claudeWarm?: ClaudeWarmConfig | null
+  /**
+   * Settings → Tools switches, read live. When present (with `toolExecutor`), Claude runs get the
+   * Graviton tools offered to Claude as the `graviton` MCP server. Absent (tests) keeps them out.
+   */
+  claudeGravitonToolStates?: () => Record<string, boolean>
 }
 
 export function linkPreparedAttachmentsToMessage(
@@ -156,7 +162,7 @@ function parseToolArgs(raw: unknown): any {
 }
 
 /** Whether a tool call skips the interactive permission prompt (server-side port of the renderer gate). */
-function shouldBypassPermission(toolName: string, args: any): boolean {
+export function shouldBypassPermission(toolName: string, args: any): boolean {
   if (ALWAYS_BYPASS_TOOLS.has(toolName)) return true
   if (toolName === 'mcp_manager') return ['search', 'list', 'get', 'stop', 'list_tools'].includes(args?.action)
   if (toolName === 'custom_tool_manager') {
@@ -450,6 +456,8 @@ export interface HeadlessChatOrchestrator {
   classifyOrdinarySend?(request: HeadlessMessageRequest): { lineageId: string | null; parentId: string | null; activeStreamId?: string }
   submitQueuedMessage?(conversationId: string, streamId: string, submission: QueuedMessageSubmission): { snapshot?: MessageQueueSnapshot; restart?: HeadlessMessageRequest; restartStreamId?: string }
   getMessageQueue?(conversationId: string, streamId: string): MessageQueueSnapshot
+  /** How the orchestrator starts a successor run on its own (input held by a Claude /compact). */
+  setSuccessorLauncher?(launch: (request: HeadlessMessageRequest) => void): void
   cancelQueuedMessage?(conversationId: string, streamId: string, requestId: string): MessageQueueSnapshot | Promise<MessageQueueSnapshot>
   stopBackgroundTask?(conversationId: string, streamId: string, taskId: string): Promise<void>
   readBackgroundTaskOutput?(conversationId: string, streamId: string, taskId: string): Promise<HeadlessBackgroundTaskOutput>
@@ -472,16 +480,24 @@ export interface HeadlessChatOrchestrator {
   ): Promise<void>
 }
 
+interface InputRun {
+  queue: MessageInputQueue; request: HeadlessMessageRequest; control: OperationModeControl
+  head: string | null; successor?: string; restartRequestId?: string; restartFingerprint?: string; terminal?: 'completed' | 'failed'; signal?: AbortSignal
+  /** Claude native plan mode, live: an approved plan turns it off for the rest of the run. */
+  claudePlan?: { active: boolean; auto?: boolean }
+  /** A live Claude session: `wake` hands it new entries, `claudeCancel` withdraws one it holds. */
+  wake?: () => void; claudeCancel?: (requestId: string) => Promise<boolean | null>
+  claudeTasks?: ClaudeTaskControl
+}
+
 export class ChatOrchestrator implements HeadlessChatOrchestrator {
-  private readonly inputRuns = new Map<string, {
-    queue: MessageInputQueue; request: HeadlessMessageRequest; control: OperationModeControl
-    head: string | null; successor?: string; restartRequestId?: string; restartFingerprint?: string; terminal?: 'completed' | 'failed'; signal?: AbortSignal
-    /** Claude native plan mode, live: an approved plan turns it off for the rest of the run. */
-    claudePlan?: { active: boolean; auto?: boolean }
-    /** A live Claude session: `wake` hands it new entries, `claudeCancel` withdraws one it holds. */
-    wake?: () => void; claudeCancel?: (requestId: string) => Promise<boolean | null>
-    claudeTasks?: ClaudeTaskControl
-  }>()
+  private readonly inputRuns = new Map<string, InputRun>()
+  /** Starts a successor run in its own run session; set by the route layer, which owns sessions. */
+  private successorLauncher?: (request: HeadlessMessageRequest) => void
+
+  setSuccessorLauncher(launch: (request: HeadlessMessageRequest) => void): void {
+    this.successorLauncher = launch
+  }
 
   private readonly watchPins = new Map<string, { lineageId: string; count: number }>()
 
@@ -588,6 +604,11 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
   /** Startup only: make Claude branches cut off by a stop, sleep, quit or crash continuable. */
   recoverInterruptedClaudeBranches(): Promise<number> {
     return this.claudeSessions.recoverInterruptedBranches?.() ?? Promise.resolve(0)
+  }
+
+  /** Settings → Tools changed: running Claude sessions refresh their Graviton tool list. */
+  gravitonToolsChanged(): void {
+    this.claudeSessions.gravitonToolsChanged?.()
   }
 
   /** Host shutdown: close the Claude CLIs kept open between runs. */
@@ -759,7 +780,8 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     if (isClaudeProvider(run.request.provider)) {
       // Claude runs always use restricted access (see runMessage), so there is no policy to confirm.
       submission = { ...submission, fullAccess: undefined, fullAccessNotificationId: undefined }
-      if (run.request.manualCompaction) throw new Error('Claude is compacting this session. Send your message after it finishes.')
+      // A /compact run holds queued input until its summary exists, then continues it in a successor run.
+      if (run.request.manualCompaction && !this.successorLauncher) throw new Error('Claude is compacting this session. Send your message after it finishes.')
       if (parseClaudeSlashCommand(submission.content)) throw new Error('Claude slash commands cannot be queued. Send it after this turn finishes.')
       for (const attachment of submission.attachmentsBase64 ?? []) claudeImageBlock(attachment.dataUrl)
     }
@@ -793,21 +815,58 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     const lineage = run.queue.lineageId ? this.lineageRepo.get(run.queue.lineageId) : null
     if (!lineage || lineage.head_message_id !== run.head) throw new Error('Branch advanced; reload before sending')
     // The route starts this successor synchronously before another intake can interleave.
+    return { restart: this.claimSuccessor(run, submission, lineage.id, run.head) }
+  }
+
+  /** Reserve the run's successor for `submission`: a send continuing `parentId` on the run's lineage. */
+  private claimSuccessor(run: InputRun, submission: QueuedMessageSubmission, lineageId: string, parentId: string): HeadlessMessageRequest {
     const nextId = uuidv4()
     run.successor = nextId
     run.restartRequestId = submission.requestId
     run.restartFingerprint = queuedSubmissionFingerprint(submission)
-    return { restart: { ...run.request, operation: 'send', streamId: nextId, lineageId: lineage.id,
-      parentId: run.head, messageId: null, operationId: null, content: submission.content, manualCompaction: false,
+    return { ...run.request, operation: 'send', streamId: nextId, lineageId,
+      parentId, messageId: null, operationId: null, content: submission.content, manualCompaction: false,
       watcherCompletion: submission.watcherCompletion,
       selectedFiles: submission.selectedFiles ?? [],
       fullAccess: run.request.fullAccess === true,
       fullAccessNotificationId: submission.fullAccessNotificationId,
-      attachmentsBase64: submission.attachmentsBase64 ?? null, operationMode: run.control.mode,
-      claudePlanMode: run.claudePlan?.active === true ? true : undefined,
+      attachmentsBase64: submission.attachmentsBase64 ?? null,
+      // An explicit mode (the agents pill's Chat/Agent toggle) replaces the finished run's,
+      // including Claude's native plan mode; the loop records the change on the branch.
+      operationMode: submission.operationMode ?? run.control.mode,
+      claudePlanMode: !submission.operationMode && run.claudePlan?.active === true ? true : undefined,
       // A plan approved during the run switched it to Claude's auto mode; the successor keeps it.
       claudePermissionMode: run.claudePlan?.auto === true ? 'auto' : run.request.claudePermissionMode,
-      retrigger: false, isBranch: false } }
+      retrigger: false, isBranch: false }
+  }
+
+  /**
+   * A Claude /compact run never reads its mailbox. When it ends at `summaryId`, reserve one
+   * successor that sends the first held entry from the summary; the rest follow in its mailbox.
+   * Held entries leave this run's queue, so its completion does not mark them unsent.
+   */
+  private claimCompactionSuccessor(run: InputRun, summaryId: string): { request: HeadlessMessageRequest; rest: QueuedMessageSubmission[] } | null {
+    const held = run.queue.queuedEntries().map(entry => entry.submission)
+    if (!held.length || !this.successorLauncher || run.successor) return null
+    const lineage = run.queue.lineageId ? this.lineageRepo.get(run.queue.lineageId) : null
+    // Anything else on the branch since the summary leaves the entries unsent, like any other completion.
+    if (!lineage || lineage.head_message_id !== summaryId) return null
+    const [first, ...rest] = held
+    const request = this.claimSuccessor(run, first, lineage.id, summaryId)
+    run.queue.handOff(held.map(submission => submission.requestId))
+    return { request, rest }
+  }
+
+  private launchCompactionSuccessor(run: InputRun, successor: { request: HeadlessMessageRequest; rest: QueuedMessageSubmission[] }): void {
+    const streamId = successor.request.streamId!
+    this.successorLauncher!(successor.request)
+    for (const submission of successor.rest) {
+      try {
+        this.submitQueuedMessage(successor.request.conversationId, streamId, submission)
+      } catch (error) {
+        run.queue.settle(submission.requestId, { error: error instanceof Error ? error.message : 'This message could not follow the compaction. Send it again.' })
+      }
+    }
   }
 
   private readonly modeRuns = new Map<string, { conversationId: string; control: OperationModeControl }>()
@@ -880,8 +939,15 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     this.decisionBroker = deps.decisionBroker
     this.hookRunner = deps.hookRunner
     this.claudeSessionRepo = new ClaudeSessionRepo(deps.db)
+    const gravitonToolStates = deps.claudeGravitonToolStates
+    const gravitonExecutor = deps.toolExecutor
     this.claudeSessions = deps.claudeSessions ?? new ClaudeSessionService({ sessions: this.claudeSessionRepo, messages: this.messageRepo, broker: deps.decisionBroker,
-      nativeMcp: deps.claudeNativeMcp, warm: deps.claudeWarm })
+      nativeMcp: deps.claudeNativeMcp, warm: deps.claudeWarm,
+      gravitonTools: gravitonToolStates && gravitonExecutor ? {
+        available: () => enabledGravitonTools(this.defaultToolsProvider(), gravitonToolStates()),
+        execute: gravitonExecutor,
+        bypassPermission: shouldBypassPermission,
+      } : null })
     this.toolLoopService =
       deps.toolLoopService ??
       new ToolLoopService({
@@ -1705,6 +1771,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       modelName: request.modelName,
       streamId: trackedStreamId,
       lineageId,
+      operationMode: modeControl.mode,
     })
     startedEmitted = true
 
@@ -1806,7 +1873,8 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       const content = !rendered ? userContent : nativeCommand ? `${userContent}\n\n${rendered}` : `${rendered}\n\n${userContent}`
       const [turnUser] = request.manualCompaction || !turnUserId ? [] : await this.hydrateModelImages(
         [{ role: 'user', id: turnUserId }], turnUserId, request.attachmentsBase64 ?? [])
-      // A manual /compact run ends at its summary; submitQueuedMessage refuses input for it.
+      // A manual /compact run ends at its summary and never reads its mailbox: entries queued
+      // behind it wait there for claimCompactionSuccessor.
       let lastUserId: string | null = resolved.userMessage?.id ?? resolved.assistantParentId ?? null
       const queuedInput = request.manualCompaction ? undefined : this.claudeQueuedInput({ request, lineageId, streamId: trackedStreamId,
         queue: inputQueue, run: inputRun, hookSession, emit, head: () => lastPersistedAssistantId ?? lastUserId,
@@ -1829,9 +1897,13 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
             message: 'The Stop hook ran, but requesting another model turn from a Stop hook is not supported for Claude.' })
         }
       }
+      // Input queued behind a /compact waited for its summary; it continues from there in a successor run.
+      const successor = request.manualCompaction && !signal?.aborted ? this.claimCompactionSuccessor(inputRun, String(finalMessage.id)) : null
       this.streamingRunRepo.finish(trackedStreamId, { status: 'completed', endReason: 'completed',
         assistantMessageId: finalMessage.id, finalMessageId: finalMessage.id })
-      emit({ type: 'complete', message: finalMessage, lineageId })
+      emit({ type: 'complete', message: finalMessage, lineageId,
+        ...(successor ? { continuation: { streamId: successor.request.streamId!, parentId: successor.request.parentId ?? null } } : {}) })
+      if (successor) this.launchCompactionSuccessor(inputRun, successor)
       return
     }
 

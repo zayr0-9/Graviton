@@ -40,6 +40,12 @@ const render = (overrides: Partial<ToolDefinition> = {}, updating = false) =>
 afterEach(() => { mocks.expanded = false; mocks.customTheme = false })
 
 describe('Compact tool row', () => {
+  it('tags built-in tools Claude chats also get, and only those', () => {
+    expect(render({ name: 'theme_manager' })).toContain('>Claude<')
+    expect(render()).not.toContain('>Claude<')
+    expect(render({ name: 'theme_manager', isCustom: true })).not.toContain('>Claude<')
+  })
+
   it('shows one identity and description without repeated source metadata', () => {
     mocks.expanded = true
     const html = render()

@@ -559,11 +559,61 @@ describe('source lineage membership validation', () => {
     expect(JSON.parse(events[changed].message.meta)).toMatchObject({ kind: 'operation_mode_change', mode: 'plan' })
   })
 
-  it('refuses queued input during a Claude compaction run', async () => {
+  it('holds input queued behind a Claude /compact and continues it from the summary in a successor run', async () => {
+    db.exec(CLAUDE_SESSION_SCHEMA)
+    const base: any = { operation: 'send', conversationId: 'c1', provider: 'claudecode', modelName: 'claude-haiku-5-5', rootPath: testDirectory }
+    const successorRuns: Promise<void>[] = []
+    const successorEvents: any[] = []
+    let successorInput: any
+    const claudeSessions = { run: vi.fn(async (input: any) => {
+      // The successor: its first user row is the first held entry; the rest wait in its mailbox.
+      successorInput = input
+      return input.sink.persistAssistantMessage({ conversationId: 'c1', parentId: input.parentId, modelName: input.request.modelName,
+        content: 'answer', meta: { claude: { sessionId: 's' } } })
+    }) }
+    orchestrator = new ChatOrchestrator({ db, statements, providerRouter: providerRouter as any, claudeSessions: claudeSessions as any })
+    orchestrator.setSuccessorLauncher(request => {
+      successorRuns.push(orchestrator.runMessage(request, event => successorEvents.push(event)))
+    })
+    const first: any[] = []
+    claudeSessions.run.mockImplementationOnce(async (input: any) => {
+      const message = input.sink.persistAssistantMessage({ conversationId: 'c1', parentId: input.parentId, modelName: input.request.modelName,
+        content: 'reply', meta: { claude: { sessionId: 's' } } })
+      db.prepare('INSERT INTO claude_message_checkpoints VALUES (?, ?, ?, ?, 1)').run(message.id, 's', 'uuid-1', testDirectory)
+      return message
+    })
+    await orchestrator.runMessage({ ...base, content: 'hello' }, event => first.push(event))
+    const head = first.find(event => event.type === 'complete')
+    claudeSessions.run.mockImplementationOnce(async (input: any) => {
+      expect(input.queuedInput).toBeUndefined()
+      orchestrator.submitQueuedMessage('c1', 'claude-compact', { requestId: 'q1', content: 'first follow-up' })
+      orchestrator.submitQueuedMessage('c1', 'claude-compact', { requestId: 'q2', content: 'second follow-up' })
+      return input.sink.persistAssistantMessage({ conversationId: 'c1', parentId: input.parentId, modelName: input.request.modelName,
+        content: 'summary', meta: { kind: 'compaction_summary', state: 'committed', version: 1, claude: { sessionId: 's', checkpoint: false } } })
+    })
+    const compactEvents: any[] = []
+    await orchestrator.runMessage({ ...base, content: '/compact', manualCompaction: true, parentId: head.message.id,
+      lineageId: head.lineageId, streamId: 'claude-compact' }, event => compactEvents.push(event))
+    await Promise.all(successorRuns)
+
+    const complete = compactEvents.find(event => event.type === 'complete')
+    expect(complete.continuation).toEqual({ streamId: expect.any(String), parentId: complete.message.id })
+    // Held entries left the compaction's mailbox instead of being marked unsent.
+    expect(orchestrator.getMessageQueue('c1', 'claude-compact').items.map(item => item.status)).toEqual(['delivered', 'delivered'])
+    expect(successorRuns).toHaveLength(1)
+    expect(successorInput.request).toMatchObject({ streamId: complete.continuation.streamId, content: 'first follow-up',
+      manualCompaction: false, parentId: complete.message.id })
+    expect(successorInput.queuedInput).toBeDefined()
+    const successorUser = successorEvents.find(event => event.type === 'user_message_persisted')
+    expect(successorUser.message).toMatchObject({ content: 'first follow-up', parent_id: complete.message.id })
+    expect(orchestrator.getMessageQueue('c1', complete.continuation.streamId).items)
+      .toEqual([expect.objectContaining({ requestId: 'q2', content: 'second follow-up' })])
+  })
+
+  it('still refuses input queued behind a Claude /compact when no successor can be started', async () => {
     db.exec(CLAUDE_SESSION_SCHEMA)
     let refusal: unknown
     const claudeSessions = { run: vi.fn(async (input: any) => {
-      expect(input.queuedInput).toBeUndefined()
       try { orchestrator.submitQueuedMessage('c1', 'claude-compact', { requestId: 'q', content: 'after' }) } catch (error) { refusal = error }
       return input.sink.persistAssistantMessage({ conversationId: 'c1', parentId: input.parentId, modelName: input.request.modelName,
         content: 'summary', meta: { kind: 'compaction_summary', claude: { sessionId: 's' } } })

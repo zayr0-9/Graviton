@@ -5,25 +5,34 @@ import reducer, { runningAgentsUiActions as actions } from '../ui/runningAgentsU
 import { emptyFollowUpDraft, findFollowUpKey, followUpCapacity } from '../ui/agentFollowUpState'
 import type { AgentForkGroup, AgentStreamListItem } from '../../hooks/useRunningAgentStreams'
 
-const transport = vi.hoisted(() => ({ send: vi.fn(), epoch: vi.fn(async () => 'epoch') }))
+const transport = vi.hoisted(() => ({ send: vi.fn(), epoch: vi.fn(async () => 'epoch'), mode: vi.fn() }))
 vi.mock('./runAdmissionClient', () => ({ getAdmissionEpoch: transport.epoch }))
 vi.mock('./chatActions', async () => {
   const { createAsyncThunk } = await import('@reduxjs/toolkit')
-  return { enqueueUserMessage: createAsyncThunk('test/queue', async (params: any, { rejectWithValue }) => {
-    const result = await transport.send(params)
-    return result.failure ? rejectWithValue(result.failure) : result
-  }) }
+  return {
+    enqueueUserMessage: createAsyncThunk('test/queue', async (params: any, { rejectWithValue }) => {
+      const result = await transport.send(params)
+      return result.failure ? rejectWithValue(result.failure) : result
+    }),
+    changeOperationMode: createAsyncThunk('test/mode', async (params: any) => {
+      await transport.mode(params)
+      return { status: 'pending', mode: params.mode }
+    }),
+  }
 })
-import { followUpTarget, submitAgentFollowUp } from './agentFollowUp'
+import { followUpTarget, forkOperationMode, moveFollowUpToComposer, selectAgentFollowUpMode, submitAgentFollowUp } from './agentFollowUp'
 
 const run = (id: string, overrides: Partial<AgentStreamListItem> = {}) => ({
   streamId: id, streamType: 'branch', conversationId: 'background', status: 'active', hasError: false, ...overrides,
 }) as AgentStreamListItem
 const fork = (item = run('s')): AgentForkGroup => ({ key: 'fork', displayName: 'fork', lineageId: 'l',
   activeStreams: item.status === 'active' ? [item] : [], completedStreams: item.status === 'active' ? [] : [item], representative: item, hasError: false })
-const setup = () => {
-  const foreground = { conversation: { currentConversationId: 'foreground', currentPath: ['a'] }, composition: { input: { content: 'untouched' }, imageDrafts: ['image'] } }
-  const store = configureStore({ reducer: { runningAgentsUi: reducer, chat: (state = foreground) => state } })
+const setup = (composerContent = 'untouched') => {
+  const foreground = { conversation: { currentConversationId: 'foreground', currentPath: ['a'] }, composition: { input: { content: composerContent }, imageDrafts: ['image'] } }
+  // Only the composer handoff writes chat state; apply its input change like the real slice.
+  const chat = (state = foreground, action: any) => action.type === 'chat/inputChanged'
+    ? { ...state, composition: { ...state.composition, input: { ...state.composition.input, ...action.payload } } } : state
+  const store = configureStore({ reducer: { runningAgentsUi: reducer, chat } })
   store.dispatch(actions.followUpChanged({ key: 'fork', content: 'instruction', streamIds: ['s'] }))
   return store
 }
@@ -143,5 +152,79 @@ describe('review regressions', () => {
     expect(store.getState().runningAgentsUi.followUps.fork).toMatchObject({ status: 'rejected', content: 'instruction' })
     expect(store.getState().runningAgentsUi.followUps.fork.attempt).toBeUndefined()
     expect(transport.send).not.toHaveBeenCalled()
+  })
+})
+
+describe('moveFollowUpToComposer', () => {
+  const reject = async (store: ReturnType<typeof setup>, failure = { message: 'Branch advanced; reload before sending', uncertain: false }) => {
+    transport.send.mockResolvedValueOnce({ failure })
+    await store.dispatch(submitAgentFollowUp(fork(run('s', { status: 'completed' }))) as any)
+  }
+
+  it('moves a rejected draft into an empty composer and empties the pill draft', async () => {
+    const store = setup('')
+    await reject(store)
+    expect(store.dispatch(moveFollowUpToComposer('fork') as any)).toBe(true)
+    expect(store.getState().chat.composition.input.content).toBe('instruction')
+    expect(store.getState().runningAgentsUi.followUps.fork).toMatchObject({ content: '', status: 'idle' })
+    expect(store.getState().runningAgentsUi.followUps.fork.error).toBeUndefined()
+  })
+
+  it('appends after text already in the composer', async () => {
+    const store = setup('existing\n')
+    await reject(store)
+    store.dispatch(moveFollowUpToComposer('fork') as any)
+    expect(store.getState().chat.composition.input.content).toBe('existing\n\ninstruction')
+  })
+
+  it('leaves both drafts alone when delivery is unknown or there is no text', async () => {
+    const store = setup('')
+    await reject(store, { message: 'unknown', uncertain: true })
+    expect(store.dispatch(moveFollowUpToComposer('fork') as any)).toBe(false)
+    expect(store.getState().chat.composition.input.content).toBe('')
+    expect(store.getState().runningAgentsUi.followUps.fork.content).toBe('instruction')
+    expect(store.dispatch(moveFollowUpToComposer('missing') as any)).toBe(false)
+  })
+})
+
+describe('Chat/Agent mode from a fork card', () => {
+  it('starts a finished run\'s follow-up in the chosen mode, then lets the run report it', async () => {
+    const store = setup()
+    const idle = fork(run('s', { status: 'completed', operationMode: 'plan' }))
+    await store.dispatch(selectAgentFollowUpMode(idle, 'fork', 'execute') as any)
+    expect(transport.mode).not.toHaveBeenCalled()
+    expect(store.getState().runningAgentsUi.followUps.fork.operationMode).toBe('execute')
+    transport.send.mockResolvedValue({ streamId: 'next', restarted: true })
+    await store.dispatch(submitAgentFollowUp(idle) as any)
+    expect(transport.send.mock.calls[0][0]).toMatchObject({ operationMode: 'execute' })
+    expect(store.getState().runningAgentsUi.followUps.fork.operationMode).toBeUndefined()
+  })
+
+  it('switches a single live run immediately without storing a draft mode', async () => {
+    const store = setup()
+    const live = fork(run('s', { lineageId: 'l', lineageIdConfirmed: true }))
+    await store.dispatch(selectAgentFollowUpMode(live, 'fork', 'plan') as any)
+    expect(transport.mode).toHaveBeenCalledWith(expect.objectContaining({ mode: 'plan', conversationId: 'background', streamId: 's', lineageId: 'l' }))
+    expect(store.getState().runningAgentsUi.followUps.fork.operationMode).toBeUndefined()
+  })
+
+  it('keeps the choice for the follow-up when the run ended before the switch landed', async () => {
+    const store = setup()
+    transport.mode.mockRejectedValueOnce(new Error('Run is no longer active'))
+    await store.dispatch(selectAgentFollowUpMode(fork(), 'fork', 'plan') as any)
+    expect(store.getState().runningAgentsUi.followUps.fork.operationMode).toBe('plan')
+  })
+
+  it('keeps a mode-only draft when other empty drafts are reclaimed', async () => {
+    const store = setup()
+    await store.dispatch(selectAgentFollowUpMode(fork(run('m', { status: 'completed' })), 'mode-only', 'plan') as any)
+    store.dispatch(actions.followUpChanged({ key: 'other', content: 'draft', streamIds: ['other'] }))
+    expect(store.getState().runningAgentsUi.followUps['mode-only'].operationMode).toBe('plan')
+  })
+
+  it('reads the fork mode from its newest run that reported one', () => {
+    expect(forkOperationMode(fork())).toBeNull()
+    const group = { ...fork(run('new', { status: 'completed' })), completedStreams: [run('new', { status: 'completed' }), run('old', { status: 'completed', operationMode: 'plan' })] }
+    expect(forkOperationMode(group)).toBe('plan')
   })
 })

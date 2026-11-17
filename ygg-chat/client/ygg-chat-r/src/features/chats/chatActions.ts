@@ -34,7 +34,8 @@ import { convContextSet, systemPromptSet } from '../conversations/conversationSl
 import { uiActions } from '../ui/uiSlice'
 import type { Conversation } from '../conversations/conversationTypes'
 import { selectSelectedProject } from '../projects/projectSelectors'
-import { chatSliceActions } from './chatSlice'
+import { chatSliceActions, streamShowsInView } from './chatSlice'
+import { operationModeChangeKey } from './operationModeChangeKey'
 import { selectCurrentViewStreamFor, selectOperationMode } from './chatSelectors'
 import { resolveAttachmentUrlFromOrigins } from './attachmentUrl'
 import {
@@ -45,6 +46,7 @@ import {
   type LineageId,
   Message,
   Model,
+  type OperationMode,
   SendMessagePayload,
   ToolDefinition,
 } from './chatTypes'
@@ -2446,6 +2448,12 @@ export const resumeInFlightStreams = createAsyncThunk<
         })
       }
       if (!result.gone) void dispatch(loadMessageQueue({ conversationId: rec.conversationId, streamId: rec.streamId }))
+      // Input queued behind this run (a Claude /compact) continues in a successor: follow it.
+      if (result.queuedStreamId && !hasGenerationReader(result.queuedStreamId)) {
+        addInflightStream({ streamId: result.queuedStreamId, conversationId: rec.conversationId, streamType: rec.streamType,
+          parentMessageId: result.queuedParentId ?? null, updatePath: rec.updatePath, followSelectedTip: rec.followSelectedTip })
+        void dispatch(resumeInFlightStreams({ conversationId: rec.conversationId, streamId: result.queuedStreamId }))
+      }
       if (result.gone) dispatch(chatSliceActions.streamingAborted({ streamId: rec.streamId }))
       if (result.gone || result.terminal) removeInflightStream(rec.streamId)
     } catch (error) {
@@ -2821,6 +2829,8 @@ export const enqueueUserMessage = createAsyncThunk<QueueAcceptance, {
   includeGlobalComposerContext?: boolean; updatePath?: boolean
   /** Card retries retain this exact prepared text-only payload, including access expectation. */
   preparedTextSubmission?: { epoch: string; fullAccess: boolean; fullAccessNotificationId?: string }
+  /** Mode for the follow-up run when the target run has already finished (agents pill). */
+  operationMode?: OperationMode
 }, { state: RootState; extra: ThunkExtraArgument; rejectValue: QueueRejection }>('chat/enqueueUserMessage', async (params, { dispatch, getState, rejectWithValue }) => {
   if (params.includeGlobalComposerContext !== false) await waitForDraftImages(dispatch, getState, { kind: 'composer' })
   const draftOwner = getState()
@@ -2833,7 +2843,8 @@ export const enqueueUserMessage = createAsyncThunk<QueueAcceptance, {
   let body = JSON.stringify({ epoch, requestId: params.requestId, content: params.content, attachmentsBase64, selectedFiles,
     fullAccess: params.preparedTextSubmission?.fullAccess ?? isFullAccessEnabled(),
     fullAccessNotificationId: params.preparedTextSubmission
-      ? params.preparedTextSubmission.fullAccessNotificationId : getPendingFullAccessNotification(params.conversationId) })
+      ? params.preparedTextSubmission.fullAccessNotificationId : getPendingFullAccessNotification(params.conversationId),
+    ...(params.operationMode ? { operationMode: params.operationMode } : {}) })
   // A lost HTTP acknowledgement is safe to retry with the SAME immutable id/payload.
   let response: Response
   let result: any
@@ -2912,7 +2923,7 @@ export const changeOperationMode = createAsyncThunk<
     dispatch(chatSliceActions.operationModeDraftSet({ conversationId, parentId: selectedParent, mode }))
     return { status: 'applied', mode }
   }
-  const existing = getState().chat.operationModeChanges?.[String(conversationId)]
+  const existing = getState().chat.operationModeChanges?.[operationModeChangeKey(conversationId, streamId)]
   if (existing) return { status: 'pending', mode: existing.mode }
   dispatch(chatSliceActions.operationModeChangeRequested({ conversationId, mode, requestId, streamId }))
   try {
@@ -2931,18 +2942,20 @@ export const changeOperationMode = createAsyncThunk<
         dispatch(chatSliceActions.operationModeNotificationReceived({ message, mode, streamId }))
         refreshHeimdallTreeFromState(getState, dispatch)
       }
-      dispatch(chatSliceActions.operationModeChangeFailed({ conversationId, requestId }))
-      if (String(getState().chat.conversation.currentConversationId) === String(conversationId)) {
+      dispatch(chatSliceActions.operationModeChangeFailed({ conversationId, requestId, streamId }))
+      dispatch(chatSliceActions.streamOperationModeObserved({ streamId, mode }))
+      if (String(getState().chat.conversation.currentConversationId) === String(conversationId) &&
+          streamShowsInView(getState().chat, streamId)) {
         dispatch(chatSliceActions.operationModeSet(mode))
       }
       // The server owns persistence; refresh cached snapshots, not a second write.
       void extra.queryClient?.invalidateQueries({ queryKey: conversationQueryKeys.messages(conversationId) })
       return { status: 'applied', mode }
     }
-    dispatch(chatSliceActions.operationModeChangeAccepted({ conversationId, mode, requestId }))
+    dispatch(chatSliceActions.operationModeChangeAccepted({ conversationId, mode, requestId, streamId }))
     return { status: 'pending', mode }
   } catch (error) {
-    dispatch(chatSliceActions.operationModeChangeFailed({ conversationId, requestId }))
+    dispatch(chatSliceActions.operationModeChangeFailed({ conversationId, requestId, streamId }))
     recordLocalChatError(dispatch, error, {
       conversationId,
       phase: 'resume',

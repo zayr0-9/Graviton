@@ -156,6 +156,7 @@ import type {
   ToolCall,
 } from '../features/chats/chatTypes'
 import { selectChatErrorsForConversation } from '../features/chats/chatSelectors'
+import { operationModeChangeKey } from '../features/chats/operationModeChangeKey'
 import { changeOperationMode, enqueueUserMessage, loadMessageQueue, cancelQueuedMessage, readServerLoopRejection } from '../features/chats/chatActions'
 import { QueuedMessages } from '../components/ChatMessage/QueuedMessages'
 import { OperationModeNotice } from '../components/ChatMessage/OperationModeNotice'
@@ -1358,8 +1359,8 @@ function Chat() {
 
   const selectedPath = useAppSelector(selectCurrentPath)
   const modeChange = useAppSelector(state => {
-    const change = state.chat.operationModeChanges?.[String(currentConversationId)]
-    return streamState.active && change?.streamId === streamState.id ? change : undefined
+    if (!streamState.active || !streamState.id || currentConversationId == null) return undefined
+    return state.chat.operationModeChanges?.[operationModeChangeKey(currentConversationId, streamState.id)]
   })
   const modeLineageId = useAppSelector(state => state.chat.conversation.currentLineageId)
   const [queueSubmitting, setQueueSubmitting] = useState(false)
@@ -5180,8 +5181,8 @@ function Chat() {
     modeChanging: !!modeChange,
     queueSubmitting,
   })
-  // A Claude /compact run ends at its summary, so the host refuses input queued behind it.
-  const canQueueLocal = canQueueAvailable && !(isClaudeSession && isCurrentBranchCompacting)
+  // Input queued behind a Claude /compact waits for its summary, then continues in a successor run.
+  const canQueueLocal = canQueueAvailable
   const canSendLocal = canSendImmediately || canQueueLocal
 
   /**

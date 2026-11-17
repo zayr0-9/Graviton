@@ -105,8 +105,7 @@ describe('fork grid', () => {
   it('shows one card for concurrent and historical runs on the same fork', () => {
     const html = render([run('a'), run('b')], [run('old', { status: 'completed' })])
     expect(html.match(/aria-label="Preview /g)).toHaveLength(1)
-    expect(html).toContain('2 running · 1 completed runs')
-    expect(html).not.toContain('1 active · 0 completed')
+    expect(html).not.toContain('completed runs')
     expect(html).toContain('Transcript a')
     expect(html).toContain('Transcript b')
     expect(html).toContain('Transcript old')

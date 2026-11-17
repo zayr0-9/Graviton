@@ -17,6 +17,17 @@ export function applyHostProviderEnvironment(): void {
   else delete process.env.LMSTUDIO_BASE_URL
   process.env.YGG_OPENAI_CHATGPT_MAX_CONTEXT_TOKENS = String(provider.openAiChatGptMaxContextTokens)
 }
+const savedListeners = new Set<(domains: Array<keyof HostExecutionPreferences>) => void>()
+/** Called after a save or import changes the stored preferences, with the domains it wrote. */
+export function onHostExecutionPreferencesSaved(listener: (domains: Array<keyof HostExecutionPreferences>) => void): () => void {
+  savedListeners.add(listener)
+  return () => { savedListeners.delete(listener) }
+}
+function announceSaved(domains: Array<keyof HostExecutionPreferences>) {
+  for (const listener of savedListeners) {
+    try { listener(domains) } catch (error) { console.warn('[HostExecution] settings listener failed', error instanceof Error ? error.message : error) }
+  }
+}
 export function readHostExecutionPreferences(): HostExecutionSnapshot {
   const current = getSettingsStore().get(KEY) as Stored | undefined
   const { hostId, epoch } = getHostPromptStore().snapshot()
@@ -43,6 +54,7 @@ export function saveHostExecutionPreferences(request: { hostId: string; epoch: s
   for (const key of domains) Object.assign(persistedValues, { [key]: values[key] })
   getSettingsStore().set(KEY, { ...prior, revision: current.revision + 1, revisions, values: persistedValues })
   if (request.patch.provider) applyHostProviderEnvironment()
+  announceSaved(domains)
   return readHostExecutionPreferences()
 }
 /** Trusted native import only; omitted values never overwrite existing defaults. */
@@ -94,5 +106,6 @@ export function importHostExecutionPreferences(raw: Record<string, string | null
   }
   store.set(KEY, { ...current, revisions, revision: (current?.revision ?? 0) + 1, imported: true, importedKeys: [...importedKeys], values: { ...values, ...current?.values } })
   applyHostProviderEnvironment()
+  announceSaved(Object.keys(values) as Array<keyof HostExecutionPreferences>)
   return readHostExecutionPreferences()
 }

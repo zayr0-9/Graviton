@@ -1,6 +1,7 @@
 import React, { useId, useState } from 'react'
 import { Code2, FileJson, Server } from 'lucide-react'
 import type { ToolDefinition } from '../../features/chats/toolDefinitions'
+import { CLAUDE_GRAVITON_TOOL_NAMES } from '../../../../../shared/claudeGravitonTools'
 import { getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from '../ThemeManager/themeConfig'
 import { useSettingsSectionThemeColors } from './settingsSectionTheme'
 import './toolsSettings.css'
@@ -71,6 +72,10 @@ export function ToolSettingsRow({ tool, updating, onToggle }: {
             {!expanded && <span className='tools-settings-description'>{tool.description}</span>}
           </span>
           {tool.isMcp && tool.mcpServerName && <span className='tools-settings-server'>{tool.mcpServerName}</span>}
+          {/* This switch also decides whether Claude chats get the tool (as mcp__graviton__<name>). */}
+          {!tool.isMcp && !tool.isCustom && CLAUDE_GRAVITON_TOOL_NAMES.has(tool.name) && (
+            <span className='tools-settings-server' title='Claude Code chats can use this tool too. This switch applies there as well.'>Claude</span>
+          )}
           <span className='t-acc-chevron' aria-hidden='true'>
             <svg width='16' height='16' viewBox='0 0 16 16' fill='none' stroke='currentColor' strokeWidth='2.25' strokeLinecap='round' strokeLinejoin='round'>
               <path d='M4 6.5L8 10.5L12 6.5' />

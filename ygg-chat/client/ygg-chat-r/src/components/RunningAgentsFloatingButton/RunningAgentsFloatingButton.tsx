@@ -15,7 +15,6 @@ import {
   excludeViewedAgentFork,
   getAgentActivityBadgeClasses,
   getLineageForkKey,
-  type AgentForkGroup,
   summarizeAgentStreamId,
   useRunningAgentStreams,
   type AgentStreamListItem,
@@ -25,9 +24,8 @@ import { getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from '../Theme
 import './agentsPillMotion.css'
 import type { AgentPreviewScrollState } from './AgentRunPreview'
 import { AgentForkCard, cardIconButtonClass, resolvePreviewFork } from './AgentForkCard'
-import { AgentMessageTooltip } from './AgentMessageTooltip'
 import { ArrowLeft, Bot, X, Expand, EyeOff, Layers } from 'lucide-react'
-import { AgentsViewSwitch } from './AgentsViewSwitch'
+import { AgentsGridSettings, readAgentGridOrderMode, writeAgentGridOrderMode } from './AgentsGridSettings'
 import { AgentsMonitorGrid, useAgentGridForks } from './AgentsMonitorGrid'
 import { useAgentsPillResize } from './useAgentsPillResize'
 import { getAgentNotificationPreview } from './agentNotificationTarget'
@@ -54,50 +52,6 @@ const getStreamHref = (stream: AgentStreamListItem): string | null => {
   return getChatSelectionHref(stream.anchorMessageId
     ? { ...destination, kind: 'message', messageId: stream.anchorMessageId }
     : { ...destination, kind: 'conversation' })
-}
-
-const ForkRunDetails = ({
-  fork,
-  onNavigate,
-  style,
-}: {
-  fork: AgentForkGroup
-  onNavigate: (stream: AgentStreamListItem) => void
-  style?: React.CSSProperties
-}) => {
-  const runs = [...fork.activeStreams, ...fork.completedStreams]
-  if (runs.length < 2) return null
-
-  return (
-    <details className='mx-3 mb-2 mt-1 text-[11px] lg:text-xs text-neutral-500 dark:text-neutral-400' style={style}>
-      <summary className='cursor-pointer rounded px-1 py-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400'>
-        {runs.length} recent runs
-      </summary>
-      <div className='mt-1 space-y-1 border-l border-neutral-200 pl-2 dark:border-neutral-700'>
-        {runs.map(stream => (
-          <button
-            key={stream.streamId}
-            type='button'
-            onClick={() => onNavigate(stream)}
-            aria-label={`Preview run ${summarizeAgentStreamId(stream.streamId)}`}
-            className='block w-full rounded-lg px-2 py-1.5 text-left hover:bg-neutral-100/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 disabled:opacity-60 dark:hover:bg-neutral-800/60'
-          >
-            <span className='flex items-center gap-2'>
-              <span>{formatAgentTime(stream.completedAt || stream.createdAt)}</span>
-              <span>{stream.hasError ? 'error' : stream.completedAt ? 'completed' : stream.activityLabel}</span>
-              <span className='truncate font-mono' title={stream.streamId}>{summarizeAgentStreamId(stream.streamId)}</span>
-            </span>
-            {stream.parentMessageText ? <AgentMessageTooltip text={stream.parentMessageText}><span className='mt-0.5 block truncate'>{stream.parentMessageText}</span></AgentMessageTooltip> : null}
-          </button>
-        ))}
-      </div>
-    </details>
-  )
-}
-
-const formatAgentTime = (value: string | null | undefined): string => {
-  if (!value) return ''
-  return new Date(value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 }
 
 const getNotificationHref = (notification: UiNotification): string => {
@@ -358,19 +312,6 @@ const BranchDebugModal = ({
   )
 }
 
-const ParentMessageTicker = ({ text }: { text: string | null | undefined }) => {
-  const trimmed = String(text || '').trim()
-  if (!trimmed) return null
-
-  return (
-    <AgentMessageTooltip text={trimmed}>
-      <div className='mt-1 truncate rounded-full bg-white/70 px-2 py-1 text-[10px] lg:text-[11px] font-medium text-neutral-500 dark:bg-neutral-950/30 dark:text-neutral-400'>
-        {trimmed}
-      </div>
-    </AgentMessageTooltip>
-  )
-}
-
 export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonProps> = ({
   notes = [],
   allConversations = [],
@@ -420,7 +361,7 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
   const headerMode = Boolean(onChatRoute && headerTargets.launcher?.isConnected)
   const compactTriggerRef = useRef<HTMLButtonElement>(null)
   const [expanded, setExpanded] = useState(false)
-  const [gridView, setGridView] = useState(true)
+  const [gridOrderMode, setGridOrderMode] = useState(readAgentGridOrderMode)
   const pillResize = useAgentsPillResize(expanded, className, !headerMode)
   const [selectedRun, setSelectedRun] = useState<AgentStreamListItem | null>(null)
   const [previewWholeFork, setPreviewWholeFork] = useState(false)
@@ -450,7 +391,7 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
   }
   const [branchDebugOpen, setBranchDebugOpen] = useState(false)
   const [inlineNotification, setInlineNotification] = useState<UiNotification | null>(null)
-  const gridBody = gridView && !selectedItem
+  const gridBody = !selectedItem
   const { hiddenList: hiddenGridForks } = useAgentGridForks(activeStreams, streamHistory, hiddenForks)
   const [hiddenListOpen, setHiddenListOpen] = useState(false)
   const hiddenListId = useId()
@@ -497,15 +438,6 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
   const floatingSurfaceMutedText = customThemeEnabled
     ? getThemeModeColor(customTheme.colors.toolJobsMutedText, isDarkMode)
     : undefined
-  const floatingSectionTitleText = customThemeEnabled
-    ? getThemeModeColor(customTheme.colors.settingsCustomThemesTitleText, isDarkMode)
-    : undefined
-  const floatingAgentNameText = customThemeEnabled
-    ? getThemeModeColor(customTheme.colors.settingsCustomThemesAccentText, isDarkMode)
-    : undefined
-  const floatingAgentHistoryNameText = customThemeEnabled
-    ? getThemeModeColor(customTheme.colors.settingsCustomThemesListItemMetaText, isDarkMode)
-    : undefined
   const floatingAccentBg = customThemeEnabled
     ? getThemeModeColor(customTheme.colors.settingsCustomThemesAccentBg, isDarkMode)
     : undefined
@@ -517,9 +449,6 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
     : undefined
   const floatingBadgeText = customThemeEnabled
     ? getThemeModeColor(customTheme.colors.settingsCustomThemesBadgeText, isDarkMode)
-    : undefined
-  const floatingInnerBg = customThemeEnabled
-    ? getTranslucentCssColor(getThemeModeColor(customTheme.colors.settingsCustomThemesInnerCardBg, isDarkMode), 0.74)
     : undefined
   const floatingHoverBg = customThemeEnabled
     ? getTranslucentCssColor(getThemeModeColor(customTheme.colors.settingsCustomThemesInnerCardBg, isDarkMode), 0.62)
@@ -535,9 +464,6 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
     : undefined
   const floatingErrorDotColor = customThemeEnabled
     ? getThemeModeColor(customTheme.colors.toolJobsProgressFailed, isDarkMode)
-    : undefined
-  const floatingCompletedDotColor = customThemeEnabled
-    ? getThemeModeColor(customTheme.colors.toolJobsProgressCompleted, isDarkMode)
     : undefined
   const floatingButtonBg = customThemeEnabled
     ? getTranslucentCssColor(getThemeModeColor(customTheme.colors.settingsCustomThemesButtonBg, isDarkMode), 0.82)
@@ -578,47 +504,14 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
   const floatingPrimaryTextStyle: React.CSSProperties | undefined = customThemeEnabled
     ? { color: floatingSurfaceText }
     : undefined
-  const floatingSectionTitleStyle: React.CSSProperties | undefined = customThemeEnabled
-    ? { color: floatingSectionTitleText }
-    : undefined
-  const floatingAgentNameStyle: React.CSSProperties | undefined = customThemeEnabled
-    ? { color: floatingAgentNameText }
-    : undefined
-  const floatingAgentHistoryNameStyle: React.CSSProperties | undefined = customThemeEnabled
-    ? { color: floatingAgentHistoryNameText }
-    : undefined
   const floatingStatusDotStyle: React.CSSProperties | undefined = customThemeEnabled
     ? { backgroundColor: currentStatusDotColor }
-    : undefined
-  const floatingActiveDotStyle: React.CSSProperties | undefined = customThemeEnabled
-    ? { backgroundColor: floatingActiveDotColor }
-    : undefined
-  const floatingCompletedDotStyle: React.CSSProperties | undefined = customThemeEnabled
-    ? { backgroundColor: floatingCompletedDotColor }
-    : undefined
-  const floatingErrorDotStyle: React.CSSProperties | undefined = customThemeEnabled
-    ? { backgroundColor: floatingErrorDotColor }
-    : undefined
-  const floatingErrorBadgeStyle: React.CSSProperties | undefined = customThemeEnabled
-    ? {
-        backgroundColor: floatingErrorDotColor ? getTranslucentCssColor(floatingErrorDotColor, 0.14) : undefined,
-        color: floatingErrorDotColor,
-      }
     : undefined
   const floatingBadgeStyle: React.CSSProperties | undefined = customThemeEnabled
     ? { backgroundColor: floatingBadgeBg, color: floatingBadgeText }
     : undefined
   const floatingAccentBadgeStyle: React.CSSProperties | undefined = customThemeEnabled
     ? { backgroundColor: floatingAccentBg, color: floatingAccentText }
-    : undefined
-  const floatingCardStyle: React.CSSProperties | undefined = customThemeEnabled
-    ? { backgroundColor: floatingInnerBg, color: floatingSurfaceMutedText }
-    : undefined
-  const floatingRowStyle: React.CSSProperties | undefined = customThemeEnabled
-    ? ({
-        '--running-agents-row-hover-bg': floatingHoverBg,
-        backgroundColor: floatingInnerBg,
-      } as React.CSSProperties)
     : undefined
   const floatingControlButtonStyle: React.CSSProperties | undefined = customThemeEnabled
     ? {
@@ -646,9 +539,9 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
       if (!activeIds.has(id)) seenNotificationIdsRef.current.delete(id)
     })
 
-    // Suppress the whole batch while monitoring; closing to List must not replay
-    // a pending completion and immediately collapse the user's chosen view.
-    if (expanded && gridView && !selectedRun) {
+    // Suppress the whole batch while monitoring; closing the preview must not replay
+    // a pending completion and immediately collapse the grid.
+    if (expanded && !selectedRun) {
       notifications.forEach(notification => seenNotificationIdsRef.current.add(notification.id))
       return
     }
@@ -673,7 +566,7 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
       setInlineNotification(current => (current?.id === nextNotification.id ? null : current))
       notificationTimerRef.current = null
     }, 4200)
-  }, [notifications, expanded, selectedRun, gridView])
+  }, [notifications, expanded, selectedRun])
 
   useEffect(() => {
     return () => {
@@ -925,6 +818,16 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
                     <EyeOff size={18} strokeWidth={2.25} aria-hidden='true' />
                     {hiddenGridForks.length} hidden
                   </button>}
+                  <AgentsGridSettings orderMode={gridOrderMode}
+                    onOrderModeChange={mode => { setGridOrderMode(mode); writeAgentGridOrderMode(mode) }}
+                    buttonClassName={open => `flex h-10 w-10 shrink-0 items-center justify-center rounded-full transition-[background-color,color] duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 ${open
+                      ? 'bg-blue-50 text-blue-700 dark:bg-orange-500/15 dark:text-orange-100'
+                      : 'text-neutral-500 hover:bg-white/70 dark:text-neutral-400 dark:hover:bg-white/10'}`}
+                    buttonStyle={customThemeEnabled ? { color: floatingButtonText } : undefined}
+                    activeButtonStyle={customThemeEnabled ? {
+                      backgroundColor: getThemeModeColor(customTheme.colors.composerToggleActiveBg, isDarkMode),
+                      color: getThemeModeColor(customTheme.colors.composerToggleActiveText, isDarkMode),
+                    } : undefined} />
                   <button type='button' aria-label='Group steps' title='Group steps' aria-pressed={groupPreviewSteps}
                     onClick={event => {
                       event.stopPropagation()
@@ -939,15 +842,6 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
                     } : { color: floatingButtonText } : undefined}>
                     <Layers size={18} strokeWidth={2.25} aria-hidden='true' />
                   </button>
-                  <AgentsViewSwitch
-                    gridView={gridView}
-                    onChange={grid => { setSelectedRun(null); setGridView(grid) }}
-                    inactiveStyle={customThemeEnabled ? { color: floatingButtonText } : undefined}
-                    activeStyle={customThemeEnabled ? {
-                      backgroundColor: getThemeModeColor(customTheme.colors.composerToggleActiveBg, isDarkMode),
-                      color: getThemeModeColor(customTheme.colors.composerToggleActiveText, isDarkMode),
-                    } : undefined}
-                  />
                   {codexDevLogsEnabled ? (
                     <button
                       key='branch-debug-button'
@@ -1022,6 +916,7 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
                     onToggleForkCollapsed={(key, collapsed) => dispatch(collapsed
                       ? runningAgentsUiActions.forkCollapsed(key) : runningAgentsUiActions.forkExpanded(key))}
                     scrollStates={gridScrollStates.current}
+                    orderMode={gridOrderMode}
                   />
                 ) : selectedItem && previewFork ? (
                   // The same card as the grid cell, so status, request text and the working indicator match.
@@ -1037,205 +932,7 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
                         <ArrowLeft size={18} strokeWidth={2.25} aria-hidden='true' />
                       </button>} />
                   </div>
-                ) : <>
-                <div className='flex items-center justify-between px-2 py-2'>
-                  <div className='flex items-center gap-2'>
-                    <div
-                      className='text-[11px] lg:text-xs font-semibold uppercase tracking-[0.18em] text-neutral-500 dark:text-neutral-400'
-                      style={floatingSectionTitleStyle}
-                    >
-                      Running agents
-                    </div>
-                    <span
-                      className='flex items-center gap-1.5 rounded-full bg-neutral-100/80 px-2 py-0.5 text-[10px] lg:text-[11px] font-semibold text-neutral-600 dark:bg-neutral-800/80 dark:text-neutral-300'
-                      style={floatingCardStyle}
-                    >
-                      <span
-                        className={`h-1.5 w-1.5 rounded-full ${customThemeEnabled ? '' : statusTone}`}
-                        style={floatingStatusDotStyle}
-                        aria-hidden='true'
-                      />
-                      {activeForks.length} {activeForks.length === 1 ? 'fork' : 'forks'}
-                    </span>
-                  </div>
-                </div>
-
-                {activeStreams.length === 0 ? (
-                  <div
-                    className='rounded-2xl bg-neutral-50/80 px-3 py-3 text-xs lg:text-sm text-neutral-500 dark:bg-neutral-900/50 dark:text-neutral-400'
-                    style={floatingCardStyle}
-                  >
-                    Agents are idle. New running streams will appear here instantly.
-                  </div>
-                ) : (
-                  <div className={pillResize.size ? 'space-y-1.5 pr-1' : 'max-h-72 space-y-1.5 overflow-y-auto pr-1 thin-scrollbar'}>
-                    {activeForks.map(fork => {
-                      const stream = fork.representative
-                      return (
-                        <div key={fork.key}>
-                        <button
-                          type='button'
-                          onClick={() => openPreview(stream, true)}
-                          aria-label={`Preview ${fork.displayName}`} aria-expanded={selectedRun?.streamId === stream.streamId}
-                          className={`group w-full rounded-2xl bg-neutral-50/80 px-3 py-2.5 text-left transition disabled:cursor-default disabled:opacity-60 ${
-                            customThemeEnabled
-                              ? 'hover:bg-[var(--running-agents-row-hover-bg)] dark:hover:bg-[var(--running-agents-row-hover-bg)]'
-                              : 'hover:bg-neutral-100/90 dark:bg-neutral-900/45 dark:hover:bg-neutral-800/70'
-                          }`}
-                          style={floatingRowStyle}
-                        >
-                          <div className='flex items-start justify-between gap-3'>
-                            <div className='min-w-0 flex-1'>
-                              <div className='flex min-w-0 items-center gap-2'>
-                                <span
-                                  className='shrink-0 text-[11px] lg:text-xs font-bold text-emerald-600 dark:text-emerald-300'
-                                  style={floatingAgentNameStyle}
-                                >
-                                  <span>{fork.displayName}</span>
-                                </span>
-                                <span className='shrink-0 text-[10px] lg:text-[11px] font-medium text-neutral-500 dark:text-neutral-400'
-                                  style={floatingMutedTextStyle}>
-                                  {formatAgentTime(stream.createdAt)}
-                                </span>
-                                <span
-                                  className='truncate text-[12px] lg:text-sm font-semibold text-neutral-900 dark:text-neutral-100'
-                                  style={floatingPrimaryTextStyle}
-                                >
-                                  {stream.conversationTitle || `Conversation ${stream.conversationId || 'Unknown'}`}
-                                </span>
-                              </div>
-                              <ParentMessageTicker text={stream.parentMessageText} />
-                              <div className='mt-1 flex flex-wrap items-center gap-1.5 text-[11px] lg:text-xs'>
-                                <span className='relative flex h-4 w-4 items-center justify-center' aria-label='Agent stream active'>
-                                  <span
-                                    className='h-2.5 w-2.5 rounded-full bg-emerald-500'
-                                    style={floatingActiveDotStyle}
-                                  />
-                                </span>
-                                <span style={floatingMutedTextStyle}>
-                                  {fork.activeStreams.length} running · {fork.completedStreams.length} recent
-                                </span>
-                                {fork.hasError ? (
-                                  <span
-                                    className='rounded-full bg-rose-100 px-2 py-0.5 text-[10px] lg:text-[11px] font-medium text-rose-700 dark:bg-rose-500/15 dark:text-rose-200'
-                                    style={floatingErrorBadgeStyle}
-                                  >
-                                    error
-                                  </span>
-                                ) : null}
-                              </div>
-                            </div>
-                            <div className='shrink-0 text-right'>
-                              <i
-                                className='bx bx-right-arrow-alt text-base text-neutral-400 opacity-0 transition-opacity group-hover:opacity-100 dark:text-neutral-500'
-                                aria-hidden='true'
-                              />
-                            </div>
-                          </div>
-                        </button>
-                        <ForkRunDetails fork={fork} onNavigate={openPreview} style={floatingMutedTextStyle} />
-                        </div>
-                      )
-                    })}
-                  </div>
-                )}
-
-                <div className='mt-3 border-t border-neutral-200/70 pt-3 dark:border-neutral-800/80' style={floatingDividerStyle}>
-                  <div className='flex items-center justify-between px-2 pb-2'>
-                    <div
-                      className='text-[11px] lg:text-xs font-semibold uppercase tracking-[0.18em] text-neutral-500 dark:text-neutral-400'
-                      style={floatingSectionTitleStyle}
-                    >
-                      History
-                    </div>
-                    {historyForks.length > 0 ? (
-                      <div className='text-[10px] lg:text-[11px] text-neutral-500 dark:text-neutral-400' style={floatingMutedTextStyle}>
-                        {historyForks.length} {historyForks.length === 1 ? 'fork' : 'forks'}
-                      </div>
-                    ) : null}
-                  </div>
-
-                  {historyForks.length === 0 ? (
-                    <div
-                      className='rounded-2xl bg-neutral-50/70 px-3 py-2.5 text-xs lg:text-sm text-neutral-500 dark:bg-neutral-900/40 dark:text-neutral-400'
-                      style={floatingCardStyle}
-                    >
-                      Idle forks will appear here. Recent runs of active forks stay above.
-                    </div>
-                  ) : (
-                    <div className={pillResize.size ? 'space-y-1.5 pr-1' : 'max-h-56 space-y-1.5 overflow-y-auto pr-1 thin-scrollbar'}>
-                      {historyForks.map(fork => {
-                        const stream = fork.representative
-                          return (
-                          <div key={fork.key}>
-                          <button
-                            type='button'
-                            onClick={() => openPreview(stream, true)}
-                            aria-label={`Preview ${fork.displayName}`} aria-expanded={selectedRun?.streamId === stream.streamId}
-                            className={`group w-full rounded-2xl bg-stone-50/70 px-3 py-2.5 text-left opacity-90 transition hover:opacity-100 disabled:cursor-default disabled:opacity-60 ${
-                              customThemeEnabled
-                                ? 'hover:bg-[var(--running-agents-row-hover-bg)] dark:hover:bg-[var(--running-agents-row-hover-bg)]'
-                                : 'hover:bg-neutral-100/90 dark:bg-neutral-900/35 dark:hover:bg-neutral-800/65'
-                            }`}
-                            style={floatingRowStyle}
-                          >
-                            <div className='flex items-start justify-between gap-3'>
-                              <div className='min-w-0 flex-1'>
-                                <div className='flex min-w-0 items-center gap-2'>
-                                  <span
-                                    className='shrink-0 text-[11px] lg:text-xs font-bold text-neutral-500 dark:text-neutral-400'
-                                    style={floatingAgentHistoryNameStyle}
-                                  >
-                                    <span>{fork.displayName}</span>
-                                  </span>
-                                  <span className='shrink-0 text-[10px] lg:text-[11px] font-medium text-neutral-500 dark:text-neutral-400'
-                                  style={floatingMutedTextStyle}>
-                                    {formatAgentTime(stream.completedAt || stream.createdAt)}
-                                  </span>
-                                  <span
-                                    className='truncate text-[12px] lg:text-sm font-semibold text-neutral-800 dark:text-neutral-100'
-                                    style={floatingPrimaryTextStyle}
-                                  >
-                                    {stream.conversationTitle || `Conversation ${stream.conversationId || 'Unknown'}`}
-                                  </span>
-                                </div>
-                                <ParentMessageTicker text={stream.parentMessageText} />
-                                <div className='mt-1 text-[11px] lg:text-xs' style={floatingMutedTextStyle}>
-                                  {fork.completedStreams.length} recent {fork.completedStreams.length === 1 ? 'run' : 'runs'}
-                                </div>
-                                <div className='mt-1 flex flex-wrap items-center gap-1.5 text-[11px] lg:text-xs'>
-                                  <span
-                                    className={`h-2.5 w-2.5 rounded-full ${customThemeEnabled ? '' : stream.hasError ? 'bg-rose-500' : 'bg-emerald-500'}`}
-                                    style={stream.hasError ? floatingErrorDotStyle : floatingCompletedDotStyle}
-                                    aria-label={stream.hasError ? 'Agent stream ended with error' : 'Agent stream completed'}
-                                  />
-                                  {stream.hasError ? (
-                                    <span
-                                      className='rounded-full bg-rose-100 px-2 py-0.5 text-[10px] lg:text-[11px] font-medium text-rose-700 dark:bg-rose-500/15 dark:text-rose-200'
-                                      style={floatingErrorBadgeStyle}
-                                    >
-                                      ended with error
-                                    </span>
-                                  ) : (
-                                    <span
-                                      className='rounded-full bg-neutral-100 px-2 py-0.5 text-[10px] lg:text-[11px] font-medium text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400'
-                                      style={floatingBadgeStyle}
-                                    >
-                                      completed
-                                    </span>
-                                  )}
-                                </div>
-                              </div>
-                            </div>
-                          </button>
-                          <ForkRunDetails fork={fork} onNavigate={openPreview} style={floatingMutedTextStyle} />
-                          </div>
-                        )
-                      })}
-                    </div>
-                  )}
-                </div>
-                </>}
+                ) : null}
                 </div>
               </div>
             )}

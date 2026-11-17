@@ -58,7 +58,7 @@ describe('AgentForkCard', () => {
     for (const html of [cell, focused]) {
       expect(html).toContain(WORKING)
       expect(html).toContain('Writing')
-      expect(html).toContain('1 running · 0 completed runs')
+      expect(html).not.toContain('completed runs')
       expect(html).toContain('Request live')
       expect(html).toContain('aria-label="Open chat for First chat · fork sam"')
       expect(html).toContain('Transcript live')

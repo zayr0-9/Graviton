@@ -53,10 +53,9 @@ Expanded state:
 - The outer shell changes width/height using one symmetric CSS card-resize transition.
 - The apps expand button stays visually pinned to the far right of the widened shell.
 - The running-agent panel appears below the top row.
-- At automatic size, active/history sublists scroll independently; resized lists share one scrolling body. Groups sort by representative start time: newest active execution for active forks, newest-started completed execution for idle forks.
+- The body is always the live grid (the list/grid switch and the old list view were removed). Forks sort active first, then by representative start time: newest active execution for active forks, newest-started completed execution for idle forks. How that order moves cards is governed by the grid card-movement setting (see "Grid card movement").
 - Group runs by `(conversationId, server-confirmed lineageId)`; retain separate stream IDs for execution and replay. Initial source lineages and missing identities stay as individual unresolved runs until the server resolves them.
-- Show one row per fork with a stable shortened lineage label, the latest active request/navigation target, and running/recent counts. Idle rows use the latest completed run.
-- Recent completed runs stay under their active fork rather than duplicating it in History. A native disclosure exposes individual runs when more than one is retained.
+- Show one card per fork (`AgentForkCard`) with a stable shortened lineage label, and the latest active request/navigation target (no running/completed run-count summary). Idle cards use the latest completed run. Recent completed runs belong to their active fork's card rather than appearing separately.
 - Compact/header counts describe active fork groups, while the accessible label also reports running executions. The component-local recent-run buffer is capped at 40; displayed history also merges inactive retained-preview metadata, then `limitFinishedAgentHistory` keeps only the newest `MAX_FINISHED_AGENT_FORKS` (5) finished forks (ordered by newest-started run). Completed runs of active forks are always kept and do not count toward the cap.
 
 Notification state:
@@ -115,11 +114,7 @@ Shell:
 - Preserve `useCustomChatTheme()`, `useHtmlDarkMode()`, and `getThemeModeColor()` integration for shell, text, badges, status, hover surfaces, and controls.
 - Enabled-theme shell borrows `streamingAnimationColor` for both its radial tint (18%) and linear tint (22%), over the settings card fill (78%). This follows the active theme's light/dark agent-activity color rather than settings-panel button/accent colors. Transcript and request tooltips also consume custom-theme/light-dark state.
 
-Lists:
-
-- Active streams: `max-h-72 overflow-y-auto`.
-- History: `max-h-56 overflow-y-auto`.
-- Keep rows compact, rounded, and keyboard-clickable.
+Header actions (expanded, left to right): "N hidden" toggle (only while forks are hidden), Grid settings (gear), Group steps (Layers), branch diagnostics (dev logs only), apps.
 
 ## Data Flow
 
@@ -185,6 +180,8 @@ Keep all active runs, then only the newest-started retained run per confirmed `(
 
 Preview tool cards reuse normal chat presentation for structured inputs/results (including multi_call), edit diffs, and plan_md display. Plan viewing uses the retained Markdown snapshot, with fullscreen and zoom available but Edit/Save and saving shortcuts blocked. Fullscreen plans layer above the pill and consume Escape without closing the underlying transcript. Executable HTML/MCP apps, app loaders, tool-navigation and subagent-transcript actions remain disabled. Copyable prose and disclosures remain available; editing/branching actions are disabled. Duplicate tool_failed bubbles are omitted from preview presentation; failed tool results and other error bubbles remain visible. Tool output truncation affects rendering only, not retained content. Archive memory is bounded to active forks plus the 5 newest finished forks, but individual very large runs are not truncated.
 
+User rows in the transcript use the pill-only theme key `agentsGridUserMessageBg` through `ChatMessage`'s `userSurfaceColor` prop. Chat's user surface (`messageRoles.user.containerBg`) blends into card backgrounds. The default is `color-mix(in srgb, currentColor 7%/10%, transparent)`, a tint of the card's own text colour, so it stands out on any card colour. The same default applies when custom themes are off. Edit it in Theme Manager → Agents pill grid cards. The key exists in both `themeConfig.ts` and `server/tools/themeManager.ts`.
+
 Validation: `npm run test:renderer`, `npx tsc -p tsconfig.app.json --noEmit`, and `npm run build:electron` from the client directory. Manual checks must include background runs, multi-turn tools, completion/pruning/reopen, same-fork replacement, Stop all, grouped/ungrouped prose, notification coexistence, and Open chat.
 
 Fork labels display only the first three lineage-ID characters (`fork 5d1`); grouping still uses the complete identity. Parent-request ticker and recent-run request rows show the full message on hover/focus in `AgentMessageTooltip`, portalled outside the shell's clipping containers. The tooltip preserves line breaks, is scrollable for long requests, and uses explicit light/dark/custom-theme colors. Escape, underlying scroll, and navigation dismiss it.
@@ -195,11 +192,11 @@ The run viewer and request previews share Heimdall's `isHeimdallScaffoldingMessa
 
 ## Expanded size (renderer-session only)
 
-Expanded list and transcript modes share a top-left corner resize handle; the bottom-right anchor stays fixed. `useAgentsPillResize.ts` owns transient pointer capture and animation-frame geometry, while `features/ui/runningAgentsUiSlice.ts` stores the preferred total expanded width/height only on release or keyboard resize. No localStorage/Query/disk persistence. Collapse/reopen and fullscreen-homepage unmount/remount preserve size; renderer restart, sign-out, or reset clears it.
+Expanded grid and transcript modes share a top-left corner resize handle; the bottom-right anchor stays fixed. `useAgentsPillResize.ts` owns transient pointer capture and animation-frame geometry, while `features/ui/runningAgentsUiSlice.ts` stores the preferred total expanded width/height only on release or keyboard resize. No localStorage/Query/disk persistence. Collapse/reopen and fullscreen-homepage unmount/remount preserve size; renderer restart, sign-out, or reset clears it.
 
-Drag left/up to grow, right/down to shrink. Arrow keys resize by 8px, Shift+arrows by 32px; Home or double-click restores automatic sizing. Pointer cancellation restores the prior preference. Viewport/anchor changes clamp the rendered size while preserving the preferred dimensions for a later larger window. The transcript flex-fills the available body; resized lists use a single scrolling body instead of fixed-height sublists. The CSS width/height transition is disabled during active dragging.
+Drag left/up to grow, right/down to shrink. Arrow keys resize by 8px, Shift+arrows by 32px; Home or double-click restores automatic sizing. Pointer cancellation restores the prior preference. Viewport/anchor changes clamp the rendered size while preserving the preferred dimensions for a later larger window. The transcript flex-fills the available body. The CSS width/height transition is disabled during active dragging.
 
-Validation includes `agentsPillResize.test.ts` (geometry and session state), the renderer suite, and Electron build. Manual checks: drag while streaming, release outside the handle, pointer cancellation, viewport shrinking/restoration, list/transcript mode switch, collapse/reopen/remount, keyboard/reset, and theme/reduced-motion behavior.
+Validation includes `agentsPillResize.test.ts` (geometry and session state), the renderer suite, and Electron build. Manual checks: drag while streaming, release outside the handle, pointer cancellation, viewport shrinking/restoration, grid/transcript switch, collapse/reopen/remount, keyboard/reset, and theme/reduced-motion behavior.
 
 ## Row-specific grid splits
 
@@ -227,9 +224,9 @@ The pill omits the fork Chat is currently showing, live or finished, so it never
 
 ## Empty and user-hidden grid cards
 
-The grid omits a finished fork with nothing a reader can see. That covers a released transcript (no retained representative) and runs whose rows are only empty or whitespace text/thinking. Forks with a running stream always stay, because their card shows the working animation while waiting for output. `forkHasPreviewContent` (`agentForkPreview.ts`) uses the same whole-fork lookup as the card, and caches by run object (Immer replaces a run when it changes). `useAgentGridForks` (`AgentsMonitorGrid.tsx`) owns this membership for both the grid and the header toggle; it selects a serialized list of empty IDs, so token updates do not rerender either. List view and selected-run previews are unchanged. Released runs stay reachable there via Open chat.
+The grid omits a finished fork with nothing a reader can see. That covers a released transcript (no retained representative) and runs whose rows are only empty or whitespace text/thinking. Forks with a running stream always stay, because their card shows the working animation while waiting for output. `forkHasPreviewContent` (`agentForkPreview.ts`) uses the same whole-fork lookup as the card, and caches by run object (Immer replaces a run when it changes). `useAgentGridForks` (`AgentsMonitorGrid.tsx`) owns this membership for both the grid and the header toggle; it selects a serialized list of empty IDs, so token updates do not rerender either. Selected-run previews are unchanged.
 
-Each card has an EyeOff hide control. `runningAgentsUiSlice.hiddenForks` stores fork key → stream IDs known when hidden. The data is session-only, capped at 200, and cleared on sign-out (not by pill size reset). A fork stays hidden until it gains a run the user had not seen, so new activity on a hidden fork resurfaces it. Hidden forks appear behind an "N hidden" toggle in the expanded pill header, left of Group steps; it shows only in grid view while something is hidden. The toggle opens an inline list above the cards (status dot, name, fork, status) with a per-row Show control and Show all. Escape closes the list and returns focus to the toggle. Hiding focuses the toggle, and showing focuses the restored card. Colours: `settingsCustomThemesButton*` for the toggle and row controls, `composerToggleActive*` for the open toggle, and `settingsCustomThemesInnerCardBg` for the list surface. Tests: `AgentsMonitorGrid.test.tsx`, `runningAgentsUiSlice.test.ts`.
+Each card has an EyeOff hide control. `runningAgentsUiSlice.hiddenForks` stores fork key → stream IDs known when hidden. The data is session-only, capped at 200, and cleared on sign-out (not by pill size reset). A fork stays hidden until it gains a run the user had not seen, so new activity on a hidden fork resurfaces it. Hidden forks appear behind an "N hidden" toggle in the expanded pill header, left of Group steps; it shows only while the grid (not a preview) is open and something is hidden. The toggle opens an inline list above the cards (status dot, name, fork, status) with a per-row Show control and Show all. Escape closes the list and returns focus to the toggle. Hiding focuses the toggle, and showing focuses the restored card. Colours: `settingsCustomThemesButton*` for the toggle and row controls, `composerToggleActive*` for the open toggle, and `settingsCustomThemesInnerCardBg` for the list surface. Tests: `AgentsMonitorGrid.test.tsx`, `runningAgentsUiSlice.test.ts`.
 
 Cards also have a collapse control (ChevronsRightLeft) left of hide. A collapsed card becomes a fixed `3rem` strip showing an expand button, a status dot and a vertical name/fork button that opens the preview. Its transcript unmounts, and scroll state is kept. The open cards in that row share the remaining width. `runningAgentsUiSlice.collapsedForks` holds fork keys for the session (capped, cleared on sign-out). `getEffectiveCollapsedCells` only applies a collapse while another card in the same row stays expanded; an all-collapsed or single-card row renders expanded, so the control is offered only when more than one card in the row is expanded. `AgentGridRow` takes per-cell `collapsed` flags. `getAgentGridTracks` gives collapsed cells the fixed track and normalizes open cells among themselves. Collapsed cells get no splitter and are excluded from split width, and a collapse change re-equalizes the row the same way a membership change does. Focus moves to the replacement toggle after collapse or expand. Tests: `agentGridSplit.test.ts`, `AgentGridRow.test.tsx`, `AgentsMonitorGrid.test.tsx`, `runningAgentsUiSlice.test.ts`.
 
@@ -240,6 +237,32 @@ Cards also have a collapse control (ChevronsRightLeft) left of hide. A collapsed
 `getAgentCardStatus` derives one status from the stream list (`AgentForkGroup`). It drives the header and the transcript's `isStreaming`, so the working indicator always agrees with the header. Do not derive it from the preview store: a stream can end without the store seeing it (for example `sendingCompleted` without a stream ID). Render `AgentRunPreview` only through the card. `useAgentCardTheme` holds the shared theme keys (`toolJobsMutedText`, `agentsGridStreamingCardBg`/`agentsGridIdleCardBg`, `toolJobsProgress*`, `settingsCustomThemesButton*`, `settingsCustomThemesInnerCardBg`).
 
 `resolvePreviewFork` finds the selected run's fork in the unfiltered lists, so a focused fork preview follows the live representative and counts as runs start and end. A run that is no longer listed (e.g. from an old notification) is shown as its own one-run group. With `run` set (recent-run rows and notifications), the card shows that one run: its own status, request and `Run <id>` instead of fork counts, and no working indicator borrowed from a sibling run of the fork. Tests: `AgentForkCard.test.tsx`.
+
+## Follow-up draft handoff to Chat
+
+`AgentFollowUpComposer.tsx` shows its error (a rejected send such as "Branch advanced; reload before sending", or a `followUpTarget` reason) with an Open chat link. Clicking it dispatches `moveFollowUpToComposer` (`features/chats/agentFollowUp.ts`) before navigating. The draft text is appended to `chat.composition.input.content` after a blank line, and the pill draft is emptied, so the text lives in one place. `ChatInputController` picks it up because it resets to `initialValue` whenever that changes. Nothing moves while a send is preparing or sending, or when delivery is `unknown`, because the host may already hold that message. The card header's Open chat ↗ does not move drafts. Tests: `agentFollowUp.test.ts` (`moveFollowUpToComposer`).
+
+## Chat/Agent mode per card
+
+The follow-up composer has a Chat | Agent toggle left of Send. It shows the card's draft choice, else a pending live switch for that run, else `forkOperationMode` (the newest run's `operationMode`, which `useRunningAgentStreams` copies from `StreamState.operationMode`). Runs report their mode in the `started` SSE event (`streamOperationModeObserved`), and live switches and mode notices update it. The toggle is disabled whenever the composer cannot send (`followUpTarget` reason, send in flight, another draft unresolved) and while a live switch is still being requested.
+
+`selectAgentFollowUpMode` (`features/chats/agentFollowUp.ts`):
+
+- **One live run:** calls `changeOperationMode` with that run's stream, the same route as Chat's toggle. Nothing is stored on the draft.
+- **Finished fork, or the live switch failed because the run just ended:** stores `operationMode` on the draft (`followUpModeChanged`). `submitAgentFollowUp` puts it on the attempt and `enqueueUserMessage` sends it to the queue route. The host's follow-up run starts in that mode and drops Claude's native plan mode. The mode is part of the submission fingerprint, so a retry cannot change it. Accepting the send clears the draft mode. Empty drafts that hold only a mode are not reclaimed.
+
+Pending live switches are keyed per run (`operationModeChangeKey(conversationId, streamId)`), so two forks of one conversation can switch independently. A switch on a run whose confirmed lineage is not the one open in Chat does not move Chat's composer mode (`streamShowsInView`). Tests: `agentFollowUp.test.ts` (Chat/Agent mode), `changeOperationMode.test.ts`, `sseProjection.test.ts`, server `messageInputQueue.test.ts` and `messageQueueRoutes.test.ts`.
+
+## Grid card movement
+
+Re-sorting must never shuffle the cards of a row the user is reading. `AgentsMonitorGrid` lays rows out with `arrangeAgentGridRows` (`agentGridLayout.ts`), starting from the previously rendered rows (held in a ref and updated in a layout effect):
+
+- `rows` (default, "Move between rows"): row membership follows sort order, so a fork that becomes active rises to the top row. Inside a row, cards that were already there keep their slot; a card arriving from another row takes the slot of the card that left. A sort change inside one row changes nothing. When a row shrinks, survivors keep their relative order.
+- `locked` ("Lock positions"): sort order is ignored. Departed forks leave a gap that the rest of their row absorbs (the row gets fewer, wider cards), rows that become empty are removed, and new forks are appended to the last row, then new rows.
+
+The column count is the width capacity (`getAgentGridColumns` with an unbounded count), not `min(capacity, forks)`, so a fork arriving or leaving does not reflow every row. A capacity change (pill or window resize) reflows: `rows` from sort order, `locked` from the previous order. Card React keys are fork keys, so a card that stays in its row keeps its transcript mount and scroll; one that changes rows remounts, as before.
+
+The mode is picked from the Grid settings gear in the header (left of Group steps). The menu is a `menuitemradio` list portalled to `document.body` (the shell clips), closed by outside pointer, Escape (focus returns to the gear) or window resize; Up/Down move between options. The choice persists in `localStorage` key `agents:gridOrderMode` (invalid values fall back to `rows`). Tests: `agentGridLayout.test.ts`, `AgentsGridSettings.test.tsx`.
 
 ## Quiet phone header presentation
 

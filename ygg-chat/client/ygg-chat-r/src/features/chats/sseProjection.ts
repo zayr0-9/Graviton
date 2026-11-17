@@ -268,8 +268,11 @@ export function projectServerEvent(event: ServerStreamEvent, ctx: ProjectionCont
     case 'started': {
       const parentId = event.parentId ?? null
       const lineageId = event.lineageId ?? null
-      if (!parentId && !lineageId) return []
+      const modeActions = event.operationMode === 'plan' || event.operationMode === 'execute'
+        ? [chatSliceActions.streamOperationModeObserved({ streamId, mode: event.operationMode })] : []
+      if (!parentId && !lineageId) return modeActions
       return [
+        ...modeActions,
         chatSliceActions.streamLineageUpdated({
           streamId,
           ...(lineageId ? { lineageId } : {}),

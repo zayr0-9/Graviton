@@ -94,9 +94,8 @@ export function AgentForkCard({ fork, run, grouped, onOpenChat, onOpen, leading,
   const status = getAgentCardStatus(fork, run)
   const name = forkName(fork)
   const label = `${name} · ${fork.displayName}`
-  const detail = run
-    ? `Run ${summarizeAgentStreamId(run.streamId)}`
-    : `${fork.activeStreams.length} running · ${fork.completedStreams.length} completed runs`
+  // Fork cards show no run-count summary; only a single-run card names its run.
+  const detail = run ? `Run ${summarizeAgentStreamId(run.streamId)}` : null
   const titleContent = <>
     <span className='min-w-0 flex-1 truncate text-sm font-semibold' title={name}>{name}</span>
     <span className='shrink-0 text-xs text-neutral-500 dark:text-neutral-400' style={mutedStyle}>{fork.displayName}</span>
@@ -122,7 +121,7 @@ export function AgentForkCard({ fork, run, grouped, onOpenChat, onOpen, leading,
             <span className={`h-2 w-2 shrink-0 rounded-full ${agentStatusDotClass(status)}`} style={statusDotStyle(status)} aria-hidden='true' />
             {status.label}
           </span>
-          <span className='min-w-0 flex-1 truncate text-neutral-500 dark:text-neutral-400' style={mutedStyle} title={run ? run.streamId : detail}>
+          <span className='min-w-0 flex-1 truncate text-neutral-500 dark:text-neutral-400' style={mutedStyle} title={run?.streamId}>
             {detail}
           </span>
           <button type='button' disabled={!stream.conversationId} onClick={() => onOpenChat(stream)} aria-label={`Open chat for ${label}`}

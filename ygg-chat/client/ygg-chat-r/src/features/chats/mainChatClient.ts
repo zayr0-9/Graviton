@@ -188,6 +188,8 @@ interface StreamAccumulator {
   messageId: MessageId | null
   userMessage: Message | null
   providerError: boolean
+  /** The terminal `complete` handed queued input to a successor run (a Claude /compact). */
+  continuation?: { streamId: string; parentId: string | null }
   /** Highest server `seq` applied — the reattach cursor. */
   lastSeq: number
   /** SSE frames that failed to parse. A run that ends having dropped frames has a
@@ -391,6 +393,7 @@ function makeHandleEvent(
     } else if (event.type === 'complete') {
       acc.messageId = event.message?.id ?? null
       acc.providerError = event.providerError === true
+      if (typeof event.continuation?.streamId === 'string' && event.continuation.streamId) acc.continuation = event.continuation
       acc.sawTerminal = true
       onMessagePersisted?.()
     } else if (event.type === 'error') {
@@ -813,7 +816,12 @@ export async function runServerChatLoop(
     )
   }
 
-  return { messageId: acc.messageId, userMessage: acc.userMessage, providerError: acc.providerError }
+  return { messageId: acc.messageId, userMessage: acc.userMessage, providerError: acc.providerError, ...continuationOf(acc) }
+}
+
+/** A successor run carrying input queued behind this one; callers attach to it like a queued send. */
+function continuationOf(acc: StreamAccumulator): Pick<RunServerChatLoopResult, 'queuedStreamId' | 'queuedParentId'> {
+  return acc.continuation ? { queuedStreamId: acc.continuation.streamId, queuedParentId: acc.continuation.parentId } : {}
 }
 
 export interface RunServerReattachResult extends RunServerChatLoopResult {
@@ -914,6 +922,7 @@ export async function runServerReattach(
     providerError: acc.providerError,
     gone: false,
     terminal: acc.sawTerminal,
+    ...continuationOf(acc),
     // A terminal `error` frame during replay: nothing throws here, so
     // this is the ONLY way the caller learns the run ended badly.
     ...(acc.errorEnvelope ? { envelope: acc.errorEnvelope } : {}),

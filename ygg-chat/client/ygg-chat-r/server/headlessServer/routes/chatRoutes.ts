@@ -458,6 +458,7 @@ export function launchQueuedSuccessor(orchestrator: HeadlessChatOrchestrator, ru
 export function registerChatRoutes(app: Express, deps: RegisterChatRoutesDeps): void {
   const { orchestrator, compactionService, decisionBroker, runSessions, resumableRuns } = deps
   decisionBroker?.subscribe(event => runSessions?.get(event.streamId)?.publish(event))
+  if (runSessions && resumableRuns) orchestrator.setSuccessorLauncher?.(request => launchQueuedSuccessor(orchestrator, runSessions, request))
 
   app.get('/api/conversations/:id/admissions/:operationId', (req, res) => {
     const receipt = deps.admissions?.lookup(String(req.params.operationId))
@@ -544,8 +545,9 @@ export function registerChatRoutes(app: Express, deps: RegisterChatRoutesDeps): 
     } catch (error) { res.status(409).json({ error: error instanceof Error ? error.message : String(error) }) }
   })
   app.post('/api/conversations/:id/streams/:streamId/queue', (req, res) => {
-    const { requestId, content, attachmentsBase64, selectedFiles, fullAccess, fullAccessNotificationId } = req.body ?? {}
+    const { requestId, content, attachmentsBase64, selectedFiles, fullAccess, fullAccessNotificationId, operationMode } = req.body ?? {}
     if (typeof requestId !== 'string' || !requestId || requestId.length > 128 || typeof content !== 'string' || !content.trim() ||
+      (operationMode != null && operationMode !== 'plan' && operationMode !== 'execute') ||
       content.length > 200_000 || !validSelectedFiles(selectedFiles) || (fullAccess != null && typeof fullAccess !== 'boolean') ||
       (fullAccessNotificationId != null && (typeof fullAccessNotificationId !== 'string' || !fullAccessNotificationId || fullAccessNotificationId.length > 128)) ||
       (attachmentsBase64 != null && (!Array.isArray(attachmentsBase64) || attachmentsBase64.length > 20 ||
@@ -558,12 +560,14 @@ export function registerChatRoutes(app: Express, deps: RegisterChatRoutesDeps): 
       if (!orchestrator.submitQueuedMessage || !runSessions || !resumableRuns) throw new Error('Queued messages require resumable runs')
       if (deps.admissions) {
         const result = deps.admissions.enqueue(String(req.params.id), String(req.params.streamId),
-          { requestId, content, attachmentsBase64, selectedFiles, fullAccess, fullAccessNotificationId },
+          { requestId, content, attachmentsBase64, selectedFiles, fullAccess, fullAccessNotificationId,
+            ...(operationMode ? { operationMode } : {}) },
           typeof req.body?.epoch === 'string' ? req.body.epoch : hostEpoch)
         res.json(result); return
       }
       const result = orchestrator.submitQueuedMessage(String(req.params.id), String(req.params.streamId), {
         requestId, content, attachmentsBase64, selectedFiles, fullAccess, fullAccessNotificationId,
+        ...(operationMode ? { operationMode } : {}),
       })
       if (result.restart) {
         const request = result.restart

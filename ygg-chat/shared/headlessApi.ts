@@ -263,6 +263,8 @@ export type HeadlessStreamEvent =
       modelName: string
       streamId?: string | null
       lineageId?: string | null
+      /** Chat (`plan`) or Agent (`execute`) mode the run starts in. */
+      operationMode?: 'plan' | 'execute'
     }
   | { type: 'user_message_persisted'; message: any; lineageId?: string | null }
   | { type: 'operation_mode_changed'; message: any; mode: 'plan' | 'execute'; streamId?: string | null; revision?: number }
@@ -428,6 +430,11 @@ export type HeadlessStreamEvent =
       lineageId?: string | null
       /** Set with `providerError`, so a badged completion carries the same prose as a hard failure. */
       envelope?: ChatErrorEnvelope
+      /**
+       * Input queued behind this run continues in a successor run (a Claude /compact holds it
+       * until its summary exists). Readers attach to `streamId` to follow the conversation.
+       */
+      continuation?: { streamId: string; parentId: string | null }
     }
   | {
       type: 'error'

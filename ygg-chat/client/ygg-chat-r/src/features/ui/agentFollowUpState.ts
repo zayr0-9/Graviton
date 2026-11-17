@@ -1,3 +1,5 @@
+import type { OperationMode } from '../chats/chatTypes'
+
 export const MAX_FOLLOW_UP_LENGTH = 200_000
 export const MAX_FOLLOW_UP_DRAFTS = 200
 export const MAX_FOLLOW_UP_TOTAL = 2_000_000
@@ -9,6 +11,8 @@ export interface AgentFollowUpAttempt {
   requestId: string
   revision: number
   preparedTextSubmission: { epoch: string; fullAccess: boolean; fullAccessNotificationId?: string }
+  /** Chat/Agent mode chosen on the card, sent so a finished run's follow-up starts in it. */
+  operationMode?: OperationMode
 }
 
 export interface AgentFollowUpDraft {
@@ -20,6 +24,8 @@ export interface AgentFollowUpDraft {
   acceptedStreamId?: string
   error?: string
   policy?: boolean
+  /** Chat/Agent mode picked on the card. Live runs are also switched immediately. Cleared once a send carrying it is accepted. */
+  operationMode?: OperationMode
 }
 
 export const emptyFollowUpDraft = (): AgentFollowUpDraft => ({ content: '', revision: 0, streamIds: [], status: 'idle' })

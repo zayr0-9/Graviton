@@ -134,6 +134,8 @@ export interface ChatMessageProps {
   width: ChatMessageWidth
   /** When true (default) user rows draw a tinted surface. When false every row is flat. */
   colored?: boolean
+  /** Overrides the user-row surface colour (e.g. the agents pill, whose cards sit on a different background). */
+  userSurfaceColor?: string
   modelName?: string
   className?: string
   artifacts?: string[]
@@ -446,6 +448,7 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
     isEditing = false,
     width = 'w-3/5',
     colored = true,
+    userSurfaceColor,
     modelName,
     className,
     artifacts = [],
@@ -1148,9 +1151,10 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
       : undefined
     const isUserRow = role === 'user'
     const drawSurface = colored && isUserRow
-    const surfaceClass = drawSurface && !roleTheme ? 'bg-neutral-100/80 dark:bg-white/[0.05]' : ''
-    const surfaceStyle: React.CSSProperties | undefined =
-      drawSurface && roleTheme ? { backgroundColor: getThemeModeColor(roleTheme.containerBg, isDarkMode) } : undefined
+    const surfaceClass = drawSurface && !roleTheme && !userSurfaceColor ? 'bg-neutral-100/80 dark:bg-white/[0.05]' : ''
+    const surfaceStyle: React.CSSProperties | undefined = !drawSurface ? undefined
+      : userSurfaceColor ? { backgroundColor: userSurfaceColor }
+      : roleTheme ? { backgroundColor: getThemeModeColor(roleTheme.containerBg, isDarkMode) } : undefined
 
     // Both objects are props of the memoized `MarkdownBlock`, so they keep their identity across
     // renders that change neither the theme nor the font offset.

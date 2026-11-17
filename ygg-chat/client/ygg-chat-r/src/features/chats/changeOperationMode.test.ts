@@ -26,8 +26,32 @@ describe('changeOperationMode thunk', () => {
     await run('s')
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({ streamId: 's', mode: 'execute', parentId: null })
     expect(state.chat.operationMode).toBe('execute')
-    expect(state.chat.operationModeChanges.c.status).toBe('pending')
+    expect(state.chat.operationModeChanges['c::s'].status).toBe('pending')
     expect(state.chat.streaming.activeIds).toEqual([])
+  })
+
+  it('lets two runs of one conversation switch independently', async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => new Response(JSON.stringify({ status: 'pending', mode: 'execute', revision: 1 })))
+    vi.stubGlobal('fetch', fetchMock)
+    const { run, state } = setup()
+    await run('a')
+    await run('b')
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(Object.keys(state.chat.operationModeChanges).sort()).toEqual(['c::a', 'c::b'])
+  })
+
+  it('does not flip the Chat toggle for a run on another branch of the open conversation', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ status: 'pending', mode: 'execute', revision: 1 }))))
+    const { run, state } = setup()
+    state.chat = reducer(state.chat, chatSliceActions.sendingStarted({ streamId: 'other', conversationId: 'c' } as any))
+    state.chat = reducer(state.chat, chatSliceActions.streamLineageUpdated({ streamId: 'other', lineageId: 'other-lineage' } as any))
+    state.chat = { ...state.chat,
+      conversation: { ...state.chat.conversation, currentLineageId: 'viewed-lineage' },
+      streaming: { ...state.chat.streaming, byId: { ...state.chat.streaming.byId,
+        other: { ...state.chat.streaming.byId.other, lineage: { ...state.chat.streaming.byId.other.lineage, lineageId: 'other-lineage', lineageIdConfirmed: true } } } } } as any
+    await run('other')
+    expect(state.chat.operationMode).toBe('plan')
+    expect(state.chat.streaming.byId.other.operationMode).toBe('execute')
   })
 
   it('coalesces repeated idle selections without requests or transcript rows', async () => {

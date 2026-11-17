@@ -3,12 +3,19 @@ import { useStore } from 'react-redux'
 import type { RootState } from '../../store/store'
 import type { AgentForkGroup, AgentStreamListItem } from '../../hooks/useRunningAgentStreams'
 import { useAppDispatch, useAppSelector } from '../../hooks/redux'
-import { followUpTarget, submitAgentFollowUp } from '../../features/chats/agentFollowUp'
+import { followUpTarget, forkOperationMode, moveFollowUpToComposer, selectAgentFollowUpMode, submitAgentFollowUp } from '../../features/chats/agentFollowUp'
+import { operationModeChangeKey } from '../../features/chats/operationModeChangeKey'
+import type { OperationMode } from '../../features/chats/chatTypes'
 import { cancelQueuedMessage } from '../../features/chats/chatActions'
 import { runningAgentsUiActions } from '../../features/ui/runningAgentsUiSlice'
 import { findFollowUpKey, relatedFollowUpKeys, followUpCapacity, MAX_FOLLOW_UP_LENGTH } from '../../features/ui/agentFollowUpState'
 import { QueuedMessages } from '../ChatMessage/QueuedMessages'
 import { getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from '../ThemeManager/themeConfig'
+
+const MODES: Array<{ mode: OperationMode; label: string; title: string }> = [
+  { mode: 'plan', label: 'Chat', title: 'Chat mode: answers and read-only tools, no file edits' },
+  { mode: 'execute', label: 'Agent', title: 'Agent mode: can edit files and run commands' },
+]
 
 export function AgentFollowUpComposer({ fork, onOpenChat }: {
   fork: AgentForkGroup; onOpenChat: (stream: AgentStreamListItem) => void
@@ -46,6 +53,10 @@ export function AgentFollowUpComposer({ fork, onOpenChat }: {
     setCapacityError('')
     dispatch(runningAgentsUiActions.followUpChanged({ key, content, streamIds: target.streamIds }))
   }
+  const liveRun = fork.activeStreams.length === 1 ? fork.activeStreams[0] : null
+  const liveModeChange = useAppSelector(state => liveRun?.conversationId
+    ? state.chat.operationModeChanges?.[operationModeChangeKey(liveRun.conversationId, liveRun.streamId)] : undefined)
+  const mode: OperationMode | null = draft?.operationMode ?? liveModeChange?.mode ?? forkOperationMode(fork)
   const busy = draft?.status === 'preparing' || draft?.status === 'sending'
   const uncertain = draft?.status === 'unknown'
   const disabled = busy || blockedByOther || (!uncertain && (!!target.reason || !draft?.content.trim()))
@@ -70,6 +81,20 @@ export function AgentFollowUpComposer({ fork, onOpenChat }: {
         }
       }} />
     <div className='mt-1 flex items-center justify-end gap-2'>
+      <div role='group' aria-label={`Mode for ${fork.displayName}`}
+        className='mr-auto flex shrink-0 items-center rounded-full bg-black/5 p-0.5 dark:bg-white/10'>
+        {MODES.map(option => {
+          const selected = mode === option.mode
+          return <button key={option.mode} type='button' aria-pressed={selected} title={option.title}
+            disabled={busy || blockedByOther || !!target.reason || liveModeChange?.status === 'requesting'}
+            onClick={() => { if (!selected) void dispatch(selectAgentFollowUpMode(fork, key, option.mode)) }}
+            className={`rounded-full px-2 py-0.5 transition-colors disabled:opacity-50 ${selected
+              ? 'bg-white font-medium shadow-sm dark:bg-white/20' : 'hover:bg-black/5 dark:hover:bg-white/10'}`}
+            style={selected ? { backgroundColor: color('composerToggleActiveBg'), color: color('composerToggleActiveText') } : undefined}>
+            {option.label}
+          </button>
+        })}
+      </div>
       {draft?.policy !== undefined && <button type='button' disabled={busy || blockedByOther} className='rounded-full px-2 py-1 hover:bg-black/5 dark:hover:bg-white/10'
         onClick={() => { void dispatch(submitAgentFollowUp(fork, true, key)) }}>
         Use run’s {draft.policy ? 'Full access' : 'restricted access'}
@@ -84,7 +109,10 @@ export function AgentFollowUpComposer({ fork, onOpenChat }: {
     {draft?.status === 'rejected' && draft.attempt && draft.attempt.content !== draft.content &&
       <button type='button' className='mt-1 underline' onClick={() => change(draft.content ? `${draft.content}\n\n${draft.attempt!.content}` : draft.attempt!.content)}>Restore submitted text</button>}
     {error && <div role='alert' className='mt-1 text-rose-700 dark:text-rose-300' style={{ color: color('toolJobsErrorText') }}>
-      {error} <button type='button' disabled={!target.run.conversationId} className='underline' onClick={() => onOpenChat(target.run)}>Open chat</button>
+      {error} <button type='button' disabled={!target.run.conversationId} className='underline' onClick={() => {
+        dispatch(moveFollowUpToComposer(key))
+        onOpenChat(target.run)
+      }}>Open chat</button>
     </div>}
     {draft?.status === 'accepted' && !error && <p role='status' style={{ color: color('toolJobsMutedText') }}>Instruction accepted.</p>}
   </div>

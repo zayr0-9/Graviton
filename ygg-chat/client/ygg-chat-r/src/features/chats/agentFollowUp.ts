@@ -5,7 +5,26 @@ import { getPendingFullAccessNotification, isFullAccessEnabled } from '../../hel
 import { runningAgentsUiActions as actions } from '../ui/runningAgentsUiSlice'
 import { findFollowUpKey, relatedFollowUpKeys, type AgentFollowUpAttempt } from '../ui/agentFollowUpState'
 import { getAdmissionEpoch } from './runAdmissionClient'
-import { enqueueUserMessage } from './chatActions'
+import { changeOperationMode, enqueueUserMessage } from './chatActions'
+import type { OperationMode } from './chatTypes'
+import { chatSliceActions } from './chatSlice'
+
+/**
+ * Move a follow-up draft the pill could not send into Chat's composer, appended after any
+ * text already there, and empty the pill draft so the text exists in one place only.
+ * Skipped while a send is in flight or delivery is unknown (the host may already have it).
+ */
+export const moveFollowUpToComposer = (key: string) =>
+  (dispatch: AppDispatch, getState: () => RootState): boolean => {
+    const draft = getState().runningAgentsUi.followUps[key]
+    if (!draft || ['preparing', 'sending', 'unknown'].includes(draft.status)) return false
+    const text = draft.content.trim() ? draft.content : draft.attempt?.content ?? ''
+    if (!text.trim()) return false
+    const existing = getState().chat.composition.input.content
+    dispatch(chatSliceActions.inputChanged({ content: existing.trim() ? `${existing.trimEnd()}\n\n${text}` : text }))
+    dispatch(actions.followUpChanged({ key, content: '', streamIds: draft.streamIds }))
+    return true
+  }
 
 export function followUpTarget(fork: AgentForkGroup) {
   const runs = [...fork.activeStreams, ...fork.completedStreams]
@@ -18,6 +37,29 @@ export function followUpTarget(fork: AgentForkGroup) {
     : run.hasError || run.status === 'aborting' || run.status === 'error' ? 'This run stopped or failed. Open chat to continue.' : undefined
   return { streamIds, run, reason }
 }
+
+/** The mode the fork's newest run reported; null when no run has reported one yet. */
+export function forkOperationMode(fork: AgentForkGroup): OperationMode | null {
+  return fork.representative.operationMode ??
+    [...fork.activeStreams, ...fork.completedStreams].find(run => run.operationMode)?.operationMode ?? null
+}
+
+/**
+ * Chat/Agent toggle on a fork card. A single live run switches immediately through the
+ * live mode route, like Chat's toggle. Otherwise (or when the run ended before the switch
+ * landed) the choice is kept on the draft and starts the follow-up run in that mode.
+ */
+export const selectAgentFollowUpMode = (fork: AgentForkGroup, key: string, mode: OperationMode) =>
+  async (dispatch: AppDispatch) => {
+    const target = followUpTarget(fork)
+    const live = fork.activeStreams.length === 1 ? fork.activeStreams[0] : null
+    if (live?.conversationId && !target.reason) {
+      const result = await dispatch(changeOperationMode({ mode, conversationId: live.conversationId,
+        streamId: live.streamId, parentId: null, lineageId: live.lineageIdConfirmed ? live.lineageId : null }))
+      if (changeOperationMode.fulfilled.match(result)) return
+    }
+    dispatch(actions.followUpModeChanged({ key, mode, streamIds: target.streamIds }))
+  }
 
 /** Redux owns the submission lock, so remounts and duplicate surfaces cannot double-submit. */
 export const submitAgentFollowUp = (fork: AgentForkGroup, confirmPolicy = false, selectedDraftKey?: string) =>
@@ -43,6 +85,7 @@ export const submitAgentFollowUp = (fork: AgentForkGroup, confirmPolicy = false,
       } : {
         conversationId: target.run.conversationId!, streamId: target.run.streamId,
         content: draft.content, revision: draft.revision, requestId: newClientId(),
+        ...(draft.operationMode ? { operationMode: draft.operationMode } : {}),
         preparedTextSubmission: { epoch: await getAdmissionEpoch(), fullAccess: isFullAccessEnabled(),
           fullAccessNotificationId: getPendingFullAccessNotification(target.run.conversationId!) },
       })

@@ -9,6 +9,11 @@ export interface QueuedMessageSubmission {
   watcherCompletion?: WatcherCompletionProvenance
   attachmentsBase64?: HeadlessMessageRequest['attachmentsBase64']
   selectedFiles?: HeadlessMessageRequest['selectedFiles']
+  /**
+   * Mode for the follow-up run this submission starts when the run has already finished.
+   * Ignored while the run is live: live switches go through the operation-mode route.
+   */
+  operationMode?: 'plan' | 'execute'
 }
 
 export interface QueuedMessageView {

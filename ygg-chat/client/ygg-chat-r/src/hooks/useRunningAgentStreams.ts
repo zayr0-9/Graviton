@@ -3,7 +3,7 @@ import { isHostClient } from '../platform/clientCapabilities'
 import { createEmptyStreamState } from '../features/chats/streamHelpers'
 import { MAX_FINISHED_AGENT_FORKS } from '../features/chats/agentRunPreviewSlice'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { Message, StreamEvent, StreamLifecycleStatus, StreamState } from '../features/chats/chatTypes'
+import type { Message, OperationMode, StreamEvent, StreamLifecycleStatus, StreamState } from '../features/chats/chatTypes'
 import type { Conversation } from '../features/conversations/conversationTypes'
 import { useAppSelector } from './redux'
 import type { ResearchNoteItem } from './useQueries'
@@ -44,6 +44,8 @@ export type AgentStreamListItem = {
   activityLabel: string
   completedAt: string | null
   displayName: string
+  /** Chat/Agent mode the run executes in; unknown for runs that predate the `started` field. */
+  operationMode?: OperationMode | null
 }
 
 export type AgentForkGroup = {
@@ -417,6 +419,7 @@ export function useRunningAgentStreams(notes: ResearchNoteItem[] = [], allConver
         rootMessageId: stream.lineage.rootMessageId ? String(stream.lineage.rootMessageId) : null,
         parentMessageId: parentPreview.messageId,
         parentMessageText: parentPreview.text,
+        operationMode: stream.operationMode ?? null,
         activityKind,
         activityLabel,
         completedAt,

@@ -4,6 +4,7 @@ import { ConversationId, MessageId } from '../../../../../shared/types'
 import { RootState } from '../../store/store'
 import type { ChatErrorRecord } from './chatTypes'
 import { parseMessageMeta } from '../../../../../shared/contextInjection'
+import { operationModeChangeKey } from './operationModeChangeKey'
 
 // Base selector
 const selectChatState = (state: RootState) => state.chat
@@ -17,16 +18,18 @@ export const selectProviderState = createSelector([selectChatState, selectBranch
 export const selectMultiReplyCount = createSelector([selectChatState], chat => chat.composition.multiReplyCount)
 export const getSelectedNodes = createSelector([selectChatState], chat => chat.selectedNodes)
 export const selectOperationMode = createSelector([selectChatState], chat => {
-  const pending = chat.operationModeChanges?.[String(chat.conversation.currentConversationId)]
   const tip = chat.conversation.currentPath.at(-1) ?? null
   const draft = chat.operationModeDrafts?.[JSON.stringify([String(chat.conversation.currentConversationId), tip == null ? null : String(tip)])]
   if (draft) return draft
-  if (pending?.status === 'pending' && pending.streamId &&
-    selectCurrentViewStreamFor(chat.streaming, {
-      conversationId: chat.conversation.currentConversationId,
-      lineageId: chat.conversation.currentLineageId,
-      path: chat.conversation.currentPath,
-    })?.id === pending.streamId) return pending.mode
+  const viewStreamId = selectCurrentViewStreamFor(chat.streaming, {
+    conversationId: chat.conversation.currentConversationId,
+    lineageId: chat.conversation.currentLineageId,
+    path: chat.conversation.currentPath,
+  })?.id
+  const pending = viewStreamId && chat.conversation.currentConversationId != null
+    ? chat.operationModeChanges?.[operationModeChangeKey(chat.conversation.currentConversationId, viewStreamId)]
+    : undefined
+  if (pending?.status === 'pending') return pending.mode
   for (let index = chat.conversation.currentPath.length - 1; index >= 0; index--) {
     const row = chat.conversation.messages.find(message => message.id === chat.conversation.currentPath[index])
     const meta = parseMessageMeta(row?.meta)

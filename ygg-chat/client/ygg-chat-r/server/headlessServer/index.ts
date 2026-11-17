@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { getServerTempDir } from '../serverHost.js'
 import { configureSnapshotScratch, disposeSnapshotScratch } from './services/snapshotPayloadStore.js'
 import { DecisionReceiptRepo } from './persistence/decisionReceiptRepo.js'
-import { applyHostProviderEnvironment, readHostExecutionPreferences } from '../hostExecutionStore.js'
+import { applyHostProviderEnvironment, onHostExecutionPreferencesSaved, readHostExecutionPreferences } from '../hostExecutionStore.js'
 import { RunSnapshotProjector } from './services/runSnapshotProjector.js'
 import { OperationReceiptRepo } from './persistence/operationReceiptRepo.js'
 import { RunAdmissionService } from './services/runAdmissionService.js'
@@ -435,8 +435,14 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
     claudeNativeMcp: () => readHostExecutionPreferences().values.claudeMcp,
     // Claude CLIs stay open between turns of a branch (GRAVITON_CLAUDE_WARM_IDLE_MS=0 turns it off).
     claudeWarm: claudeWarmConfigFromEnv(),
+    // Graviton tools reach Claude as the `graviton` MCP server, following Settings → Tools live.
+    claudeGravitonToolStates: () => readHostExecutionPreferences().values.tools,
   })
   activeOrchestrators.add(chatOrchestrator)
+  const stopToolSettingsWatch = onHostExecutionPreferencesSaved(domains => {
+    if (domains.includes('tools')) chatOrchestrator.gravitonToolsChanged()
+  })
+  reaperStops.add(stopToolSettingsWatch)
   // Synchronously releases stale 'running' Claude branches, then checkpoints their heads.
   void chatOrchestrator.recoverInterruptedClaudeBranches().catch(error =>
     console.warn('[ClaudeSession] interrupted branch recovery failed', error instanceof Error ? error.message : error))

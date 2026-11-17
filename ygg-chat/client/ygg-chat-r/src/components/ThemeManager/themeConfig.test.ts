@@ -33,3 +33,19 @@ describe('Agents pill grid background theme keys', () => {
     expect(theme.colors.agentsGridIdleCardBg).toEqual(colors.agentsGridIdleCardBg)
   })
 })
+
+describe('Agents pill user message theme key', () => {
+  it('defaults older themes to a tint that differs from the card colours', () => {
+    const theme = sanitizeCustomTheme({ colors: {} })
+    expect(theme.colors.agentsGridUserMessageBg).toEqual(createDefaultCustomChatTheme().colors.agentsGridUserMessageBg)
+    for (const mode of ['light', 'dark'] as const) {
+      expect(theme.colors.agentsGridUserMessageBg[mode]).toContain('currentColor')
+      expect(theme.colors.agentsGridUserMessageBg[mode]).not.toBe(theme.colors.agentsGridIdleCardBg[mode])
+    }
+  })
+
+  it('keeps a customised value', () => {
+    const agentsGridUserMessageBg = { light: '#abcdef', dark: '#123456' }
+    expect(sanitizeCustomTheme({ colors: { agentsGridUserMessageBg } }).colors.agentsGridUserMessageBg).toEqual(agentsGridUserMessageBg)
+  })
+})
