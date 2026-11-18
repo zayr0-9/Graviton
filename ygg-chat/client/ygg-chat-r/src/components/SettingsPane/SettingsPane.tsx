@@ -71,7 +71,9 @@ import {
 } from '../ThemeManager/themeConfig'
 import { ChatInputBorderAnimationSettings } from './ChatInputBorderAnimationSettings'
 import { SendButtonAnimationSettings } from './SendButtonAnimationSettings'
+import { CharacterMeterSettings } from './CharacterMeterSettings'
 import { FastModeAnimationSettings } from './FastModeAnimationSettings'
+import { SystemNotificationSettings } from './SystemNotificationSettings'
 import { useSettingsSectionThemeColors } from './settingsSectionTheme'
 import { ToolsSettings } from './ToolsSettings'
 import { HookGenerationSettings } from './HookGenerationSettings'
@@ -2126,6 +2128,8 @@ ${block}`
                     </div>
                   </div>
 
+                  <SystemNotificationSettings sectionThemeColors={savedCustomThemesColors} />
+
                   {/* MCP App Native Size Constraints Section */}
                   <div className='space-y-2'>
                     <div
@@ -2278,6 +2282,8 @@ ${block}`
                   <div className='space-y-2'>
                     <FastModeAnimationSettings sectionThemeColors={savedCustomThemesColors} />
                   </div>
+
+                  <CharacterMeterSettings colors={savedCustomThemesColors} />
 
                   {/* Send Button Animation Section */}
                   <div className='space-y-2'>
@@ -2696,7 +2702,7 @@ ${block}`
                       className='mt-0.5 text-xs text-neutral-500 dark:text-neutral-400'
                       style={settingsSectionBodyStyle}
                     >
-                      Manage built-in, custom, and MCP tools in separate groups.
+                      Manage built-in, custom, and MCP tools in separate groups. Built-in tool switches apply to Claude Code chats too.
                     </p>
                   </div>
                 </div>

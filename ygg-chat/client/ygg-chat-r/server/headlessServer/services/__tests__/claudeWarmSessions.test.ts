@@ -254,7 +254,7 @@ describe('warm Claude sessions', () => {
   it('brings a parked CLI\'s Graviton tool list up to date before reusing it, and relaunches one that does not refresh', async () => {
     let enabled = ['theme_manager', 'fetch_chats']
     const gravitonTools = { available: () => enabled.map(name => ({ name, description: name, inputSchema: { type: 'object', properties: {} } })),
-      execute: vi.fn(), bypassPermission: () => false }
+      executor: () => vi.fn() }
     const f = warmFixture({ gravitonTools })
     const first = await f.service.run(f.input())
     expect(f.sdk.query.mock.calls[0][0].options.mcpServers).toMatchObject({ graviton: { type: 'sdk' } })

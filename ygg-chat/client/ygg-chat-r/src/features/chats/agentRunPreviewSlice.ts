@@ -71,6 +71,24 @@ function reconcileRetention(state: AgentRunPreviewState) {
   state.latestByFork = latest
 }
 
+/** A run's rows in transcript order: each row after its parent. */
+function orderParentFirst(messages: Message[]): Message[] {
+  const byId = new Map(messages.map(message => [message.id, message]))
+  const ordered: Message[] = []
+  const visited = new Set<string>()
+  for (const message of messages) {
+    const chain: Message[] = []
+    let current: Message | undefined = message
+    while (current && !visited.has(current.id)) {
+      visited.add(current.id)
+      chain.push(current)
+      current = current.parent_id ? byId.get(current.parent_id) : undefined
+    }
+    ordered.push(...chain.reverse())
+  }
+  return ordered
+}
+
 const slice = createSlice({
   name: 'agentRunPreviews',
   initialState,
@@ -118,25 +136,31 @@ const slice = createSlice({
       // Snapshot rows are the run's durable journal; compact events carry only the
       // previous anchor/current turn. The starting parent belongs to an earlier run.
       const messages = action.payload.messages.filter(message => message.id !== action.payload.parentId)
-      const byId = new Map(messages.map(message => [message.id, message]))
-      const ordered: Message[] = []
-      const visited = new Set<string>()
-      for (const message of messages) {
-        const chain: Message[] = []
-        let current: Message | undefined = message
-        while (current && !visited.has(current.id)) {
-          visited.add(current.id)
-          chain.push(current)
-          current = current.parent_id ? byId.get(current.parent_id) : undefined
-        }
-        ordered.push(...chain.reverse())
-      }
+      const ordered = orderParentFirst(messages)
       const previous = new Map(run.entries.filter(entry => entry.message).map(entry => [entry.message!.id, entry]))
       run.entries = ordered.map(message => ({ key: previous.get(message.id)?.key ?? message.id, message }))
       // Never replay new snapshot output into the old live entry.
       run.turn += 1
       run.liveKey = `${run.streamId}:turn:${run.turn}`
       if (messages.some(message => message.role === 'user')) run.partial = false
+    },
+    /**
+     * A run that finished before this renderer watched it (a new agents window, or after a
+     * reload), from the host's finished-run list. Never replaces a run already captured.
+     */
+    finishedRunInstalled: (state, action: PayloadAction<{
+      streamId: string; stream: StreamState; messages: Message[]
+      projectId: string | null; conversationTitle: string | null; completedAt: string
+    }>) => {
+      const { streamId, stream, messages, projectId, conversationTitle, completedAt } = action.payload
+      if (state.byStreamId[streamId] || stream.active) return
+      const ordered = orderParentFirst(messages)
+      state.byStreamId[streamId] = {
+        streamId, stream, projectId, conversationTitle, completedAt,
+        entries: ordered.map(message => ({ key: message.id, message })),
+        turn: 1, liveKey: `${streamId}:turn:1`, partial: !ordered.some(message => message.role === 'user'),
+      }
+      reconcileRetention(state)
     },
     bootstrapFinished: (state, action: PayloadAction<{ streamId: string; stream: StreamState }>) => {
       const run = state.byStreamId[action.payload.streamId]

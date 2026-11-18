@@ -37,14 +37,14 @@ describe('buildCodexWebSocketHeaders', () => {
     const headers = buildCodexWebSocketHeaders(new Headers({
       accept: 'text/event-stream',
       originator: 'codex_cli_rs',
-      version: '0.159.2',
-      'user-agent': 'codex_cli_rs/0.159.2 (darwin; arm64) Graviton',
+      version: '0.169.0',
+      'user-agent': 'codex_cli_rs/0.169.0 (darwin; arm64) Graviton',
     }))
 
     expect(headers).toEqual({
       originator: 'codex_cli_rs',
-      version: '0.159.2',
-      'user-agent': 'codex_cli_rs/0.159.2 (darwin; arm64) Graviton',
+      version: '0.169.0',
+      'user-agent': 'codex_cli_rs/0.169.0 (darwin; arm64) Graviton',
       'OpenAI-Beta': 'responses_websockets=2026-02-06',
     })
   })

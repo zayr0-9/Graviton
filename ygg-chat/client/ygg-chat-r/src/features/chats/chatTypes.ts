@@ -257,6 +257,7 @@ export interface WatchContinuationOwner {
 }
 
 export interface StreamState {
+  characterMeter?: import('./characterMeter').MeterReading
   /** Renderer view ownership; never sent to the server. */
   selectionRevision?: number
   updatePath?: boolean
@@ -527,6 +528,7 @@ export interface ChatState {
   streamUndo: StreamUndoState
   ui: {
     modelSelectorOpen: boolean
+    characterMeterTickLimit?: number | null
   }
   selection: import('./chatSelection').ChatSelectionState
   conversation: ConversationState

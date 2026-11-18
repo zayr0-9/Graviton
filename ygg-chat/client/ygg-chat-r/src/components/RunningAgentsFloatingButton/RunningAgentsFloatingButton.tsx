@@ -24,19 +24,25 @@ import { getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from '../Theme
 import './agentsPillMotion.css'
 import type { AgentPreviewScrollState } from './AgentRunPreview'
 import { AgentForkCard, cardIconButtonClass, resolvePreviewFork } from './AgentForkCard'
-import { ArrowLeft, Bot, X, Expand, EyeOff, Layers } from 'lucide-react'
+import { ArrowLeft, Bot, X, Expand, ExternalLink, EyeOff, Layers } from 'lucide-react'
 import { AgentsGridSettings, readAgentGridOrderMode, writeAgentGridOrderMode } from './AgentsGridSettings'
 import { AgentsMonitorGrid, useAgentGridForks } from './AgentsMonitorGrid'
 import { useAgentsPillResize } from './useAgentsPillResize'
 import { getAgentNotificationPreview } from './agentNotificationTarget'
 import { createEmptyStreamState } from '../../features/chats/streamHelpers'
+import { canOpenAgentsWindow, openAgentsWindow, openInMainWindow } from '../../platform/agentsWindow'
 
 interface RunningAgentsFloatingButtonProps {
   notes?: ResearchNoteItem[]
   allConversations?: Conversation[]
   className?: string
-  onOpenApps: () => void
+  onOpenApps?: () => void
   appsOpen?: boolean
+  /**
+   * `window`: the detached agents window. Always expanded and fills the viewport; no
+   * resize handle, apps or pop-out button; Open chat goes to the main window.
+   */
+  presentation?: 'pill' | 'window'
 }
 
 const codexDevLogsEnabled =
@@ -318,8 +324,15 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
   className = '',
   onOpenApps,
   appsOpen = false,
+  presentation = 'pill',
 }) => {
-  const navigate = useNavigate()
+  const windowMode = presentation === 'window'
+  const chatNavigate = useNavigate()
+  // The agents window has no Chat: hand the route to the main window instead.
+  const navigate = (href: string) => {
+    if (!windowMode) { chatNavigate(href); return }
+    void openInMainWindow(href).then(opened => { if (!opened) chatNavigate(href) })
+  }
   const dispatch = useAppDispatch()
   const {
     activeStreams: allActiveStreams,
@@ -358,11 +371,12 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
   const currentPath = useAppSelector(selectCurrentPath)
   const branchDebugQuery = useConversationBranchDebugData(codexDevLogsEnabled ? currentConversationId : null)
   const headerTargets = useAgentsHeader()
-  const headerMode = Boolean(onChatRoute && headerTargets.launcher?.isConnected)
+  const headerMode = !windowMode && Boolean(onChatRoute && headerTargets.launcher?.isConnected)
   const compactTriggerRef = useRef<HTMLButtonElement>(null)
-  const [expanded, setExpanded] = useState(false)
+  const [expandedState, setExpanded] = useState(false)
+  const expanded = windowMode || expandedState
   const [gridOrderMode, setGridOrderMode] = useState(readAgentGridOrderMode)
-  const pillResize = useAgentsPillResize(expanded, className, !headerMode)
+  const pillResize = useAgentsPillResize(expanded, className, !headerMode && !windowMode)
   const [selectedRun, setSelectedRun] = useState<AgentStreamListItem | null>(null)
   const [previewWholeFork, setPreviewWholeFork] = useState(false)
   const [groupPreviewSteps, setGroupPreviewSteps] = useState(() => {
@@ -404,7 +418,7 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
   // both dimensions, including a saved user size, without layout transforms.
   useLayoutEffect(() => {
     const content = contentRef.current
-    if (!content || headerMode) return
+    if (!content || headerMode || windowMode) return
     const measure = () => {
       const rect = content.getBoundingClientRect()
       const width = rect.width + 2
@@ -415,7 +429,7 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
     const observer = new ResizeObserver(measure)
     observer.observe(content)
     return () => observer.disconnect()
-  }, [expanded, gridBody, inlineNotification, pillResize.size?.width, pillResize.size?.height, headerMode])
+  }, [expanded, gridBody, inlineNotification, pillResize.size?.width, pillResize.size?.height, headerMode, windowMode])
 
   const seenNotificationIdsRef = useRef<Set<string>>(new Set())
   const notificationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -609,7 +623,7 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
   }
 
   const toggleExpanded = () => {
-    if (inlineNotification) return
+    if (inlineNotification || windowMode) return
     setExpanded(value => !value)
   }
 
@@ -678,12 +692,16 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
       data-quiet-panel={headerMode || undefined}
       role={headerMode ? 'dialog' : undefined}
       aria-label={headerMode ? 'Running agents' : undefined}
-      className={`t-resize agents-pill fixed z-[1500] ${className}`}
+      className={windowMode ? 'agents-window fixed inset-0' : `t-resize agents-pill fixed z-[1500] ${className}`}
       data-dragging={pillResize.dragging}
-      style={{ width: shellSize?.width, height: shellSize?.height }}
+      style={windowMode ? undefined : {
+        width: shellSize?.width,
+        height: shellSize?.height,
+        maxHeight: expanded && !headerMode ? pillResize.limits.height : undefined,
+      }}
       >
       {headerMode && expanded && <button type='button' className='quiet-icon quiet-agent-close' style={floatingControlButtonStyle} title='Close agents' aria-label='Close agents' onClick={() => setExpanded(false)}><X size={18} /></button>}
-      {expanded && !headerMode && <button type='button' {...pillResize.handleProps}
+      {expanded && !headerMode && !windowMode && <button type='button' {...pillResize.handleProps}
         onClick={event => event.stopPropagation()}
         aria-label='Resize agents panel. Arrow keys resize; Shift resizes faster; Home resets.'
         title='Drag to resize · Double-click to reset'
@@ -692,14 +710,17 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
         <Expand size={14} strokeWidth={2.25} aria-hidden='true' />
       </button>}
       <div
-        className='h-full overflow-hidden rounded-[28px] border border-neutral-200/60 bg-white/75 text-neutral-800 shadow-[0_18px_55px_rgba(15,23,42,0.18)] backdrop-blur-2xl dark:border-neutral-700/55 dark:bg-yBlack-900/75 dark:text-neutral-100'
+        className={windowMode
+          ? 'h-full overflow-hidden bg-white/75 text-neutral-800 dark:bg-yBlack-900/75 dark:text-neutral-100'
+          : 'h-full overflow-hidden rounded-[28px] border border-neutral-200/60 bg-white/75 text-neutral-800 shadow-[0_18px_55px_rgba(15,23,42,0.18)] backdrop-blur-2xl dark:border-neutral-700/55 dark:bg-yBlack-900/75 dark:text-neutral-100'}
         style={floatingShellStyle}
       >
-        <div ref={contentRef} className='relative' style={{ width: pillResize.size ? pillResize.size.width - 2 : expanded && gridBody ? Math.min(1000, pillResize.limits.width - 2) : 'max-content' }}>
+        <div ref={contentRef} className={windowMode ? 'relative flex h-full w-full flex-col' : 'relative'}
+          style={windowMode ? undefined : { width: pillResize.size ? pillResize.size.width - 2 : expanded && gridBody ? Math.min(1000, pillResize.limits.width - 2) : 'max-content' }}>
           <div
             ref={pillResize.headerRef}
             onClick={toggleExpanded}
-            className={`relative flex w-full cursor-pointer items-center justify-between gap-1.5 p-1.5 outline-none transition-colors ${
+            className={`relative flex w-full ${windowMode ? '' : 'cursor-pointer'} items-center justify-between gap-1.5 p-1.5 outline-none transition-colors ${
               customThemeEnabled
                 ? 'hover:bg-[var(--running-agents-floating-hover-bg)] dark:hover:bg-[var(--running-agents-floating-hover-bg)]'
                 : 'hover:bg-neutral-100/45 dark:hover:bg-neutral-800/35'
@@ -857,12 +878,21 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
                       />
                     </button>
                   ) : null}
-                  <button
+                  {!windowMode && canOpenAgentsWindow() && <button type='button' aria-label='Open agents in a new window' title='Open in new window'
+                    onClick={event => {
+                      event.stopPropagation()
+                      void openAgentsWindow().then(opened => { if (opened) { setSelectedRun(null); setExpanded(false) } })
+                    }}
+                    className='flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-neutral-500 transition-[background-color,color] duration-150 hover:bg-white/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 dark:text-neutral-400 dark:hover:bg-white/10'
+                    style={customThemeEnabled ? { color: floatingButtonText } : undefined}>
+                    <ExternalLink size={18} strokeWidth={2.25} aria-hidden='true' />
+                  </button>}
+                  {onOpenApps && !windowMode && <button
                     key='apps-expand-button'
                   type='button'
                   onClick={event => {
                     event.stopPropagation()
-                    onOpenApps()
+                    onOpenApps?.()
                   }}
                   className='flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-neutral-200/70 bg-neutral-50/85 text-neutral-700 shadow-sm transition-colors duration-150 hover:bg-white hover:text-neutral-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/70 dark:border-neutral-700/70 dark:bg-neutral-900/80 dark:text-neutral-200 dark:hover:bg-neutral-800'
                   style={floatingControlButtonStyle}
@@ -874,7 +904,7 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
                     className={`bx ${appsOpen ? 'bx-x' : 'bx-expand-alt'} text-lg`}
                     aria-hidden='true'
                   />
-                  </button>
+                  </button>}
                 </div>
               ) : null}
             </>
@@ -884,16 +914,16 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
             {expanded && (
               <div
                 key='details-shell'
-                className='overflow-hidden border-t border-neutral-200/70 dark:border-neutral-800/80'
-                style={{ ...floatingDividerStyle,
+                className={`overflow-hidden border-t border-neutral-200/70 dark:border-neutral-800/80 ${windowMode ? 'min-h-0 w-full flex-1' : ''}`}
+                style={windowMode ? floatingDividerStyle : { ...floatingDividerStyle,
                   height: pillResize.size ? Math.max(0, pillResize.size.height - pillResize.headerHeight - 2) : gridBody ? Math.min(600, Math.max(0, pillResize.limits.height - pillResize.headerHeight - 2)) : undefined,
                   width: pillResize.size || gridBody ? '100%' : `min(22rem,${pillResize.limits.width}px)`,
                   maxHeight: Math.max(0, pillResize.limits.height - pillResize.headerHeight - 2),
                 }}
               >
                 <div
-                  className={gridBody ? 'flex h-full min-h-0 flex-col overflow-hidden px-2 pb-2 pt-1' : pillResize.size ? `h-full min-h-0 px-2 pb-2 pt-1 ${selectedItem ? 'flex flex-col overflow-hidden' : 'overflow-y-auto thin-scrollbar'}` : 'overflow-y-auto px-2 pb-2 pt-1 thin-scrollbar'}
-                  style={{ maxHeight: Math.max(0, pillResize.limits.height - pillResize.headerHeight - 2) }}
+                  className={gridBody || windowMode ? 'flex h-full min-h-0 flex-col overflow-hidden px-2 pb-2 pt-1' : pillResize.size ? `h-full min-h-0 px-2 pb-2 pt-1 ${selectedItem ? 'flex flex-col overflow-hidden' : 'overflow-y-auto thin-scrollbar'}` : 'overflow-y-auto px-2 pb-2 pt-1 thin-scrollbar'}
+                  style={windowMode ? undefined : { maxHeight: Math.max(0, pillResize.limits.height - pillResize.headerHeight - 2) }}
                 >
                 {gridBody ? (
                   <AgentsMonitorGrid
@@ -920,13 +950,13 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
                   />
                 ) : selectedItem && previewFork ? (
                   // The same card as the grid cell, so status, request text and the working indicator match.
-                  <div className={pillResize.size ? 'flex min-h-0 flex-1 flex-col' : undefined} onKeyDown={event => {
+                  <div className={pillResize.size || windowMode ? 'flex min-h-0 flex-1 flex-col' : undefined} onKeyDown={event => {
                     if (event.key === 'Escape') { event.stopPropagation(); closePreview() }
                   }}>
                     <AgentForkCard key={`${previewFork.key}:${previewWholeFork ? 'fork' : selectedItem.streamId}`}
                       fork={previewFork} run={previewWholeFork ? undefined : selectedItem}
                       grouped={groupPreviewSteps} onOpenChat={navigateToStream}
-                      fillHeight={Boolean(pillResize.size)} className={pillResize.size ? 'min-h-0 flex-1' : ''}
+                      fillHeight={Boolean(pillResize.size) || windowMode} className={pillResize.size || windowMode ? 'min-h-0 flex-1' : ''}
                       leading={<button autoFocus type='button' onClick={closePreview} aria-label='Back to agents' title='Back'
                         className={`${cardIconButtonClass} -ml-1 h-8 w-8`} style={floatingMutedTextStyle}>
                         <ArrowLeft size={18} strokeWidth={2.25} aria-hidden='true' />

@@ -98,7 +98,7 @@ describe('registerProviderAuthRoutes', () => {
     expect(providerNames).toContain('zai')
     expect(providerNames).toContain('bedrock')
     const openAiProvider = payload.providers.find((provider: any) => provider.name === 'openaichatgpt')
-    expect(openAiProvider?.models).toEqual(['gpt-6-sol', 'gpt-6.1-sol', 'gpt-6-luna', 'gpt-6-astra', 'gpt-5.6-terra', 'gpt-5.5'])
+    expect(openAiProvider?.models).toEqual(['gpt-6-sol', 'gpt-6.2-sol', 'gpt-6.1-sol', 'gpt-6-luna', 'gpt-6.2-astra', 'gpt-6-astra', 'gpt-5.6-terra', 'gpt-5.5'])
     const bedrockProvider = payload.providers.find((provider: any) => provider.name === 'bedrock')
     expect(bedrockProvider?.models).toContain('anthropic.claude-3-5-sonnet-20241022-v2:0')
   })

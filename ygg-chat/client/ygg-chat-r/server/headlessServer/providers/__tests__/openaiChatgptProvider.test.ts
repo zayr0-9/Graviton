@@ -90,6 +90,8 @@ describe('OpenAiChatgptProvider', () => {
   })
 
   it('normalizes ChatGPT display labels to backend model IDs', () => {
+    expect(normalizeOpenAIChatGPTModel('GPT-6.2 Astra')).toBe('gpt-6.2-astra')
+    expect(normalizeOpenAIChatGPTModel('GPT-6.2-Sol')).toBe('gpt-6.2-sol')
     expect(normalizeOpenAIChatGPTModel('GPT-6-Astra')).toBe('gpt-6-astra')
     expect(normalizeOpenAIChatGPTModel('GPT-6-Sol')).toBe('gpt-6-sol')
     expect(normalizeOpenAIChatGPTModel('GPT-6.1-Sol')).toBe('gpt-6.1-sol')
@@ -117,7 +119,7 @@ describe('OpenAiChatgptProvider', () => {
     expect(normalizeOpenAIChatGPTModel('  OpenAIChatGPT/GPT-6.1 Sol Future  ')).toBe('gpt-6.1-sol-future')
   })
 
-  it.each(['gpt-6-astra', 'gpt-6-sol', 'gpt-6.1-sol', 'gpt-6-luna', 'gpt-5.6-terra'])(
+  it.each(['gpt-6.2-astra', 'gpt-6.2-sol', 'gpt-6-astra', 'gpt-6-sol', 'gpt-6.1-sol', 'gpt-6-luna', 'gpt-5.6-terra'])(
     'enables Responses Lite transport for %s',
     async modelName => {
       process.env.OPENAI_CHATGPT_ACCESS_TOKEN =
@@ -136,9 +138,9 @@ describe('OpenAiChatgptProvider', () => {
         expect(headers.get('session-id')).toBe(body.prompt_cache_key)
         expect(headers.get('thread-id')).toBe(body.prompt_cache_key)
         expect(headers.get('x-session-affinity')).toBe(body.prompt_cache_key)
-        expect(headers.get('version')).toBe('0.159.2')
+        expect(headers.get('version')).toBe('0.169.0')
         expect(headers.get('originator')).toBe('codex_cli_rs')
-        expect(headers.get('user-agent')).toBe(`codex_cli_rs/0.159.2 (${process.platform}; ${process.arch}) Graviton`)
+        expect(headers.get('user-agent')).toBe(`codex_cli_rs/0.169.0 (${process.platform}; ${process.arch}) Graviton`)
         expect(body.input[0]).toEqual({
           type: 'additional_tools',
           role: 'developer',
@@ -314,8 +316,8 @@ describe('OpenAiChatgptProvider', () => {
       expect(headers.get('x-client-request-id')).toBe(body.prompt_cache_key)
       expect(headers.get('session-id')).toBe(body.prompt_cache_key)
       expect(headers.get('thread-id')).toBe(body.prompt_cache_key)
-      expect(headers.get('user-agent')).toBe(`codex_cli_rs/0.159.2 (${process.platform}; ${process.arch}) Graviton`)
-      expect(headers.get('version')).toBe('0.159.2')
+      expect(headers.get('user-agent')).toBe(`codex_cli_rs/0.169.0 (${process.platform}; ${process.arch}) Graviton`)
+      expect(headers.get('version')).toBe('0.169.0')
       expect(body.service_tier).toBeUndefined()
       expect(body.include).toEqual(['reasoning.encrypted_content', 'web_search_call.action.sources'])
       expect(body.tools).toEqual(expect.arrayContaining([{ type: 'web_search' }, { type: 'image_generation' }]))

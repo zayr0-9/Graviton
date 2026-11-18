@@ -308,6 +308,7 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
   runSessions.setMainSessionFactory(session => {
     const projector = new RunSnapshotProjector(session.snapshotPayloads)
     session.setProjector(event => projector.apply(event))
+    session.setTranscriptProvider(() => projector.transcript())
     session.setEventObserver(event => {
       if (event.type === 'message_queue_updated') {
         for (const item of event.snapshot.items) {
@@ -473,6 +474,7 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
     decisionBroker,
     runSessions,
     resumableRuns,
+    readRunMessages: (conversationId, ids) => ids.map(id => readSnapshotMessage.get(id, conversationId)).filter(Boolean),
   })
 }
 

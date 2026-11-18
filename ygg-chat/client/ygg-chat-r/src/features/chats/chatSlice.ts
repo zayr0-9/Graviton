@@ -34,6 +34,7 @@ import {
   ToolCallPermissionRequest,
   OperationModeUpgradeRequest,
 } from './chatTypes'
+import { normalizeMeterTicks, recordMeterChunk } from './characterMeter'
 import { createEmptyStreamState, DEFAULT_STREAM_ID } from './streamHelpers'
 import { chatSelectionRequested, chatSelectionCommitted, chatSelectionFailed, chatSelectionResumed, chatSelectionCancelled, chatSelectionScrollHandled, initialChatSelection } from './chatSelection'
 import { buildPathToConversationMessage } from './conversationTree'
@@ -543,6 +544,9 @@ export const chatSlice = createSlice({
   name: 'chat',
   initialState,
   reducers: {
+    characterMeterTickLimitSet: (state, action: PayloadAction<number | null>) => {
+      state.ui.characterMeterTickLimit = action.payload == null ? null : normalizeMeterTicks(action.payload)
+    },
     branchModelSelected: (state, action: PayloadAction<BranchModelSelection>) => {
       if (state.composition.editingBranch) {
         state.composition.branchEditModelSelection = action.payload
@@ -712,6 +716,7 @@ export const chatSlice = createSlice({
       // following it again after a mid-run rebootstrap. Only an unknown slot is passive.
       state.streaming.byId[streamId] = { ...createEmptyStreamState(previous?.streamType ?? 'branch'),
         active: true, status: 'active', conversationId, bootstrapInstalling: true,
+        characterMeter: previous?.characterMeter,
         selectionRevision: previous?.selectionRevision ?? -1,
         updatePath: previous ? previous.updatePath : false, watchContinuation: previous?.watchContinuation,
         followSelectedTip: previous?.followSelectedTip }
@@ -923,7 +928,11 @@ export const chatSlice = createSlice({
         return
       }
 
+      if (state.ui.characterMeterTickLimit != null && stream.compactionStatus !== 'started' && !stream.bootstrapInstalling) {
+        recordMeterChunk(stream, chunk, state.ui.characterMeterTickLimit)
+      }
       if (chunk.type === 'reset') {
+        stream.characterMeter = undefined
         stream.status = stream.active ? 'active' : 'idle'
         stream.buffer = ''
         stream.thinkingBuffer = ''
@@ -2251,6 +2260,7 @@ export const chatSlice = createSlice({
     stateReset: draft => {
       const state = current(draft)
       const next = makeInitialState()
+      next.ui.characterMeterTickLimit = state.ui.characterMeterTickLimit
       next.streaming = {
         ...state.streaming,
         byId: Object.fromEntries(Object.entries(state.streaming.byId).map(([id, stream]) => {

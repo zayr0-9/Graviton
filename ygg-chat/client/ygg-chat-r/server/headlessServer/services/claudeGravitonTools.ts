@@ -1,6 +1,6 @@
 import { BUILTIN_TOOL_DEFINITIONS } from '../../../../../shared/builtinToolDefinitions.js'
-import { CLAUDE_GRAVITON_TOOL_NAMES, GRAVITON_MCP_SERVER } from '../../../../../shared/claudeGravitonTools.js'
-export { CLAUDE_GRAVITON_TOOL_NAMES, GRAVITON_MCP_SERVER, claudeGravitonToolName, gravitonToolName } from '../../../../../shared/claudeGravitonTools.js'
+import { GRAVITON_MCP_SERVER } from '../../../../../shared/claudeGravitonTools.js'
+export { GRAVITON_MCP_SERVER, claudeGravitonToolName, gravitonToolName } from '../../../../../shared/claudeGravitonTools.js'
 
 /**
  * Graviton's own tools in Claude chats. Claude Code takes host tools only as MCP tools, so
@@ -12,7 +12,7 @@ export { CLAUDE_GRAVITON_TOOL_NAMES, GRAVITON_MCP_SERVER, claudeGravitonToolName
  * records what it last answered, so a run can tell whether Claude has the current list and wait
  * for it (`sync`). Claude cannot reconnect an in-process server (CLI 2.1.323 answers
  * `reconnectMcpServer` with "SDK servers should be handled in print.ts"); a run whose CLI never
- * refreshes relaunches it instead. Which tools are offered: `shared/claudeGravitonTools.ts`.
+ * refreshes relaunches it instead.
  */
 
 export interface GravitonToolDefinition {
@@ -24,12 +24,11 @@ export interface GravitonToolDefinition {
 const DEFAULT_ENABLED = new Map(BUILTIN_TOOL_DEFINITIONS.map(tool => [tool.name, tool.enabled]))
 
 /**
- * The Graviton tools Claude may use now: offered to Claude, available on this host, and switched
- * on in Settings (a tool never switched keeps its default).
+ * The Graviton tools Claude may use now: every built-in this host runs that is switched on in
+ * Settings → Tools (a tool never switched keeps its default). The user chooses, as for any provider.
  */
 export function enabledGravitonTools(available: GravitonToolDefinition[], states: Record<string, boolean> | null | undefined): GravitonToolDefinition[] {
-  return available.filter(tool => CLAUDE_GRAVITON_TOOL_NAMES.has(tool.name)
-    && (states?.[tool.name] ?? DEFAULT_ENABLED.get(tool.name) ?? false))
+  return available.filter(tool => states?.[tool.name] ?? DEFAULT_ENABLED.get(tool.name) ?? true)
 }
 
 /** What a tool call returns to Claude (model text) and to Graviton's own row (persisted text). */

@@ -13,6 +13,7 @@ import { UtilityToolRuntimeHost } from './UtilityToolRuntimeHost.js'
 
 export interface ElectronServerOptions {
   bindHost: string
+  allowNonLoopbackBind: boolean
   preferredPort: number
   fallbackPorts: number[]
   allowEphemeralPort: boolean
@@ -27,8 +28,8 @@ function isEnvTruthy(value: string | undefined): boolean {
  * Desktop server config. Values preserve current behavior exactly:
  * permissive CORS (the Electron renderer is cross-origin), OAuth callback on
  * 1455, tool runtime mode from YGG_TOOLS_RUNTIME, in-process fallback unless
- * DISABLE_TOOL_RUNTIME_FALLBACK, and non-loopback bind allowed because the
- * guarded LAN/mobile mode is an existing desktop feature.
+ * DISABLE_TOOL_RUNTIME_FALLBACK. Non-loopback binding requires explicit
+ * opt-in from the desktop host.
  */
 export function buildElectronServerConfig(options: ElectronServerOptions): YggServerConfig {
   const userDataDir = app.getPath('userData')
@@ -49,7 +50,7 @@ export function buildElectronServerConfig(options: ElectronServerOptions): YggSe
       mode: process.env.YGG_TOOLS_RUNTIME?.trim().toLowerCase() === 'utility' ? 'utility' : 'local',
       allowInProcessFallback: !isEnvTruthy(process.env.DISABLE_TOOL_RUNTIME_FALLBACK),
     },
-    allowNonLoopbackBind: true,
+    allowNonLoopbackBind: options.allowNonLoopbackBind,
   })
 }
 

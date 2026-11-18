@@ -78,3 +78,21 @@ describe('agents pill theme tint', () => {
     expect(html).toContain('dark:bg-yBlack-900/75')
   })
 })
+
+describe('agents window presentation', () => {
+  it('renders the expanded view full-window without pill-only controls', () => {
+    const html = renderToStaticMarkup(<RunningAgentsFloatingButton presentation='window' />)
+    expect(html).toContain('agents-window fixed inset-0')
+    expect(html).toContain('Group steps')
+    expect(html).not.toContain('rounded-[28px]')
+    expect(html).not.toContain('Resize agents panel')
+    expect(html).not.toContain('Open apps modal')
+    expect(html).not.toContain('Open agents in a new window')
+  })
+
+  it('collapsed pill stays a pill with no window controls', () => {
+    const html = render()
+    expect(html).toContain('agents-pill fixed')
+    expect(html).not.toContain('Group steps')
+  })
+})

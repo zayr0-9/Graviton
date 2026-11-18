@@ -26,8 +26,10 @@ export async function fetchOpenAIUsageStatus(): Promise<OpenAIUsageResult> {
 }
 const models = [
   ['gpt-6-sol', 'GPT-6-Sol', 'Flagship GPT-6 model for complex, demanding work'],
+  ['gpt-6.2-sol', 'GPT-6.2-Sol', 'GPT-6.2 Sol model.'],
   ['gpt-6.1-sol', 'GPT-6.1-Sol', 'Latest workhorse model for coding and everyday work.'],
   ['gpt-6-luna', 'GPT-6-Luna', 'Fast and efficient GPT-6 model'],
+  ['gpt-6.2-astra', 'GPT-6.2-Astra', 'GPT-6.2 Astra model.'],
   ['gpt-6-astra', 'GPT-6-Astra', 'Our most capable model for complex, demanding work.'],
   ['gpt-5.6-terra', 'GPT-5.6 Terra', 'Balanced GPT-5.6 model for everyday work'],
   ['gpt-5.5', 'GPT-5.5', 'Latest GPT-5.5 frontier model for professional work'],

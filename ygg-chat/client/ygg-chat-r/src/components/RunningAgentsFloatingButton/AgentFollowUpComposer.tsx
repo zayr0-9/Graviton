@@ -11,6 +11,7 @@ import { runningAgentsUiActions } from '../../features/ui/runningAgentsUiSlice'
 import { findFollowUpKey, relatedFollowUpKeys, followUpCapacity, MAX_FOLLOW_UP_LENGTH } from '../../features/ui/agentFollowUpState'
 import { QueuedMessages } from '../ChatMessage/QueuedMessages'
 import { getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from '../ThemeManager/themeConfig'
+import { isAgentsWindow } from '../../platform/agentsWindow'
 
 const MODES: Array<{ mode: OperationMode; label: string; title: string }> = [
   { mode: 'plan', label: 'Chat', title: 'Chat mode: answers and read-only tools, no file edits' },
@@ -110,7 +111,8 @@ export function AgentFollowUpComposer({ fork, onOpenChat }: {
       <button type='button' className='mt-1 underline' onClick={() => change(draft.content ? `${draft.content}\n\n${draft.attempt!.content}` : draft.attempt!.content)}>Restore submitted text</button>}
     {error && <div role='alert' className='mt-1 text-rose-700 dark:text-rose-300' style={{ color: color('toolJobsErrorText') }}>
       {error} <button type='button' disabled={!target.run.conversationId} className='underline' onClick={() => {
-        dispatch(moveFollowUpToComposer(key))
+        // The agents window's own Chat composer is never shown, so the draft stays here.
+        if (!isAgentsWindow()) dispatch(moveFollowUpToComposer(key))
         onOpenChat(target.run)
       }}>Open chat</button>
     </div>}

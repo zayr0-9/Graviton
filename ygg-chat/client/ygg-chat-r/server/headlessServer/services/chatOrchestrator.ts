@@ -88,8 +88,8 @@ interface ChatOrchestratorDeps {
   /** Keep a Claude branch's CLI open between runs; absent (tests, subagents) starts a CLI per run. */
   claudeWarm?: ClaudeWarmConfig | null
   /**
-   * Settings → Tools switches, read live. When present (with `toolExecutor`), Claude runs get the
-   * Graviton tools offered to Claude as the `graviton` MCP server. Absent (tests) keeps them out.
+   * Settings → Tools switches, read live. When present (with `toolExecutor`), Claude runs get every
+   * switched-on Graviton built-in as the `graviton` MCP server. Absent (tests) keeps them out.
    */
   claudeGravitonToolStates?: () => Record<string, boolean>
 }
@@ -162,7 +162,7 @@ function parseToolArgs(raw: unknown): any {
 }
 
 /** Whether a tool call skips the interactive permission prompt (server-side port of the renderer gate). */
-export function shouldBypassPermission(toolName: string, args: any): boolean {
+function shouldBypassPermission(toolName: string, args: any): boolean {
   if (ALWAYS_BYPASS_TOOLS.has(toolName)) return true
   if (toolName === 'mcp_manager') return ['search', 'list', 'get', 'stop', 'list_tools'].includes(args?.action)
   if (toolName === 'custom_tool_manager') {
@@ -945,8 +945,11 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       nativeMcp: deps.claudeNativeMcp, warm: deps.claudeWarm,
       gravitonTools: gravitonToolStates && gravitonExecutor ? {
         available: () => enabledGravitonTools(this.defaultToolsProvider(), gravitonToolStates()),
-        execute: gravitonExecutor,
-        bypassPermission: shouldBypassPermission,
+        // Graviton's own per-call wrapper, so a Claude run's Graviton calls ask, run hooks and
+        // nest exactly as in Graviton's loop.
+        executor: run => deps.decisionBroker
+          ? createChatPausingExecutor({ base: gravitonExecutor, broker: deps.decisionBroker, ...run })
+          : gravitonExecutor,
       } : null })
     this.toolLoopService =
       deps.toolLoopService ??

@@ -14,6 +14,7 @@ import { hasGenerationReader, resumeInFlightStreams } from '../features/chats/ch
 import { adoptWatchContinuation } from '../features/chats/watchContinuation'
 import { toolJobManager } from '../services/ToolJobManager'
 import { recordTerminalSnapshotLease } from '../features/chats/conversationSnapshotCoordinator'
+import { buildSystemRunNotification, showSystemRunNotification } from '../features/chats/systemRunNotifications'
 
 import agentRunPreviewsReducer, { agentRunPreviewMiddleware } from '../features/chats/agentRunPreviewSlice'
 
@@ -110,7 +111,12 @@ listenerMiddleware.startListening({
       ],
     })
 
-    // Notification requirement remains branch-only; every terminal stream gets a lease.
+    // OS notification: main Chat and branch runs only, and only for a run that was
+    // live before this action (a replay of a finished run must not notify again).
+    const before = (api.getOriginalState() as ListenerState).chat.streaming.byId[streamId]
+    showSystemRunNotification(buildSystemRunNotification(before, messageId, state.conversations.items))
+
+    // In-app notification remains branch-only; every terminal stream gets a lease.
     if (stream.streamType !== 'branch') return
     const conversation = state.conversations.items.find(c => String(c.id) === String(conversationId))
 

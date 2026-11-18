@@ -46,6 +46,25 @@ export type AttachResult =
 
 const DEFAULT_BUFFER_CAP = 20_000
 
+export interface RunTranscriptIds { messageIds: string[]; excludedParentId: string | null }
+
+/** A finished main run, kept as metadata after its payloads are evicted. */
+export interface FinishedRunSummary {
+  streamId: string
+  conversationId: string
+  lineageId: string | null
+  parentId: string | null
+  createdAt: string
+  completedAt: string
+  status: Exclude<RunStatus, 'running'>
+  operationMode: 'plan' | 'execute' | null
+}
+
+interface FinishedRunRecord { summary: FinishedRunSummary; transcript: RunTranscriptIds | null }
+
+/** Finished main runs remembered after eviction (metadata and row IDs only). */
+export const MAX_FINISHED_RUNS = 40
+
 export class RunSession {
   readonly streamId: string
   readonly snapshotPayloads = new SnapshotPayloadStore()
@@ -79,6 +98,15 @@ export class RunSession {
   setChildSnapshotProvider(provider: () => import('../../../../../shared/runProtocol.js').ChildRunBootstrap): void { this.childSnapshotProvider = provider }
   private project?: (event: HeadlessStreamEvent) => void
   private projectionFailed = false
+  /** Latest Chat/Agent mode: the `started` mode, then live switches. */
+  operationMode: 'plan' | 'execute' | null = null
+  private transcriptProvider?: () => RunTranscriptIds
+  setTranscriptProvider(provider: () => RunTranscriptIds): void { this.transcriptProvider = provider }
+  /** Row IDs of this run's transcript; null when no projector recorded them. */
+  transcriptIds(): RunTranscriptIds | null {
+    if (!this.transcriptProvider || this.projectionFailed) return null
+    try { return this.transcriptProvider() } catch { return null }
+  }
   private onEvent?: (event: HeadlessStreamEvent) => void
   setEventObserver(observer: (event: HeadlessStreamEvent) => void): void { this.onEvent = observer }
 
@@ -148,7 +176,9 @@ export class RunSession {
     if (event.type === 'started') {
       this.lineageId = event.lineageId ?? null
       this.parentId = event.parentId
+      if (event.operationMode) this.operationMode = event.operationMode
     }
+    if (event.type === 'operation_mode_changed') this.operationMode = event.mode
     try { this.onEvent?.(event) } catch {
       console.warn('[RunSession] Could not record command outcome', { streamId: this.streamId, type: event.type })
     }
@@ -270,8 +300,18 @@ const DEFAULT_REAP: ReapPolicy = {
   terminalLingerMs: 60_000,
 }
 
+function finishedSummary(session: RunSession): FinishedRunSummary | null {
+  if (session.kind !== 'main' || !session.conversationId || session.status === 'running' || session.terminalAt === null) return null
+  return {
+    streamId: session.streamId, conversationId: session.conversationId, lineageId: session.lineageId,
+    parentId: session.parentId, createdAt: session.createdAt, completedAt: new Date(session.terminalAt).toISOString(),
+    status: session.status, operationMode: session.operationMode ?? session.effectiveConfiguration?.operationMode ?? null,
+  }
+}
+
 export class RunSessionRegistry {
   private readonly sessions = new Map<string, RunSession>()
+  private readonly finished = new Map<string, FinishedRunRecord>()
   private readonly policy: ReapPolicy
   private readonly bufferCap: number
   private configureMain?: (session: RunSession) => void
@@ -347,6 +387,37 @@ export class RunSessionRegistry {
   }
 
   /**
+   * Recently finished main runs, newest first: those still lingering plus those already
+   * evicted (metadata only). Lets a new window or a reloaded renderer list finished runs.
+   */
+  listFinished(): FinishedRunSummary[] {
+    const byId = new Map(this.finished)
+    for (const session of this.sessions.values()) {
+      const summary = finishedSummary(session)
+      if (summary) byId.set(summary.streamId, { summary, transcript: null })
+    }
+    return [...byId.values()].map(record => record.summary)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.streamId.localeCompare(a.streamId))
+      .slice(0, MAX_FINISHED_RUNS)
+  }
+
+  /** Row IDs for a finished run's transcript, from the lingering session or the eviction record. */
+  finishedTranscript(streamId: string): (RunTranscriptIds & { conversationId: string }) | null {
+    const session = this.sessions.get(streamId)
+    const summary = session ? finishedSummary(session) : this.finished.get(streamId)?.summary
+    const transcript = session ? session.transcriptIds() : this.finished.get(streamId)?.transcript
+    return summary && transcript ? { ...transcript, conversationId: summary.conversationId } : null
+  }
+
+  private remember(session: RunSession): void {
+    const summary = finishedSummary(session)
+    if (!summary) return
+    this.finished.delete(summary.streamId)
+    this.finished.set(summary.streamId, { summary, transcript: session.transcriptIds() })
+    while (this.finished.size > MAX_FINISHED_RUNS) this.finished.delete(this.finished.keys().next().value!)
+  }
+
+  /**
    * Evict terminal payloads after their linger window. Running sessions are never
    * cancelled based on subscriber count; execution limits belong to the engine.
    */
@@ -355,6 +426,7 @@ export class RunSessionRegistry {
     for (const [streamId, session] of this.sessions) {
       if (session.isTerminal()) {
         if (session.terminalAt !== null && now - session.terminalAt >= this.policy.terminalLingerMs) {
+          this.remember(session)
           session.dispose()
           this.sessions.delete(streamId)
           evicted.push(streamId)

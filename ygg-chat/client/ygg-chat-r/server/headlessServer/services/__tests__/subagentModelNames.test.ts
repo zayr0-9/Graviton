@@ -3,6 +3,10 @@ import { normalizeSubagentModelName } from '../../../../src/helpers/subagentMode
 
 describe('normalizeSubagentModelName', () => {
   it.each([
+    ['GPT-6.2 Astra', 'gpt-6.2-astra'],
+    ['GPT-6.2-Astra', 'gpt-6.2-astra'],
+    ['GPT-6.2 Sol', 'gpt-6.2-sol'],
+    ['openaichatgpt/gpt-6.2-sol', 'gpt-6.2-sol'],
     ['GPT-6-Astra', 'gpt-6-astra'],
     ['GPT-6-Sol', 'gpt-6-sol'],
     ['GPT-6.1-Sol', 'gpt-6.1-sol'],

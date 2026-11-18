@@ -43,6 +43,8 @@ if (!process.versions.electron) {
     host.get(['/api/gw/conversations/paginated', '/api/gw/conversations/by-project'], (_req, res) => res.json({ conversations: [conversation], nextCursor: null, hasMore: false }))
     host.get(['/api/app/conversations/c1', '/api/gw/conversations/c1'], (_req, res) => res.json(conversation))
     host.get(['/api/app/conversations/c1/messages/tree', '/api/gw/conversations/c1/messages/tree'], (_req, res) => res.json({ messages: rows, tree: null, meta: { storage_mode: 'local' } }))
+    host.get('/api/host/runs/finished', (_req, res) => res.json({ runs: [] }))
+    host.get('/api/local/conversations/c1/heimdall-collapse-groups', (_req, res) => res.json({ groups: [] }))
     host.get('/api/conversations/c1/streaming-runs', (_req, res) => res.json({ runs: [] }))
     host.get(['/api/local/tools', '/api/app/conversations/c1/messages/top-level-users', '/api/conversations/c1/subagents'], (_req, res) => res.json([]))
     host.post('/api/mcp/refresh-tools', (_req, res) => res.json({ success: true, tools: [] }))
@@ -196,6 +198,21 @@ if (!process.versions.electron) {
       await new Promise(resolve => setTimeout(resolve, 100))
       await click(windows[1], '[aria-label="Conversation actions"]')
       const headerColors = await windows[1].webContents.executeJavaScript(`Array.from(document.querySelectorAll('[data-quiet-header] h1, .quiet-model-trigger, .quiet-model-trigger svg, .quiet-header-actions button')).map(el=>{const c=document.createElement('canvas');c.width=c.height=1;const ctx=c.getContext('2d');ctx.fillStyle=getComputedStyle(el).color;ctx.fillRect(0,0,1,1);const [r,g,b]=ctx.getImageData(0,0,1,1).data;return 'rgb('+r+', '+g+', '+b+')'})`)
+      await windows[1].webContents.executeJavaScript(`window.dispatchEvent(new CustomEvent('chat:characterMeter', {detail:{style:'spectrum',scope:'all'}}))`)
+      await wait(windows[1], `!!document.querySelector('.output-meter canvas')`, 'Spectrum missing')
+      const spectrum = await windows[1].webContents.executeJavaScript(`(()=>{
+        const meter=document.querySelector('.output-meter'), canvas=meter.querySelector('canvas'), key=meter.querySelector('.output-meter-key');
+        const ctx=canvas.getContext('2d'), pixel=Array.from(ctx.getImageData(Math.floor(canvas.width/106),canvas.height-1,1,1).data);
+        return { pixel, labels:key.children.length, first:key.firstChild.textContent, last:key.lastChild.textContent, color:getComputedStyle(meter).color };
+      })()`)
+      const expectedLetter = dark ? [134,239,172] : [30,64,175]
+      if (spectrum.labels !== 53 || spectrum.first !== 'a' || spectrum.last !== '…' || !spectrum.pixel[3] || expectedLetter.some((c,i)=>Math.abs(c-spectrum.pixel[i])>4)) throw new Error('Wrong spectrum key or palette: '+JSON.stringify({dark,spectrum}))
+      const meterKey = `document.querySelector('.output-meter-key')`
+      await wait(windows[1], `getComputedStyle(${meterKey}).opacity==='0'`, 'Spectrum key should be hidden at rest')
+      await windows[1].webContents.executeJavaScript(`document.querySelector('.output-meter').focus({focusVisible:true})`)
+      await wait(windows[1], `getComputedStyle(${meterKey}).opacity==='1' && ${meterKey}.offsetHeight>0`, 'Spectrum focus did not reveal character labels')
+      await windows[1].webContents.executeJavaScript(`window.dispatchEvent(new CustomEvent('chat:characterMeter', {detail:{style:'off',scope:'all'}}))`)
+      console.log('PASS character spectrum canvas and per-character key in '+(dark?'dark':'light')+' mode')
       const expectedHeaderColor = dark ? 'rgb(245, 245, 244)' : 'rgb(41, 37, 36)'
       if (headerColors.length !== 6 || headerColors.some(color => color !== expectedHeaderColor)) throw new Error('Default header text mismatch: '+JSON.stringify({dark,headerColors}))
       await click(windows[1], '[aria-label="Conversation actions"]')
@@ -322,8 +339,13 @@ if (!process.versions.electron) {
       for (const name of ['read_file', 'glob', 'ripgrep']) await wait(window, `document.body.innerText.includes('${name}')`, `Missing completed tool ${name}`)
     }
     console.log('PASS observer reload retains three completed tool turns and expanded call history')
+    await windows[0].webContents.executeJavaScript(`window.dispatchEvent(new CustomEvent('chat:characterMeter', {detail:{style:'spectrum',scope:'all'}}))`)
+    await wait(windows[0], `document.querySelector('.output-meter')?.getAttribute('aria-label')==='All output: 0 characters'`, 'Live spectrum did not start idle')
     // Exercise ownership transitions in the real shared Chat/ChatMessage renderers.
-    publish({ type: 'chunk', part: 'text', delta: 'I have checked the files and am now preparing the next operation for this task.' })
+    const commentary = 'I have checked the files and am now preparing the next operation for this task.'
+    publish({ type: 'chunk', part: 'text', delta: commentary })
+    await wait(windows[0], `document.querySelector('.output-meter')?.getAttribute('aria-label')==='All output: ${commentary.length} characters'`, 'Live spectrum missed stream characters')
+    console.log('PASS live character count from production SSE projection')
     for (const window of windows) await wait(window, `!!document.querySelector('[data-live-activity-footer] [aria-label="Assistant is working"]')`, 'Trailing commentary footer missing')
     publish({ type: 'chunk', part: 'tool_call', toolCall: { id: 'last-step', name: 'read_file', arguments: {} } })
     for (const window of windows) await wait(window, `!document.querySelector('[data-live-activity-footer]') && !!document.querySelector('[data-live-streaming-tail] [data-agent-steps] [role="status"]')`, 'Trailing steps did not take activity ownership')

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  MAX_FINISHED_RUNS,
   RunSession,
   RunSessionRegistry,
   type BufferedEvent,
@@ -191,6 +192,39 @@ describe('RunSessionRegistry', () => {
     expect(reg.size()).toBe(1)
     expect(reg.reap(terminalAt + 1_001)).toEqual(['s1']) // past linger
     expect(reg.size()).toBe(0)
+  })
+
+  it('remembers finished main runs after eviction, newest first and capped', () => {
+    const reg = new RunSessionRegistry({ policy: { terminalLingerMs: 1 } })
+    const main = (id: string) => {
+      const session = reg.create(id, 'c')
+      session.setSnapshotProvider(() => ({}) as never)
+      session.setTranscriptProvider(() => ({ messageIds: [`${id}-user`, `${id}-answer`], excludedParentId: 'p' }))
+      return session
+    }
+    const first = main('s1')
+    first.publish(ev({ type: 'started', parentId: 'p', lineageId: 'l1', operationMode: 'plan' }))
+    first.publish(ev({ type: 'operation_mode_changed', mode: 'execute', message: {} }))
+    first.publish(ev({ type: 'complete', message: { id: 'a1' } }))
+    const running = main('s2')
+    running.publish(ev({ type: 'started', parentId: 'p2' }))
+    reg.create('child', 'c').publish(ev({ type: 'complete', message: {} }))
+
+    // Lingering terminal runs are listed; running and child runs are not.
+    expect(reg.listFinished().map(run => run.streamId)).toEqual(['s1'])
+    expect(reg.listFinished()[0]).toMatchObject({ conversationId: 'c', lineageId: 'l1', parentId: 'p', status: 'completed', operationMode: 'execute' })
+    expect(reg.reap(Number.MAX_SAFE_INTEGER)).toContain('s1')
+    expect(reg.get('s1')).toBeUndefined()
+    expect(reg.listFinished().map(run => run.streamId)).toEqual(['s1'])
+    expect(reg.finishedTranscript('s1')).toEqual({ conversationId: 'c', messageIds: ['s1-user', 's1-answer'], excludedParentId: 'p' })
+    expect(reg.finishedTranscript('s2')).toBeNull()
+
+    for (let index = 0; index < MAX_FINISHED_RUNS + 3; index += 1) {
+      main(`old-${index}`).publish(ev({ type: 'error', error: 'x' }))
+      reg.reap(Number.MAX_SAFE_INTEGER)
+    }
+    expect(reg.listFinished()).toHaveLength(MAX_FINISHED_RUNS)
+    expect(reg.finishedTranscript('s1')).toBeNull()
   })
 
   it('reaper never cancels a running session with no viewers', () => {

@@ -19,16 +19,18 @@ function previewForCodexLog(value: unknown, maxLength = 1200): string {
 }
 
 // Match the verified Codex desktop bundled CLI, not the desktop app version.
-// The live catalog exposes GPT-6.1 Sol at 0.159.2 but not 0.155.0, despite the
-// bundled catalog's lower minimum. Keep both identity headers on this version.
-const CODEX_CLIENT_VERSION = '0.159.2'
+// The backend gates models on this version: GPT-6.1 Sol needed 0.159.2 (above its
+// bundled 0.153.0 minimum); GPT-6.2 Sol/Astra need at least 0.166.0. 0.169.0 is the
+// installed Codex build verified against the live catalog. Keep both identity
+// headers on this version.
+const CODEX_CLIENT_VERSION = '0.169.0'
 const RESPONSES_LITE_HEADER = 'x-openai-internal-codex-responses-lite'
 const RESPONSES_LITE_WIRE_SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 const MAX_RESPONSES_LITE_SESSIONS = 500
 const liteWireSessionIds = new Map<string, string>()
 
 function usesResponsesLite(model: string): boolean {
-  return /^(?:gpt-6\.1-sol|gpt-6-(?:astra|sol|luna)|gpt-5\.6-(?:sol|terra|luna))$/i.test(model)
+  return /^(?:gpt-6\.2-(?:astra|sol)|gpt-6\.1-sol|gpt-6-(?:astra|sol|luna)|gpt-5\.6-(?:sol|terra|luna))$/i.test(model)
 }
 
 function toResponsesLiteTools(tools: any[]): any[] {

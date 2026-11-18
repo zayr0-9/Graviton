@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
-import { CLAUDE_GRAVITON_TOOL_NAMES, GravitonMcpServer, claudeGravitonToolName, enabledGravitonTools, gravitonResultText, gravitonToolName, type SdkMcpTransport } from '../claudeGravitonTools.js'
+import { GravitonMcpServer, claudeGravitonToolName, enabledGravitonTools, gravitonResultText, gravitonToolName, type SdkMcpTransport } from '../claudeGravitonTools.js'
 import { ClaudeSessionService } from '../claudeSessionService.js'
 import { DecisionBroker } from '../decisionBroker.js'
-import { shouldBypassPermission } from '../chatOrchestrator.js'
+import { createChatPausingExecutor } from '../chatOrchestrator.js'
 import { BUILTIN_TOOL_DEFINITIONS } from '../../../../../../shared/builtinToolDefinitions.js'
 
 /** The CLI end of the SDK transport: requests by id, everything the server sent. */
@@ -33,14 +33,16 @@ describe('Graviton tool names and selection', () => {
     expect(claudeGravitonToolName('fetch_chats')).toBe('mcp__graviton__fetch_chats')
   })
 
-  it('offers only tools Claude has no twin for, available here and switched on', () => {
-    const names = (states: Record<string, boolean>) => enabledGravitonTools(definitions, states).map(tool => tool.name).sort()
-    // Claude's own Read/Bash/WebSearch twins never appear.
-    expect(names({})).toEqual([...CLAUDE_GRAVITON_TOOL_NAMES].sort())
-    expect(names({ theme_manager: false })).not.toContain('theme_manager')
-    // A tool switched off by default stays off until switched on.
-    expect(enabledGravitonTools([{ name: 'theme_manager' }], {}).length).toBe(1)
-    expect(names({ read_file: true, bash: true, brave_search: true })).not.toEqual(expect.arrayContaining(['read_file']))
+  it('offers every built-in this host runs, as Settings → Tools switches it', () => {
+    const names = (states: Record<string, boolean>) => enabledGravitonTools(definitions, states).map(tool => tool.name)
+    const defaults = names({})
+    // The user decides: Claude's twins and run-scoped tools are offered too.
+    expect(defaults).toEqual(expect.arrayContaining(['read_file', 'bash', 'theme_manager', 'multi_call', 'repl', 'subagent', 'switch_mode', 'context_status']))
+    // A tool off by default stays off until switched on.
+    expect(defaults).not.toContain('search_history')
+    expect(names({ search_history: true })).toContain('search_history')
+    expect(names({ theme_manager: false, bash: false })).not.toEqual(expect.arrayContaining(['theme_manager']))
+    expect(names({ theme_manager: false, bash: false })).not.toContain('bash')
     // A tool this host cannot run (browse_web without a browser engine) is never offered.
     expect(enabledGravitonTools(definitions.filter(tool => tool.name !== 'browse_web'), {}).map(tool => tool.name)).not.toContain('browse_web')
   })
@@ -144,7 +146,7 @@ describe('GravitonMcpServer', () => {
 })
 
 describe('Graviton tools in a Claude run', () => {
-  function fixture(options: { states?: Record<string, boolean>; operationMode?: 'plan' | 'execute'; autoApprove?: boolean } = {}) {
+  function fixture(options: { states?: Record<string, boolean>; operationMode?: 'plan' | 'execute'; autoApprove?: boolean; planMode?: boolean } = {}) {
     const rows: any[] = []
     const state: any = {}
     const sessions = { branch: vi.fn(() => state.branch), checkpoint: vi.fn(() => state.checkpoint), reserve: vi.fn(),
@@ -179,27 +181,41 @@ describe('Graviton tools in a Claude run', () => {
     const emit = vi.fn()
     const service = new ClaudeSessionService({ sessions: sessions as any, broker, executable: async () => '/mock/claude', sdk: async () => sdk as any, hookRuns: null,
       messages: { get: vi.fn(() => null), updateClaudeProjection: vi.fn((id: string, content: string, content_blocks: any, meta: any) => ({ id, content, content_blocks, meta })) } as any,
-      gravitonTools: { available: () => enabledGravitonTools(definitions, states), execute, bypassPermission: shouldBypassPermission } })
-    const input: any = { request: { conversationId: 'c', provider: 'Claude Code', modelName: 'claude-sonnet-5-5', content: 'which themes?', streamId: 'stream', operationMode: options.operationMode ?? 'execute' },
+      gravitonTools: { available: () => enabledGravitonTools(definitions, states),
+        executor: run => createChatPausingExecutor({ base: execute, broker, ...run }) } })
+    const input: any = { request: { conversationId: 'c', provider: 'Claude Code', modelName: 'claude-sonnet-5-5', content: 'which themes?', streamId: 'stream',
+      operationMode: options.operationMode ?? 'execute', ...(options.planMode ? { claudePlanMode: true } : {}), subagentDefaults: { defaultProvider: 'openaichatgpt' } },
       lineageId: 'l', userMessage: { id: 'u' }, parentId: 'u', sourceMessageId: null, fork: false, cwd: '/workspace', sink, emit }
     return { service, input, sdk, execute, cli, rows, emit, broker, setStates: (next: Record<string, boolean>) => { states = next } }
   }
 
-  it('serves enabled Graviton tools and runs a call through Graviton\'s executor, rendered as Graviton\'s own tool', async () => {
+  it('serves switched-on Graviton tools and runs a call through Graviton\'s own wrapper, rendered as Graviton\'s own tool', async () => {
     const f = fixture()
     await f.service.run(f.input)
     expect(f.sdk.query.mock.calls[0][0].options).toMatchObject({ strictMcpConfig: true, mcpServers: { graviton: { type: 'sdk', name: 'graviton' } } })
     const offered = f.cli.listed.result.tools.map((tool: any) => tool.name)
-    expect(offered).toContain('theme_manager')
-    expect(offered).not.toContain('read_file')
-    expect(f.execute).toHaveBeenCalledWith(expect.objectContaining({ id: 'toolu_1', name: 'theme_manager', arguments: { action: 'list' } }),
-      expect.objectContaining({ conversationId: 'c', streamId: 'stream', lineageId: 'l', rootPath: '/workspace', operationMode: 'execute', messageId: 'row0' }))
+    expect(offered).toEqual(expect.arrayContaining(['theme_manager', 'read_file', 'multi_call']))
+    const [call, context] = f.execute.mock.calls[0]
+    expect(call).toMatchObject({ id: 'toolu_1', name: 'theme_manager', arguments: { action: 'list' } })
+    expect(context).toMatchObject({ conversationId: 'c', streamId: 'stream', lineageId: 'l', rootPath: '/workspace', operationMode: 'execute',
+      messageId: 'row0', autoApprove: true, subagentDefaults: { defaultProvider: 'openaichatgpt' } })
+    // Nested multi_call/repl calls go back through the same wrapper.
+    expect(typeof context.nestedExecutor).toBe('function')
     // Claude reads the model channel; Graviton's row keeps the persisted copy its tool card reads.
     expect(f.cli.called.result).toEqual({ content: [{ type: 'text', text: 'Themes: dusk' }], isError: false })
     const blocks = f.rows[0].content_blocks
     expect(blocks.find((block: any) => block.type === 'tool_use')).toMatchObject({ id: 'toolu_1', name: 'theme_manager' })
     expect(blocks.find((block: any) => block.type === 'tool_result')).toMatchObject({ tool_use_id: 'toolu_1', content: '{"themes":["dusk"]}', is_error: false })
     expect(f.emit).toHaveBeenCalledWith(expect.objectContaining({ type: 'tool_execution', status: 'started', toolName: 'theme_manager' }))
+  })
+
+  it('gives run-scoped tools the run: switch_mode switches the run, context_status reads Claude\'s usage', async () => {
+    const f = fixture()
+    await f.service.run(f.input)
+    const context = f.execute.mock.calls[0][1]
+    expect(context.getContextStatus()).toMatchObject({ conversationId: 'c', provider: 'Claude Code', totalContextLimit: 200_000, remainingTokens: 200_000 })
+    await expect(context.switchOperationMode({ id: 'sw', name: 'switch_mode', arguments: { mode: 'chat' } }, 'plan'))
+      .resolves.toMatchObject({ mode: 'chat', changed: true })
   })
 
   it('keeps Graviton tools out of a run whose service has none wired', async () => {
@@ -224,35 +240,51 @@ describe('Graviton tools in a Claude run', () => {
       .resolves.toMatchObject({ behavior: 'deny' })
   })
 
-  it('applies Graviton\'s Chat-mode policy to Graviton tools', async () => {
+  it('asks to switch to Agent mode in Chat mode, as Graviton\'s own loop does', async () => {
     const f = fixture({ operationMode: 'plan' })
+    const run = f.service.run(f.input)
+    await vi.waitFor(() => expect(f.broker.hasPending('stream', 'toolu_1')).toBe(true))
+    expect(f.emit).toHaveBeenCalledWith(expect.objectContaining({ type: 'operation_mode_upgrade_required', toolCallId: 'toolu_1', toolName: 'theme_manager' }))
+    f.broker.resolve('stream', 'toolu_1', 'switch_to_execute')
+    const final = await run
+    expect(f.execute).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ operationMode: 'execute' }))
+    expect(final.meta.operationMode).toBe('execute')
+  })
+
+  it('reports a declined switch to Claude without running the tool', async () => {
+    const f = fixture({ operationMode: 'plan' })
+    const run = f.service.run(f.input)
+    await vi.waitFor(() => expect(f.broker.hasPending('stream', 'toolu_1')).toBe(true))
+    f.broker.resolve('stream', 'toolu_1', 'deny')
+    await run
+    expect(f.execute).not.toHaveBeenCalled()
+    expect(f.cli.called.result).toMatchObject({ isError: true })
+    expect(f.cli.called.result.content[0].text).toContain('needs Agent mode')
+  })
+
+  it('keeps Agent-mode Graviton tools out of native plan mode, read-only ones in', async () => {
+    const f = fixture({ planMode: true })
     await f.service.run(f.input)
     expect(f.execute).not.toHaveBeenCalled()
-    expect(f.cli.called.result.content[0].text).toContain('needs Agent mode')
+    expect(f.cli.called.result.content[0].text).toContain('plan mode')
     const guard = f.sdk.query.mock.calls[0][0].options.hooks.PreToolUse.at(-1).hooks[0]
-    const verdict = (tool_name: string, tool_input: any = {}) => guard({ hook_event_name: 'PreToolUse', session_id: 's', tool_name, tool_input, tool_use_id: 't' }, 't', { signal: new AbortController().signal })
+    const verdict = (tool_name: string) => guard({ hook_event_name: 'PreToolUse', session_id: 's', tool_name, tool_input: {}, tool_use_id: 't' }, 't', { signal: new AbortController().signal })
     expect((await verdict('mcp__graviton__theme_manager')).hookSpecificOutput?.permissionDecision).toBe('deny')
-    // Chat mode allows Graviton's read-only tools.
     expect((await verdict('mcp__graviton__fetch_chats')).hookSpecificOutput?.permissionDecision).toBeUndefined()
   })
 
-  it('asks under Graviton\'s name, except for calls Graviton never asks about', async () => {
+  it('asks for approval through Graviton\'s wrapper under the Graviton name, not Claude\'s callback', async () => {
     const f = fixture({ autoApprove: false })
-    // The run asks for theme_manager itself; answer it so the run can finish.
     const run = f.service.run(f.input)
-    await vi.waitFor(() => expect(f.sdk.query).toHaveBeenCalled())
-    const options = f.sdk.query.mock.calls[0][0].options
-    const asked = options.canUseTool('mcp__graviton__theme_manager', { action: 'list' }, { signal: new AbortController().signal, toolUseID: 'ask' })
-    await vi.waitFor(() => expect(f.broker.hasPending('stream', 'ask')).toBe(true))
-    expect(f.emit).toHaveBeenCalledWith(expect.objectContaining({ type: 'permission_required', toolCallId: 'ask', toolName: 'theme_manager' }))
-    f.broker.resolve('stream', 'ask', 'allow_once')
-    await expect(asked).resolves.toMatchObject({ behavior: 'allow' })
-    await expect(options.canUseTool('mcp__graviton__skill_manager', { action: 'search', query: 'x' }, { signal: new AbortController().signal, toolUseID: 'skill' }))
-      .resolves.toMatchObject({ behavior: 'allow' })
-    await expect(options.canUseTool('mcp__graviton__mcp_manager', { action: 'list' }, { signal: new AbortController().signal, toolUseID: 'mcp' }))
-      .resolves.toMatchObject({ behavior: 'allow' })
-    expect(f.broker.hasPending('stream', 'skill')).toBe(false)
+    await vi.waitFor(() => expect(f.broker.hasPending('stream', 'toolu_1')).toBe(true))
+    expect(f.emit).toHaveBeenCalledWith(expect.objectContaining({ type: 'permission_required', toolCallId: 'toolu_1', toolName: 'theme_manager' }))
+    f.broker.resolve('stream', 'toolu_1', 'allow_once')
     await run
+    expect(f.execute).toHaveBeenCalledTimes(1)
+    // Claude's own permission callback lets Graviton tools through to that wrapper.
+    const options = f.sdk.query.mock.calls[0][0].options
+    await expect(options.canUseTool('mcp__graviton__theme_manager', {}, { signal: new AbortController().signal, toolUseID: 'x' }))
+      .resolves.toMatchObject({ behavior: 'allow' })
   })
 
   it('tells a running Claude when Settings → Tools changes', async () => {

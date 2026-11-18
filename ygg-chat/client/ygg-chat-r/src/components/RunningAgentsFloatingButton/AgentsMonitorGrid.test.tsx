@@ -150,13 +150,16 @@ describe('fork grid', () => {
     expect(getAgentGridCardHeight(2, 0)).toBe('max(25rem, min(65dvh, 35rem))')
     expect(getAgentGridCardHeight(2, null)).toBe('max(25rem, min(65dvh, 35rem))')
   })
-  it('offers a separate chat button beside status for active and completed forks', () => {
+  it('offers a separate chat button in the title row for active and completed forks', () => {
     const html = render([run('a')], [run('old', { lineageId: 'other-fork', status: 'completed' })])
     expect(html.match(/Open chat ↗/g)).toHaveLength(2)
     expect(html).toContain('aria-label="Open chat for First chat · fork sam"')
-    expect(html).toContain('Writing')
+    expect(html).toContain('Running')
+    expect(html).not.toContain('Writing')
     expect(html).toContain('Completed')
     expect(html).not.toMatch(/<button\b[^>]*>(?:(?!<\/button>)[\s\S])*<button\b/)
+    // Open chat sits in the title row, ahead of the status line.
+    expect(html.indexOf('Open chat ↗')).toBeLessThan(html.indexOf('Running'))
   })
   it('disables chat navigation when the conversation is unknown', () => {
     const html = render([run('a', { conversationId: null })])

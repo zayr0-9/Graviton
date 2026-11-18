@@ -58,13 +58,35 @@ interface ElectronAPI {
     closeFloating: () => Promise<{ success: boolean; error?: string }>
     toggleFloating: () => Promise<{ success: boolean; error?: string; isOpen: boolean }>
     isFloatingOpen: () => Promise<boolean>
+    /** Open (or focus) the detached agents window. */
+    openAgents?: () => Promise<{ success: boolean; error?: string }>
+    /** From the agents window: focus the main window and show this app route there. */
+    openInMain?: (href: string) => Promise<{ success: boolean; error?: string }>
+    /** Main window: routes the agents window asked to show. */
+    onNavigateRequested?: (callback: (href: string) => void) => () => void
     toggleCompact: () => Promise<{ success: boolean; error?: string; compact: boolean }>
     isCompact: () => Promise<boolean>
     getState: () => Promise<{ isMaximized: boolean; isFullScreen: boolean }>
     onStateChanged: (callback: (payload: { isMaximized: boolean; isFullScreen: boolean }) => void) => () => void
   }
+  /** OS run-completion notifications (main process `electron/systemNotifications.ts`). */
+  notifications?: {
+    show: (
+      payload: import('./features/chats/systemRunNotifications').SystemRunNotificationPayload,
+      options?: { onlyWhenUnfocused?: boolean; force?: boolean }
+    ) => Promise<{ shown: boolean; reason?: string }>
+    /** Take (and clear) the payload of the last clicked notification; main window only. */
+    takeActivation: () => Promise<import('./features/chats/systemRunNotifications').SystemRunNotificationPayload | null>
+    onActivated: (callback: () => void) => () => void
+  }
   theme: {
     update: (themePreference: boolean | 'light' | 'dark' | 'system') => Promise<void>
+  }
+  networkBinding?: {
+    read: () => Promise<import('../../../shared/hostNetworkBinding').HostNetworkBindingStatus>
+    save: (binding: import('../../../shared/hostNetworkBinding').HostNetworkBinding) => Promise<
+      { status: import('../../../shared/hostNetworkBinding').HostNetworkBindingStatus } | { error: string }
+    >
   }
   sync: {
     status: () => Promise<{

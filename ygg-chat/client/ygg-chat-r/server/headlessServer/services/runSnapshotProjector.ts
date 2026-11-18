@@ -17,11 +17,22 @@ export class RunSnapshotProjector {
   private readonly rowIds = new Set<string>()
   private readonly anchorIds = new Set<string>()
 
+  private readonly messageEventIds = new Set<string>()
+
   referencedMessageIds(): string[] { return [...this.rowIds] }
+
+  /**
+   * The run's rows for a finished-run transcript. The starting parent is referenced for
+   * bootstrap but belongs to an earlier run unless this run emitted it as a message.
+   */
+  transcript(): { messageIds: string[]; excludedParentId: string | null } {
+    const parentId = this.started?.type === 'started' ? this.started.parentId ?? null : null
+    return { messageIds: [...this.rowIds], excludedParentId: parentId && !this.messageEventIds.has(parentId) ? parentId : null }
+  }
 
   apply(event: HeadlessStreamEvent): void {
     if (event.type === 'bootstrap' || event.type === 'child_bootstrap' || event.type === 'snapshot_reference' || event.type === 'event_reference') return
-    if ('message' in event && event.message?.id) this.rowIds.add(event.message.id)
+    if ('message' in event && event.message?.id) { this.rowIds.add(event.message.id); this.messageEventIds.add(event.message.id) }
     if (event.type === 'context_compaction' && event.summaryMessage?.id) this.rowIds.add(event.summaryMessage.id)
     if (event.type === 'started' && event.parentId) this.rowIds.add(event.parentId)
     if (event.type === 'started') { this.started = structuredClone(event); return }

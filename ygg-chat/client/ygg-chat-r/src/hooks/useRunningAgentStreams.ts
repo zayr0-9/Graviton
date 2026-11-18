@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Message, OperationMode, StreamEvent, StreamLifecycleStatus, StreamState } from '../features/chats/chatTypes'
 import type { Conversation } from '../features/conversations/conversationTypes'
 import { useAppSelector } from './redux'
+import { useHostAgentRunSync } from './useHostAgentRunSync'
 import type { ResearchNoteItem } from './useQueries'
 import { isHeimdallScaffoldingMessage } from '../components/Heimdall/heimdallNodeVisibility'
 
@@ -448,6 +449,9 @@ export function useRunningAgentStreams(notes: ResearchNoteItem[] = [], allConver
       .sort((a, b) => b.stream.createdAt.localeCompare(a.stream.createdAt))
       .map((entry, index) => buildAgentStreamListItem(entry.streamId, entry.stream, null, index))
   }, [buildAgentStreamListItem, streamingRoot.activeIds, streamingRoot.byId, hostRuns])
+
+  const liveForkKeys = useMemo(() => new Set(activeStreams.map(getAgentForkKey)), [activeStreams])
+  useHostAgentRunSync(hostRuns, liveForkKeys)
 
   useEffect(() => {
     for (const stream of activeStreams) {
