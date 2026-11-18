@@ -55,3 +55,17 @@ it('keeps the replay anchor on the head when an earlier row is persisted again',
   projector.apply({ type: 'tool_loop', status: 'turn_started', turn: 3, maxTurns: 0 })
   expect(anchor()).toEqual({ id: 'head', content: 'both blocks' })
 })
+
+it('lists a finished run transcript without the earlier run it continued from', () => {
+  const projector = new RunSnapshotProjector()
+  projector.apply({ type: 'started', operation: 'send', conversationId: 'c', parentId: 'prior', provider: 'test', modelName: 'test' })
+  projector.apply({ type: 'user_message_persisted', message: { id: 'user' } } as never)
+  projector.apply({ type: 'assistant_message_persisted', message: { id: 'answer' } } as never)
+  expect(projector.transcript()).toEqual({ messageIds: ['prior', 'user', 'answer'], excludedParentId: 'prior' })
+
+  // A run that re-emits its starting row (e.g. a retrigger) keeps it.
+  const retrigger = new RunSnapshotProjector()
+  retrigger.apply({ type: 'started', operation: 'send', conversationId: 'c', parentId: 'user', provider: 'test', modelName: 'test' })
+  retrigger.apply({ type: 'user_message_persisted', message: { id: 'user' } } as never)
+  expect(retrigger.transcript().excludedParentId).toBeNull()
+})

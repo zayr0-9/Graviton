@@ -33,6 +33,7 @@ vi.mock('../../hooks/useRunningAgentStreams', () => ({
   useRunningAgentStreams: () => ({ activeStreams: [], streamHistory: [], streamingRoot: { byId: {} } }),
   buildAgentForkGroups: () => ({ activeForks: [], historyForks: [] }),
   excludeViewedAgentFork: (activeStreams: unknown[], streamHistory: unknown[]) => ({ activeStreams, streamHistory }),
+  getLineageForkKey: (conversationId: string, lineageId: string) => JSON.stringify(['fork', conversationId, lineageId]),
 }))
 vi.mock('../../hooks/useQueries', () => ({ useConversationBranchDebugData: () => ({}) }))
 vi.mock('./useAgentsPillResize', () => ({
@@ -75,5 +76,23 @@ describe('agents pill theme tint', () => {
     expect(html).not.toContain('linear-gradient')
     expect(html).toContain('bg-white/75')
     expect(html).toContain('dark:bg-yBlack-900/75')
+  })
+})
+
+describe('agents window presentation', () => {
+  it('renders the expanded view full-window without pill-only controls', () => {
+    const html = renderToStaticMarkup(<RunningAgentsFloatingButton presentation='window' />)
+    expect(html).toContain('agents-window fixed inset-0')
+    expect(html).toContain('Group steps')
+    expect(html).not.toContain('rounded-[28px]')
+    expect(html).not.toContain('Resize agents panel')
+    expect(html).not.toContain('Open apps modal')
+    expect(html).not.toContain('Open agents in a new window')
+  })
+
+  it('collapsed pill stays a pill with no window controls', () => {
+    const html = render()
+    expect(html).toContain('agents-pill fixed')
+    expect(html).not.toContain('Group steps')
   })
 })

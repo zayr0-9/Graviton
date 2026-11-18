@@ -23,10 +23,10 @@ describe('operation mode notifications', () => {
     expect(state.conversation.currentPath).toEqual(['a1', 'n1'])
     expect(state.conversation.messages[0].children_ids).toEqual(['n1'])
     expect(state.operationMode).toBe('execute')
-    expect(state.operationModeChanges.c1).toBeUndefined()
+    expect(state.operationModeChanges['c1::s1']).toBeUndefined()
     // HTTP acknowledgement arriving after SSE must not recreate a pending switch.
-    state = reducer(state, actions.operationModeChangeAccepted({ conversationId: 'c1', requestId: 'r1', mode: 'execute' }))
-    expect(state.operationModeChanges.c1).toBeUndefined()
+    state = reducer(state, actions.operationModeChangeAccepted({ conversationId: 'c1', requestId: 'r1', mode: 'execute', streamId: 's1' }))
+    expect(state.operationModeChanges['c1::s1']).toBeUndefined()
   })
 
   it('does not move the selected branch for another branch notification', () => {

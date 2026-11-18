@@ -115,6 +115,7 @@ export interface CustomChatTheme {
     ideContextAddedText: ThemeColorPair
     agentsGridStreamingCardBg: ThemeColorPair
     agentsGridIdleCardBg: ThemeColorPair
+    agentsGridUserMessageBg: ThemeColorPair
     toolJobsModalBackdrop: ThemeColorPair
     toolJobsModalBg: ThemeColorPair
     toolJobsModalBorder: ThemeColorPair
@@ -582,6 +583,11 @@ export const createDefaultCustomChatTheme = (): CustomChatTheme => ({
     agentsGridIdleCardBg: {
       light: 'var(--agents-grid-idle-bg)',
       dark: 'var(--agents-grid-idle-bg)',
+    },
+    // User rows in pill transcripts: a tint of the card's own text colour, so they stand out on any card.
+    agentsGridUserMessageBg: {
+      light: 'color-mix(in srgb, currentColor 7%, transparent)',
+      dark: 'color-mix(in srgb, currentColor 10%, transparent)',
     },
     toolJobsModalBackdrop: {
       light: 'rgba(0, 0, 0, 0.6)',
@@ -1233,6 +1239,7 @@ export const sanitizeCustomTheme = (value: unknown): CustomChatTheme => {
       agentsGridIdleCardBg: readAgentGridColorPair(rawColors.agentsGridIdleCardBg, defaults.colors.agentsGridIdleCardBg, {
         light: 'rgba(0, 0, 0, 0.035)', dark: 'rgba(255, 255, 255, 0.05)',
       }),
+      agentsGridUserMessageBg: readColorPair(rawColors.agentsGridUserMessageBg, defaults.colors.agentsGridUserMessageBg),
       toolJobsModalBackdrop: readColorPair(rawColors.toolJobsModalBackdrop, defaults.colors.toolJobsModalBackdrop),
       toolJobsModalBg: readColorPair(rawColors.toolJobsModalBg, defaults.colors.toolJobsModalBg),
       toolJobsModalBorder: readColorPair(rawColors.toolJobsModalBorder, defaults.colors.toolJobsModalBorder),

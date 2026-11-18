@@ -34,11 +34,13 @@ import {
   ToolCallPermissionRequest,
   OperationModeUpgradeRequest,
 } from './chatTypes'
+import { normalizeMeterTicks, recordMeterChunk } from './characterMeter'
 import { createEmptyStreamState, DEFAULT_STREAM_ID } from './streamHelpers'
 import { chatSelectionRequested, chatSelectionCommitted, chatSelectionFailed, chatSelectionResumed, chatSelectionCancelled, chatSelectionScrollHandled, initialChatSelection } from './chatSelection'
 import { buildPathToConversationMessage } from './conversationTree'
 import { finalizeChatTree } from './immutableChatTree'
 import { canFollowWatchContinuation } from './watchContinuation'
+import { operationModeChangeKey } from './operationModeChangeKey'
 import toolDefinitions, { ToolDefinition } from './toolDefinitions'
 import { isClaudeProvider } from '../../../../../shared/claudeProvider'
 
@@ -348,6 +350,21 @@ function streamOwnsSelectedView(state: ChatState, stream: StreamState): boolean 
   return stream.selectionRevision != null && stream.selectionRevision >= (state.selection?.fallbackRevision ?? 0)
 }
 
+/**
+ * Whether a run's live mode switch should also move the composer's fallback mode. A switch
+ * made from the agents pill for another branch of the open conversation must not flip
+ * the Chat toggle. Unknown runs keep the old conversation-wide behaviour.
+ */
+export function streamShowsInView(state: ChatState, streamId?: string | null): boolean {
+  const stream = streamId ? state.streaming.byId[streamId] : undefined
+  if (!stream) return true
+  if (stream.conversationId != null && String(stream.conversationId) !== String(state.conversation.currentConversationId)) return false
+  if (state.conversation.currentLineageId && stream.lineage.lineageIdConfirmed) {
+    return String(state.conversation.currentLineageId) === String(stream.lineage.lineageId)
+  }
+  return true
+}
+
 function streamCanAdvanceSelection(state: ChatState, streamId?: string | null, targetMessageId?: MessageId): boolean {
   if (state.selection?.status === 'pending' || state.selection?.status === 'error') {
     const stream = streamId ? state.streaming.byId[streamId] : null
@@ -527,6 +544,9 @@ export const chatSlice = createSlice({
   name: 'chat',
   initialState,
   reducers: {
+    characterMeterTickLimitSet: (state, action: PayloadAction<number | null>) => {
+      state.ui.characterMeterTickLimit = action.payload == null ? null : normalizeMeterTicks(action.payload)
+    },
     branchModelSelected: (state, action: PayloadAction<BranchModelSelection>) => {
       if (state.composition.editingBranch) {
         state.composition.branchEditModelSelection = action.payload
@@ -696,6 +716,7 @@ export const chatSlice = createSlice({
       // following it again after a mid-run rebootstrap. Only an unknown slot is passive.
       state.streaming.byId[streamId] = { ...createEmptyStreamState(previous?.streamType ?? 'branch'),
         active: true, status: 'active', conversationId, bootstrapInstalling: true,
+        characterMeter: previous?.characterMeter,
         selectionRevision: previous?.selectionRevision ?? -1,
         updatePath: previous ? previous.updatePath : false, watchContinuation: previous?.watchContinuation,
         followSelectedTip: previous?.followSelectedTip }
@@ -907,7 +928,11 @@ export const chatSlice = createSlice({
         return
       }
 
+      if (state.ui.characterMeterTickLimit != null && stream.compactionStatus !== 'started' && !stream.bootstrapInstalling) {
+        recordMeterChunk(stream, chunk, state.ui.characterMeterTickLimit)
+      }
       if (chunk.type === 'reset') {
+        stream.characterMeter = undefined
         stream.status = stream.active ? 'active' : 'idle'
         stream.buffer = ''
         stream.thinkingBuffer = ''
@@ -2062,36 +2087,47 @@ export const chatSlice = createSlice({
     }>) => {
       const { conversationId, ...change } = action.payload
       state.operationModeChanges ??= {}
-      state.operationModeChanges[String(conversationId)] = { ...change, status: 'requesting' }
+      state.operationModeChanges[operationModeChangeKey(conversationId, change.streamId)] = { ...change, status: 'requesting' }
     },
 
     operationModeChangeAccepted: (state, action: PayloadAction<{
-      conversationId: ConversationId; mode: OperationMode; requestId: string
+      conversationId: ConversationId; mode: OperationMode; requestId: string; streamId?: string | null
     }>) => {
-      const pending = state.operationModeChanges?.[String(action.payload.conversationId)]
+      const { conversationId, mode, requestId, streamId } = action.payload
+      const pending = state.operationModeChanges?.[operationModeChangeKey(conversationId, streamId)]
       // An SSE notification can arrive before the HTTP acknowledgement.
-      if (!pending || pending.requestId !== action.payload.requestId) return
+      if (!pending || pending.requestId !== requestId) return
       pending.status = 'pending'
-      if (String(state.conversation.currentConversationId) === String(action.payload.conversationId)) {
-        state.operationMode = action.payload.mode
+      const stream = streamId ? state.streaming.byId[streamId] : undefined
+      if (stream) stream.operationMode = mode
+      if (String(state.conversation.currentConversationId) === String(conversationId) && streamShowsInView(state, streamId)) {
+        state.operationMode = mode
       }
     },
 
-    operationModeChangeFailed: (state, action: PayloadAction<{ conversationId: ConversationId; requestId: string }>) => {
-      const key = String(action.payload.conversationId)
+    operationModeChangeFailed: (state, action: PayloadAction<{ conversationId: ConversationId; requestId: string; streamId?: string | null }>) => {
+      const key = operationModeChangeKey(action.payload.conversationId, action.payload.streamId)
       if (state.operationModeChanges?.[key]?.requestId === action.payload.requestId) {
         delete state.operationModeChanges[key]
       }
+    },
+
+    /** The mode a run executes in, as reported by its `started` event. */
+    streamOperationModeObserved: (state, action: PayloadAction<{ streamId: string; mode: OperationMode }>) => {
+      const stream = state.streaming.byId[action.payload.streamId]
+      if (stream) stream.operationMode = action.payload.mode
     },
 
     operationModeNotificationReceived: (state, action: PayloadAction<{
       message: Message; mode: OperationMode; streamId?: string | null; updatePath?: boolean
     }>) => {
       const { message, mode, streamId, updatePath } = action.payload
-      const key = String(message.conversation_id)
+      const key = operationModeChangeKey(message.conversation_id, streamId)
       const pending = state.operationModeChanges?.[key]
       const matchesPending = pending?.mode === mode && (!pending.streamId || pending.streamId === streamId)
       if (matchesPending) delete state.operationModeChanges[key]
+      const observed = streamId ? state.streaming.byId[streamId] : undefined
+      if (observed) observed.operationMode = mode
       if (!isMessageForCurrentConversation(state, message)) return
       noteUnsettledAdvance(state, streamId)
 
@@ -2106,7 +2142,7 @@ export const chatSlice = createSlice({
       if ((updatePath !== false || (streamId && state.streaming.byId[streamId]?.followSelectedTip)) && streamCanAdvanceSelection(state, streamId, message.id) && (tip === message.parent_id || path.length === 0)) {
         state.conversation.currentPath = buildPathToMessage(state.conversation.messages, message.id)
         state.operationMode = mode
-      } else if (matchesPending) {
+      } else if (matchesPending && streamShowsInView(state, streamId)) {
         state.operationMode = mode
       }
       if (streamId) {
@@ -2224,6 +2260,7 @@ export const chatSlice = createSlice({
     stateReset: draft => {
       const state = current(draft)
       const next = makeInitialState()
+      next.ui.characterMeterTickLimit = state.ui.characterMeterTickLimit
       next.streaming = {
         ...state.streaming,
         byId: Object.fromEntries(Object.entries(state.streaming.byId).map(([id, stream]) => {

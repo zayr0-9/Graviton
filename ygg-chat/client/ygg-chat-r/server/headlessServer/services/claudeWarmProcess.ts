@@ -3,6 +3,7 @@ import path from 'node:path'
 import { realpath, stat } from 'node:fs/promises'
 import type { CanUseTool, Options, Query, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
 import { EventPump, InputChannel } from './claudeWarmChannel.js'
+import { GRAVITON_MCP_SERVER, GravitonMcpServer, gravitonMcpServerConfig, type GravitonToolCall, type GravitonToolDefinition, type GravitonToolOutcome } from './claudeGravitonTools.js'
 
 /**
  * Warm Claude sessions: a branch's Claude CLI process stays open between Graviton runs, so the
@@ -49,6 +50,8 @@ export function bumpClaudeConfigEpoch(): void { configEpoch++ }
 export async function claudeLaunchKey(input: {
   cwd: string; additionalDirectories?: string[]; adaptiveThinking: boolean; mcp: unknown
   plansDirectory: string; executable: string; hookShape: string
+  /** The process serves Graviton's tools (its MCP server is fixed at launch; the list is not). */
+  gravitonTools?: boolean
 }): Promise<string> {
   const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')
   const files = [
@@ -62,7 +65,7 @@ export async function claudeLaunchKey(input: {
   const executable = await realpath(input.executable).catch(() => input.executable)
   return JSON.stringify({
     cwd: input.cwd, additionalDirectories: [...(input.additionalDirectories ?? [])].sort(), adaptiveThinking: input.adaptiveThinking,
-    mcp: input.mcp, plansDirectory: input.plansDirectory, hookShape: input.hookShape, epoch: configEpoch,
+    mcp: input.mcp, plansDirectory: input.plansDirectory, hookShape: input.hookShape, gravitonTools: input.gravitonTools === true, epoch: configEpoch,
     executable: `${executable}@${await fingerprint(executable)}`, settings: await Promise.all(files.map(fingerprint)),
   })
 }
@@ -70,10 +73,12 @@ export async function claudeLaunchKey(input: {
 /** The live settings a run applies to a reused process. */
 export interface ClaudeWarmSettings { model: string; effort: string | null; ultracode: boolean }
 
-/** The run that currently owns a process: its permission callback and SDK hooks. */
+/** The run that currently owns a process: its permission callback, SDK hooks and Graviton tool calls. */
 export interface ClaudeWarmBindings {
   canUseTool: CanUseTool
   hooks: NonNullable<Options['hooks']>
+  /** Runs a Graviton tool call for the run; absent when the process serves no Graviton tools. */
+  gravitonTool?: (call: GravitonToolCall) => Promise<GravitonToolOutcome>
 }
 
 const NO_RUN = 'No Graviton run is attached to this Claude session.'
@@ -138,13 +143,19 @@ export class ClaudeWarmProcess {
   parkedAt = 0
   settings: ClaudeWarmSettings
   onSelfStart: ((process: ClaudeWarmProcess) => void) | null = null
+  /** The process's Graviton tool server, when it serves Graviton tools. Calls go to the owning run. */
+  readonly graviton: GravitonMcpServer | null
 
   constructor(create: QueryFactory, options: Options, bindings: ClaudeWarmBindings,
-    readonly lineageId: string, readonly launchKey: string, sessionId: string | null, settings: ClaudeWarmSettings) {
+    readonly lineageId: string, readonly launchKey: string, sessionId: string | null, settings: ClaudeWarmSettings,
+    graviton?: { tools: () => GravitonToolDefinition[] } | null) {
     this.owner = bindings
     this.sessionId = sessionId
     this.settings = settings
-    this.query = create({ prompt: this.channel.stream(), options: { ...options, abortController: this.abort,
+    this.graviton = graviton ? new GravitonMcpServer({ tools: graviton.tools,
+      call: call => this.owner?.gravitonTool ? this.owner.gravitonTool(call) : Promise.resolve({ text: NO_RUN, isError: true }) }) : null
+    const mcpServers = this.graviton ? { ...options.mcpServers, [GRAVITON_MCP_SERVER]: gravitonMcpServerConfig(this.graviton) } : options.mcpServers
+    this.query = create({ prompt: this.channel.stream(), options: { ...options, ...(mcpServers ? { mcpServers } : {}), abortController: this.abort,
       canUseTool: (...args) => this.owner ? this.owner.canUseTool(...args) : Promise.resolve({ behavior: 'deny', message: NO_RUN, interrupt: true }),
       hooks: delegateHooks(bindings.hooks, () => this.owner) } })
     this.events = new EventPump(this.query)
@@ -195,6 +206,7 @@ export class ClaudeWarmProcess {
   kill() {
     // The owner stays: a dead CLI calls nothing, and a run's own callbacks stay usable to it.
     this.stateValue = 'dead'
+    void this.graviton?.close()
     this.channel.close()
     this.abort.abort()
     try { this.query.close() } catch { /* already exiting */ }

@@ -1,5 +1,6 @@
 import { createSlice, type PayloadAction } from '@reduxjs/toolkit'
 import { emptyFollowUpDraft, followUpCapacity, type AgentFollowUpDraft, type AgentFollowUpAttempt } from './agentFollowUpState'
+import type { OperationMode } from '../chats/chatTypes'
 
 export interface AgentsPillSize { width: number; height: number }
 
@@ -25,7 +26,7 @@ const slice = createSlice({
       const { key, content, streamIds } = action.payload
       // Only empty, settled records can be reclaimed. Never discard unsent text.
       for (const [id, draft] of Object.entries(state.followUps)) {
-        if (id !== key && !draft.content && !draft.attempt && ['idle', 'accepted', 'rejected'].includes(draft.status)) delete state.followUps[id]
+        if (id !== key && !draft.content && !draft.attempt && !draft.operationMode && ['idle', 'accepted', 'rejected'].includes(draft.status)) delete state.followUps[id]
       }
       if (!followUpCapacity(state.followUps, key, content)) return
       const draft = state.followUps[key] ??= emptyFollowUpDraft()
@@ -38,6 +39,13 @@ const slice = createSlice({
         draft.error = undefined
         draft.status = 'idle'
       }
+      draft.streamIds = [...new Set([...draft.streamIds, ...streamIds])]
+    },
+    followUpModeChanged: (state, action: PayloadAction<{ key: string; mode: OperationMode; streamIds: string[] }>) => {
+      const { key, mode, streamIds } = action.payload
+      if (!state.followUps[key] && !followUpCapacity(state.followUps, key, '')) return
+      const draft = state.followUps[key] ??= emptyFollowUpDraft()
+      draft.operationMode = mode
       draft.streamIds = [...new Set([...draft.streamIds, ...streamIds])]
     },
     followUpLinked: (state, action: PayloadAction<{ key: string; forkKey: string; streamIds: string[] }>) => {
@@ -64,6 +72,8 @@ const slice = createSlice({
         if (draft.revision === draft.attempt?.revision) { draft.content = ''; draft.revision++ }
         draft.acceptedStreamId = streamId
         draft.streamIds = [...new Set([...draft.streamIds, streamId])]
+        // The run now reports this mode itself; a later change on the card picks again.
+        if (draft.attempt?.operationMode && draft.operationMode === draft.attempt.operationMode) draft.operationMode = undefined
         draft.status = 'accepted'
         draft.attempt = undefined
       } else {

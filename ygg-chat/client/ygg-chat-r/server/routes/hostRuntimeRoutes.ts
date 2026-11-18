@@ -1,4 +1,5 @@
 import { getServerInternalOrigin, tryGetServerConfig } from '../serverHost.js'
+import { isLoopbackHost } from '../serverConfig.js'
 import { readHostExecutionPreferences, saveHostExecutionPreferences } from '../hostExecutionStore.js'
 import { getHostPromptStore } from '../hostPromptStore.js'
 import { randomUUID } from 'node:crypto'
@@ -24,7 +25,7 @@ export function registerHostRuntimeRoutes(app: Express): void {
     let port: number | null = null
     try { port = Number(new URL(getServerInternalOrigin()).port) } catch { /* Isolated route fixtures need no listener configuration. */ }
     res.json({ protocol: HOST_CLIENT_PROTOCOL, epoch, hostId, auth: status(),
-      network: { bindHost: config?.bindHost ?? null, port, exposure: config?.allowNonLoopbackBind ? 'trusted-network-unprotected' : 'loopback', deviceAuthentication: false },
+      network: { bindHost: config?.bindHost ?? null, port, exposure: config && !isLoopbackHost(config.bindHost) ? 'trusted-network-unprotected' : 'loopback', deviceAuthentication: false },
       capabilities: { browserUi: true, sharedRuns: false } })
   })
   app.get('/api/host/execution-preferences', (_req, res) => res.json(readHostExecutionPreferences()))

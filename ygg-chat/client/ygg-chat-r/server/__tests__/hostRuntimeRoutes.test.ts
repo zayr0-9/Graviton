@@ -3,6 +3,8 @@ import express from 'express'
 import type { Server } from 'node:http'
 import { registerHostRuntimeRoutes } from '../routes/hostRuntimeRoutes.js'
 import { getNativeClientFence, nativeClientHeader } from '../nativeClientFence.js'
+import { resolveYggServerConfig } from '../serverConfig.js'
+import { configureServerHost, resetServerHost, setServerInternalOrigin } from '../serverHost.js'
 
 const fixture = vi.hoisted(() => {
   const values = new Map<string, unknown>()
@@ -17,7 +19,10 @@ vi.mock('../auth/runtime.js', () => ({
 vi.mock('../auth/codexUsage.js', () => ({ fetchOpenAIUsageStatus: async () => ({ type: 'unauthenticated' }) }))
 vi.mock('../headlessServer/config/settingsStore.js', () => ({ getSettingsStore: () => ({ get: (k: string) => fixture.values.get(k), set: (k: string, v: unknown) => fixture.values.set(k, v) }) }))
 let server: Server | undefined
-afterEach(async () => { if (server) { server.closeAllConnections(); await new Promise<void>(resolve => server!.close(() => resolve())) } })
+afterEach(async () => {
+  resetServerHost()
+  if (server) { server.closeAllConnections(); await new Promise<void>(resolve => server!.close(() => resolve())); server = undefined }
+})
 async function start() {
   const app = express(); app.use(express.json()); registerHostRuntimeRoutes(app)
   server = app.listen(0, '127.0.0.1')
@@ -56,4 +61,18 @@ it('accepts fenced native cross-site fetches with absent/file/null Origin but re
     if (fence) headers[nativeClientHeader] = fence
     expect((await fetch(`${url}/api/host/runtime`, { headers })).status).toBe(403)
   }
+})
+
+it.each([
+  ['127.0.0.1', 'loopback'],
+  ['0.0.0.0', 'trusted-network-unprotected'],
+  ['192.168.1.20', 'trusted-network-unprotected'],
+])('reports runtime exposure from the bind host %s, not from permission to bind', async (bindHost, exposure) => {
+  const url = await start()
+  configureServerHost(resolveYggServerConfig({
+    bindHost, allowNonLoopbackBind: true, dataDir: '.', tempDir: '.', resourcesDir: '.',
+  }), {})
+  setServerInternalOrigin(url)
+  const data = await (await fetch(`${url}/api/host/runtime`)).json()
+  expect(data.network).toEqual({ bindHost, port: Number(new URL(url).port), exposure, deviceAuthentication: false })
 })

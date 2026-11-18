@@ -32,6 +32,9 @@ class FakeCli {
   mcpServerStatus = vi.fn(async () => [] as any[])
   stopTask = vi.fn(async () => {})
   close = vi.fn(() => this.end())
+  /** Lists the Graviton tools again when told they changed (CLI 2.1.323 does). */
+  refreshGravitonTools = true
+  gravitonLists = 0
   /** Events the CLI emits for turn `n` before it acknowledges the prompt. */
   beforeAck: (n: number) => any[] = () => []
   constructor(public turn: Turn, public sessionId = 's', public tail = { uuid: '' }) {}
@@ -73,7 +76,18 @@ function defaultTurn(prompt: string, n: number, cli: FakeCli) {
     { type: 'result', subtype: 'success', is_error: false, session_id: cli.sessionId }]
 }
 
-function warmFixture(options: { warm?: any; turn?: Turn; nativeMcp?: any } = {}) {
+/** The CLI end of an in-process MCP server: connect, list, and list again on list_changed if it refreshes. */
+async function connectGraviton(cli: FakeCli, server: any) {
+  let id = 0
+  const list = () => { cli.gravitonLists++; transport.onmessage({ jsonrpc: '2.0', id: ++id, method: 'tools/list' }) }
+  const transport: any = { send: async (message: any) => {
+    if (message.method === 'notifications/tools/list_changed' && cli.refreshGravitonTools) list()
+  } }
+  await server.connect(transport)
+  list()
+}
+
+function warmFixture(options: { warm?: any; turn?: Turn; nativeMcp?: any; gravitonTools?: any } = {}) {
   const records = new Map<string, any>()
   const tail = { uuid: '' }
   const branches = new Map<string, any>()
@@ -87,6 +101,7 @@ function warmFixture(options: { warm?: any; turn?: Turn; nativeMcp?: any } = {})
     query: vi.fn(({ prompt, options: queryOptions }: any) => {
       const cli = new FakeCli(options.turn ?? defaultTurn, 's', tail)
       cli.options = queryOptions
+      if (queryOptions.mcpServers?.graviton) void connectGraviton(cli, queryOptions.mcpServers.graviton.instance)
       queryOptions.abortController?.signal.addEventListener('abort', () => cli.end(), { once: true })
       clis.push(cli)
       return Object.assign(cli.run(prompt), { close: cli.close, setPermissionMode: cli.setPermissionMode, setModel: cli.setModel,
@@ -103,7 +118,8 @@ function warmFixture(options: { warm?: any; turn?: Turn; nativeMcp?: any } = {})
   broker.initSession('stream', { autoApproveAll: true })
   const service = new ClaudeSessionService({ sessions: sessions as any, broker, executable: async () => '/mock/claude', sdk: async () => sdk as any, hookRuns: null,
     messages: { get: vi.fn(() => null), updateClaudeProjection: vi.fn((id: string, content: string, content_blocks: any, meta: any) => ({ id, content, content_blocks, meta })) } as any,
-    warm: options.warm === undefined ? WARM : options.warm, ...(options.nativeMcp ? { nativeMcp: () => options.nativeMcp } : {}) })
+    warm: options.warm === undefined ? WARM : options.warm, ...(options.nativeMcp ? { nativeMcp: () => options.nativeMcp } : {}),
+    ...(options.gravitonTools ? { gravitonTools: options.gravitonTools } : {}) })
   const emit = vi.fn()
   const input = (overrides: any = {}) => ({ request: { conversationId: 'c', provider: 'Claude Code', modelName: 'claude-sonnet-5-5', content: 'first', streamId: 'stream', operationMode: 'execute', ...overrides.request },
     lineageId: 'l', userMessage: { id: 'u' }, parentId: 'u', sourceMessageId: null, fork: false, cwd: '/workspace', sink, emit, ...overrides, ...(overrides.request ? { request: { conversationId: 'c', provider: 'Claude Code', modelName: 'claude-sonnet-5-5', content: 'first', streamId: 'stream', operationMode: 'execute', ...overrides.request } } : {}) })
@@ -232,6 +248,31 @@ describe('warm Claude sessions', () => {
     await f.service.run(f.next(first, { additionalDirectories: ['/other'] }))
     expect(f.sdk.query).toHaveBeenCalledTimes(2)
     expect(f.clis[0].close).toHaveBeenCalled()
+    expect(f.sdk.query.mock.calls[1][0].options.resume).toBe('s')
+  })
+
+  it('brings a parked CLI\'s Graviton tool list up to date before reusing it, and relaunches one that does not refresh', async () => {
+    let enabled = ['theme_manager', 'fetch_chats']
+    const gravitonTools = { available: () => enabled.map(name => ({ name, description: name, inputSchema: { type: 'object', properties: {} } })),
+      executor: () => vi.fn() }
+    const f = warmFixture({ gravitonTools })
+    const first = await f.service.run(f.input())
+    expect(f.sdk.query.mock.calls[0][0].options.mcpServers).toMatchObject({ graviton: { type: 'sdk' } })
+    expect(f.clis[0].gravitonLists).toBe(1)
+    // Unchanged: no refresh needed.
+    const second = await f.service.run(f.next(first))
+    expect(f.clis[0].gravitonLists).toBe(1)
+    // Toggled while parked: the claiming send has Claude list again, then reuses the CLI.
+    enabled = ['theme_manager']
+    const third = await f.service.run(f.next(second))
+    expect(f.sdk.query).toHaveBeenCalledTimes(1)
+    expect(f.clis[0].gravitonLists).toBe(2)
+    // A CLI that never lists again is closed; the send relaunches with the current list.
+    f.clis[0].refreshGravitonTools = false
+    enabled = ['fetch_chats']
+    await f.service.run(f.next(third))
+    expect(f.sdk.query).toHaveBeenCalledTimes(2)
+    expect(f.clis[0].ended).toBe(true)
     expect(f.sdk.query.mock.calls[1][0].options.resume).toBe('s')
   })
 

@@ -105,6 +105,8 @@ import {
   useCustomChatTheme,
   useHtmlDarkMode,
 } from '../components/ThemeManager/themeConfig'
+import { CharacterMeter } from '../components/ChatPane/CharacterMeter'
+import { useMeterPreferences } from '../helpers/characterMeterSettings'
 import { getCompactionPresentationScope, isCompactionVisibleFor, type CompactionOwner } from '../features/chats/compactionVisibility'
 import {
   abortGeneration,
@@ -156,6 +158,7 @@ import type {
   ToolCall,
 } from '../features/chats/chatTypes'
 import { selectChatErrorsForConversation } from '../features/chats/chatSelectors'
+import { operationModeChangeKey } from '../features/chats/operationModeChangeKey'
 import { changeOperationMode, enqueueUserMessage, loadMessageQueue, cancelQueuedMessage, readServerLoopRejection } from '../features/chats/chatActions'
 import { QueuedMessages } from '../components/ChatMessage/QueuedMessages'
 import { OperationModeNotice } from '../components/ChatMessage/OperationModeNotice'
@@ -1010,6 +1013,11 @@ const parseMessageDataForRender = (msg: Message): ParsedMessageData => {
 
 function Chat() {
   const dispatch = useAppDispatch()
+  const meter = useMeterPreferences()
+  const meterEnabled = meter.style !== 'off'
+  useEffect(() => {
+    dispatch(chatSliceActions.characterMeterTickLimitSet(meterEnabled ? meter.tickLimit : null))
+  }, [dispatch, meterEnabled, meter.tickLimit])
   const { userId } = useAuth()
   const navigate = useNavigate()
   const { ideContext, requestContext } = useIdeContext()
@@ -1358,8 +1366,8 @@ function Chat() {
 
   const selectedPath = useAppSelector(selectCurrentPath)
   const modeChange = useAppSelector(state => {
-    const change = state.chat.operationModeChanges?.[String(currentConversationId)]
-    return streamState.active && change?.streamId === streamState.id ? change : undefined
+    if (!streamState.active || !streamState.id || currentConversationId == null) return undefined
+    return state.chat.operationModeChanges?.[operationModeChangeKey(currentConversationId, streamState.id)]
   })
   const modeLineageId = useAppSelector(state => state.chat.conversation.currentLineageId)
   const [queueSubmitting, setQueueSubmitting] = useState(false)
@@ -5180,8 +5188,8 @@ function Chat() {
     modeChanging: !!modeChange,
     queueSubmitting,
   })
-  // A Claude /compact run ends at its summary, so the host refuses input queued behind it.
-  const canQueueLocal = canQueueAvailable && !(isClaudeSession && isCurrentBranchCompacting)
+  // Input queued behind a Claude /compact waits for its summary, then continues in a successor run.
+  const canQueueLocal = canQueueAvailable
   const canSendLocal = canSendImmediately || canQueueLocal
 
   /**
@@ -7193,7 +7201,7 @@ function Chat() {
           ref={inputAreaRef}
           data-chat-pane-composer='true'
           className={`absolute ${isBranchEditing ? 'z-100' : 'z-10'} bottom-0 left-0 right-0 mx-auto mb-2 px-2 sm:px-0 md:px-4 lg:px-4 2xl:px-4  ${!heimdallVisible ? 'max-w-full sm:max-w-xl md:max-w-2xl lg:max-w-3xl xl:max-w-3xl 2xl:max-w-4xl 3xl:max-w-6xl' : 'max-w-full sm:max-w-xl md:max-w-2xl lg:max-w-3xl xl:max-w-4xl 2xl:max-w-4xl'}`}
-          style={{ paddingBottom: 'max(0.5rem, env(safe-area-inset-bottom))' }}
+          style={{ paddingBottom: meterEnabled ? 'calc(19px + env(safe-area-inset-bottom, 0px))' : 'max(0.5rem, env(safe-area-inset-bottom))' }}
         >
           {/* Controls row (above) */}
 
@@ -8181,6 +8189,9 @@ function Chat() {
               </div>
             </div>
           </div>
+          {meterEnabled && selection.status !== 'pending' && selection.status !== 'error' && <CharacterMeter key={`${currentConversationId}:${selection.fallbackRevision}`}
+            streamId={streamState.id} style={meter.style} scope={meter.scope}
+            theme={customThemeEnabled ? customTheme : undefined} dark={isDarkMode} />}
         </div>
 
       {parallelPane && !isMobile && (

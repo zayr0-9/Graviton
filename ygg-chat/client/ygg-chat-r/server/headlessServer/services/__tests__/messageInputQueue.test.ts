@@ -195,6 +195,24 @@ describe('queue intake completion race', () => {
     expect(() => orchestrator.submitQueuedMessage('c', 's', { ...next, attachmentsBase64: [{ dataUrl: 'changed' }] })).toThrow('already used')
     expect(orchestrator.submitQueuedMessage('c', 's', next)).toEqual({ restartStreamId: result.restart.streamId })
   })
+
+  it('starts the successor in an explicitly chosen mode and drops Claude plan mode', async () => {
+    const { ChatOrchestrator } = await import('../chatOrchestrator.js')
+    const orchestrator = Object.create(ChatOrchestrator.prototype) as any
+    const queue = makeQueue()
+    queue.tryClose()
+    const finished = () => ({ queue, request: { conversationId: 'c', provider: 'openaichatgpt', operation: 'send', content: 'original' },
+      control: new OperationModeControl('plan'), head: 'final', terminal: 'completed', claudePlan: { active: true } })
+    orchestrator.lineageRepo = { get: () => ({ id: 'l', head_message_id: 'final' }) }
+    orchestrator.inputRuns = new Map([['s', finished()]])
+    const chosen = { requestId: 'agent', content: 'go ahead', operationMode: 'execute' as const }
+    expect(orchestrator.submitQueuedMessage('c', 's', chosen).restart).toMatchObject({ operationMode: 'execute', claudePlanMode: undefined })
+    // The mode is part of the submission identity: a retry cannot switch it.
+    expect(() => orchestrator.submitQueuedMessage('c', 's', { ...chosen, operationMode: 'plan' })).toThrow('already used')
+    orchestrator.inputRuns = new Map([['s', finished()]])
+    expect(orchestrator.submitQueuedMessage('c', 's', { requestId: 'inherit', content: 'more' }).restart)
+      .toMatchObject({ operationMode: 'plan', claudePlanMode: true })
+  })
 })
 
 it('accounts for UTF-8 and releases settled attachment bytes while retaining fingerprints', () => {

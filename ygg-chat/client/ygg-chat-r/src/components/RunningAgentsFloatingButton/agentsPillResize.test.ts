@@ -12,8 +12,18 @@ describe('agents pill resize geometry', () => {
     expect(clampAgentsPillSize({ width: 1, height: 1 }, space)).toEqual({ width: 320, height: 240 })
     expect(clampAgentsPillSize({ width: 2000, height: 2000 }, space)).toEqual({ width: 1188, height: 788 })
   })
+  it('keeps the shell and its resize handle below the title bar', () => {
+    const titleBarSpace = { ...space, top: 40 }
+    const preferred = { width: 650, height: 788 }
+    const capped = { width: 650, height: 748 }
+    expect(clampAgentsPillSize(preferred, titleBarSpace)).toEqual(capped)
+    expect(resizeAgentsPillFromCorner({ width: 650, height: 400 }, 0, -500, titleBarSpace)).toEqual(capped)
+    expect(resizeAgentsPillFromCorner(capped, 0, -8, titleBarSpace)).toEqual(capped)
+    expect(clampAgentsPillSize(preferred, space)).toEqual(preferred)
+  })
   it('lowers minimums on tiny viewports', () => {
     expect(clampAgentsPillSize({ width: 400, height: 400 }, { right: 200, bottom: 150 })).toEqual({ width: 188, height: 138 })
+    expect(clampAgentsPillSize({ width: 400, height: 400 }, { right: 200, bottom: 150, top: 40 })).toEqual({ width: 188, height: 98 })
   })
   it('does not destroy preferred dimensions while the viewport is temporarily smaller', () => {
     const preferred = { width: 650, height: 700 }

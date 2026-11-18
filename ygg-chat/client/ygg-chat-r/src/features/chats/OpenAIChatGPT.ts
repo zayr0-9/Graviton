@@ -48,6 +48,8 @@ function mapTools(tools: SharedToolDefinition[]) {
 function normalizeModel(model: string): string {
   const m = model.toLowerCase().replace(/\s+/g, '-')
 
+  if (m.includes('gpt-6.2-astra')) return 'gpt-6.2-astra'
+  if (m.includes('gpt-6.2-sol')) return 'gpt-6.2-sol'
   if (m.includes('gpt-6-astra')) return 'gpt-6-astra'
   if (m.includes('gpt-6.1-sol')) return 'gpt-6.1-sol'
   if (m.includes('gpt-6-sol')) return 'gpt-6-sol'

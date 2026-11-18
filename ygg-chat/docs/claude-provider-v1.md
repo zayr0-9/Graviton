@@ -3,6 +3,7 @@ paths:
   - "shared/claudeProvider.ts"
   - "shared/claudeTransfer.ts"
   - "shared/claudeNativeMcp.ts"
+  - "shared/claudeGravitonTools.ts"
   - "client/ygg-chat-r/server/headlessServer/routes/claudeMcpRoutes.ts"
   - "client/ygg-chat-r/src/components/SettingsPane/ClaudeMcpSettings.tsx"
   - "client/ygg-chat-r/server/headlessServer/services/claude*.ts"
@@ -11,7 +12,7 @@ paths:
 
 # Claude Code provider v1
 
-Claude Code is a separate main-chat execution backend. The Agent SDK drives the installed host CLI; Claude owns model execution, tools, native transcript and compaction. Graviton stores a display projection in the existing message/lineage tree and serves its existing streaming/Heimdall interface. Other providers still use ToolLoopService. Graviton tools and context loader are not injected into Claude sessions. Configured Graviton Stop hooks run host-side after successful response persistence; they are not injected as native SDK hooks.
+Claude Code is a separate main-chat execution backend. The Agent SDK drives the installed host CLI; Claude owns model execution, tools, native transcript and compaction. Graviton stores a display projection in the existing message/lineage tree and serves its existing streaming/Heimdall interface. Other providers still use ToolLoopService. Graviton's built-in tools reach Claude through an in-process MCP server (see Graviton tools below); Graviton's context loader is not injected. Configured Graviton Stop hooks run host-side after successful response persistence; they are not injected as native SDK hooks.
 
 ## Start and continue
 
@@ -38,14 +39,44 @@ Native hooks stream as `hook_started` / `hook_progress` / `hook_response` (`incl
 ## Scope limits
 
 - Text and selected-file context only; pasted image attachments are rejected.
-- Queued user input and live Chat/Agent switches are supported (see Queued input and Live mode switches below). A manual `/compact` run refuses queued input but accepts a mode switch.
+- Queued user input and live Chat/Agent switches are supported (see Queued input and Live mode switches below). A manual `/compact` run holds queued input until its summary and accepts a mode switch.
 - `/compact` while idle resumes the selected native Claude session and invokes Claude’s own `/compact`. Graviton’s summarizer provider/model/prompt settings are not applied. Active-run manual compaction remains refused; native auto-compaction continues normally. A `/name` Graviton cannot expand is looked up in Claude's command list (a hook-less CLI that gets no prompt): user, project and plugin skills and custom commands lead the prompt for Claude to expand, and the user row records the command and its description (Claude does not stream the expanded body). Claude's built-ins are rejected. As in the CLI, input is a command only when the first word after `/` is a command name (`^[a-zA-Z0-9_][a-zA-Z0-9:_-]*$`, `parseClaudeSlashCommand`); a message that starts with a path such as `/Users/me/plan.md` is an ordinary prompt.
-- No Graviton custom tools, MCP servers, REPL or subagent controls (Claude Code's own MCP servers can be enabled; see above). Graviton Stop side-effect hooks run after a successful persisted response (sync/async commands and local API callbacks supported); other Graviton hook lifecycles and Stop-driven model continuation/context injection are not bridged. Failed/aborted runs and manual compaction skip Stop. Host-owned SDK compaction callbacks run beside Claude's own native hooks. Graviton runs recorded before their row exists (UserPromptSubmit, SessionStart, PreCompact) are attached to the user row or compaction summary once it is persisted.
+- Graviton's built-in tools reach Claude as described in Graviton tools below; its custom tools and MCP servers are reachable through `custom_tool_manager` and `mcp_manager` (Claude Code's own MCP servers can be enabled; see above). Graviton Stop side-effect hooks run after a successful persisted response (sync/async commands and local API callbacks supported); other Graviton hook lifecycles and Stop-driven model continuation/context injection are not bridged. Failed/aborted runs and manual compaction skip Stop. Host-owned SDK compaction callbacks run beside Claude's own native hooks. Graviton runs recorded before their row exists (UserPromptSubmit, SessionStart, PreCompact) are attached to the user row or compaction summary once it is persisted.
 - Native child details remain in Claude's own transcript; parent tool activity/results are projected.
 - Direct content edits are rejected; use an edit branch. Notes remain editable. Deletion works like Claude Code's rewind: it cascades, so it cuts the branch back, and `planMessageDeletion` (`persistence/claudeMessageDeletion.ts`) allows the cut only where Claude can continue — at a resumable response checkpoint, at the conversation root, or beside a surviving sibling (for example a regenerated response). Launch scaffolding owned only by a deleted first prompt goes with it. Other cuts (a mid-turn queued message, the only response of a turn, the first prompt after a compaction summary) return 409 `claude_delete_refused`. The next send forks the native session at the checkpoint; an emptied branch loses its `claude_branch_sessions` row and starts fresh. Chat shows Delete on Claude user messages; Heimdall accepts any selection and the server validates it. Claude's native session files are never deleted, and workspace files are not restored.
 - The displayed model list is a configured catalog, not verified account entitlement.
 - Uses installed CLI plus version-pinned SDK `0.3.309`; no bundled CLI resolution relative to esbuild output.
 - A branch's CLI stays open between sends at its head (see Warm sessions); every other run starts its own.
+
+## Graviton tools
+
+Claude chats can use Graviton's built-in tools. Claude Code accepts host tools only as MCP tools, so Graviton serves them from an in-process MCP server named `graviton` (`type: 'sdk'`: no child process, no port). Claude sees `mcp__graviton__<tool>`. Rows, tool cards, approval prompts and Graviton hooks use the plain Graviton name.
+
+- **Which tools.** Every built-in this host runs (`resolveDefaultInferenceTools`), filtered only by Settings → Tools; unswitched tools keep their default. Nothing is held back because Claude has its own version: the user decides, as for any provider. A tool this host cannot run (for example `browse_web` without a browser engine) is never offered.
+- **Live list.** The list is read live (`ChatOrchestrator` dep `claudeGravitonToolStates`, the host `tools` preference domain):
+  - Claude reads the list when its CLI starts.
+  - A save in Settings → Tools sends `notifications/tools/list_changed` to every running Claude (`onHostExecutionPreferencesSaved` → `ChatOrchestrator.gravitonToolsChanged`). The CLI lists again before its next model call; CLI 2.1.323 did so in about 50–70 ms.
+  - A parked warm CLI catches up when the next send claims it. The server records the list it last returned, so the claiming send knows whether Claude is current. If not, it announces the change and waits up to 3 s for Claude to list again (`GravitonMcpServer.sync`); a CLI that does not is closed and the send relaunches.
+  - Claude cannot reconnect an in-process server: CLI 2.1.323 answers `reconnectMcpServer` with "SDK servers should be handled in print.ts". Do not use it for this server.
+  - A change to the list changes Claude's tool definitions, so the next call re-reads the cached transcript once.
+- **Same wrapper as Graviton's loop.** A call runs through the run's `createChatPausingExecutor` around the chat tool executor (`index.ts` `chatToolExecutor`). It applies the same rules as other providers:
+  - The usual Ask / Allow all approval; `skill_manager` and manager discovery actions never ask.
+  - `plan_md` clarify questions.
+  - Graviton's PreToolUse / PostToolUse / PostToolUseFailure hooks, under the plain name. The SDK hook bridge skips Graviton tools so hooks do not run twice. Hook context goes back to Claude with the tool result.
+  - Nested `multi_call` / `repl` calls, which re-enter the same wrapper.
+  - Claude's own permission callback lets Graviton tools through to this wrapper, so Claude's Auto mode does not apply to them.
+- **Modes.** In Chat mode, a tool that needs Agent mode (`requiresAgentMode`) asks to switch through the usual upgrade dialog, as in Graviton's loop. Accepting moves the run to Agent mode; declining returns an error to Claude. Native plan mode is the user's read-only planning, so those tools are refused until the plan is approved.
+- **Switched-off tools.** The PreToolUse guard (which outranks Claude's own allow rules and auto mode), `canUseTool` and the server itself each refuse a tool that is switched off, without waiting for the list to refresh.
+- **Run context.** A call gets the run's conversation, stream, lineage, workspace, extra roots, mode, signal, tool and bash timeouts, subagent defaults, prompt and effort, and context directories. Run-scoped tools work as follows:
+  - `switch_mode` changes the run's mode control. Agent goes through the upgrade dialog; Claude reads the outcome in the result, so no extra notice is sent.
+  - `context_status` reads Claude's last main-agent call against the window Claude reported, else the request's context length, else 200K.
+  - `subagent` runs a Graviton child agent. Claude Code cannot be a child provider, so set a default subagent provider in Settings; without one the call fails with "Claude Code … unavailable in Graviton subagents".
+- **Rows.** The call's message is the row of Claude's `tool_use`: the CLI tags every `tools/call` with `_meta["claudecode/toolUseId"]`. Claude reads the model channel of the result (`modelContent`, else the persisted copy). The row stores the persisted copy, the text Graviton's own tool cards read, so cards render as for other providers.
+- **Cancellation.** A call Claude cancels (`notifications/cancelled`) aborts and gets no response. Stop aborts every call.
+- **Warm sessions.** Whether a CLI serves Graviton tools is part of its launch key. Its server is created with the process, and calls go to the run that owns it. While parked, a call is refused.
+- **Deferred loading.** Claude Code defers MCP tools behind ToolSearch by default. In a live Haiku turn, Claude found `theme_manager` through ToolSearch, then called it.
+
+Observed on CLI 2.1.323 / SDK 0.3.309 with Haiku: a turn listed a stub tool, called `mcp__graviton__theme_manager` with `_meta` carrying the same id as its `tool_use` block, asked `canUseTool` under the prefixed name, and answered from the result ($0.004). Tool-list probes with no prompt confirmed `list_changed` refreshes and the failing `reconnectMcpServer`. Tests: `claudeGravitonTools.test.ts` (protocol, selection, wrapper, modes, run context, projection, live notice) and the warm sync / relaunch case in `claudeWarmSessions.test.ts`.
 
 ## Claude Code MCP servers
 
@@ -140,7 +171,7 @@ The entry stays `queued`, and so cancellable, until Claude sends `command_lifecy
 
 DELETE on a held entry calls the SDK's `cancelAsyncMessage(uuid)`. This method exists in the pinned 0.3.309 runtime but not in its `.d.ts`, so the service checks for it first. The CLI answers `true`, and sends a `cancelled` lifecycle frame that can arrive first. A message Claude already started cannot be withdrawn; DELETE answers 409. If Claude does not start a held entry within 30 seconds of a turn's end, the entry fails and the run ends.
 
-Limits: slash commands cannot be queued, because Claude would dispatch them as native commands. A manual `/compact` run refuses queued input, because it ends at its summary. Queued images use the same Claude format checks as a normal send. Full access never applies, so a queued `fullAccess` flag is dropped. The parent assistant row of a mid-turn message ends in a `tool_use`, so it stays non-resumable, the same as other tool-block cuts.
+Limits: slash commands cannot be queued, because Claude would dispatch them as native commands. A manual `/compact` run ends at its summary and never reads its mailbox, so input queued behind it waits there. When the summary is committed and is still the branch head, `claimCompactionSuccessor` (`chatOrchestrator.ts`) starts one successor run from the summary with the first entry as its user message and moves the rest into that run's mailbox. The compaction's `complete` frame carries `continuation: { streamId, parentId }`, and the renderer attaches to that run as it does for a queued send (`queuedStreamId`). Without a successor launcher (no run sessions) the host still refuses this input. Queued images use the same Claude format checks as a normal send. Full access never applies, so a queued `fullAccess` flag is dropped. The parent assistant row of a mid-turn message ends in a `tool_use`, so it stays non-resumable, the same as other tool-block cuts.
 
 `scripts/test-claude-queue-live.mjs` (opt-in, `CLAUDE_PROVIDER_LIVE_TEST=1`) prints the raw SDK lifecycle and native transcript for `next`, `later`, post-result and cancel cases. The opt-in service test `live service: folds, defers and withdraws queued messages on the real CLI` checks the service path.
 

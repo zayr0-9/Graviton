@@ -117,6 +117,17 @@ describe('runServerReattach', () => {
     }))
   })
 
+  it('hands back the successor run that continues input queued behind a compaction', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(sseResponse([
+      { type: 'complete', message: { id: 'summary' }, continuation: { streamId: 'next', parentId: 'summary' }, seq: 1 },
+    ])))
+    const res = await runServerReattach(
+      { streamId: 'compact', conversationId: 'c1', operation: 'send', fromSeq: 0, signal: new AbortController().signal },
+      collectDispatch()
+    )
+    expect(res).toMatchObject({ terminal: true, messageId: 'summary', queuedStreamId: 'next', queuedParentId: 'summary' })
+  })
+
   it('returns gone:true when the server has no live run (410)', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(goneResponse()))
     const res = await runServerReattach(

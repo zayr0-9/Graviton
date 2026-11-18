@@ -4,7 +4,7 @@ import { readHostExecutionPreferences, saveHostExecutionPreferences, importHostE
 import { getHostPromptStore } from '../server/hostPromptStore.js'
 import { getAuthManager, publicAuthState, disconnectAuth, importLegacyRenderer } from '../server/auth/runtime.js'
 import Conf from 'conf'
-import { app, autoUpdater as nativeAutoUpdater, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, powerMonitor, screen, shell, Tray, webContents } from 'electron'
+import { app, autoUpdater as nativeAutoUpdater, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, Notification, powerMonitor, screen, shell, Tray, webContents } from 'electron'
 import autoUpdaterPkg from 'electron-updater'
 import fs from 'fs'
 import http from 'http'
@@ -17,6 +17,10 @@ import { createClientErrorLog, type ClientErrorLog } from './clientErrorLog.js'
 import { normalizeShellPath } from './shellPath.js'
 import { createExternalLinkOpener, installNavigationGuards } from './externalLinks.js'
 import { createQuitConfirmationGuard } from './quitConfirmation.js'
+import { customBindingUnavailable, getRendererBindHost, parseHostNetworkBinding, readHostNetworkBinding, resolveHostNetworkBinding } from './hostNetworkBinding.js'
+import { ALL_IPV4_BIND_HOST, hostForNetworkBinding, type HostNetworkBindingStatus } from '../../../shared/hostNetworkBinding.js'
+import { isLoopbackHost } from '../server/serverConfig.js'
+import { createSystemNotifier, type RunNotificationOptions, type RunNotificationPayload } from './systemNotifications.js'
 import {
   consolidateSecureSecrets,
   deleteBraveApiKey,
@@ -49,6 +53,7 @@ const __dirname = fileURLToPath(new URL('.', import.meta.url))
 let mainWindow: BrowserWindow | null = null
 let mainRecovery: RendererRecovery | null = null
 let floatingWindow: BrowserWindow | null = null
+let agentsWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let isQuitting = false
 const confirmQuit = createQuitConfirmationGuard({
@@ -78,21 +83,24 @@ let localServerUrl: string | null = null
 let localServerLanUrl: string | null = null
 let localServerError: string | null = null
 const installNativeHostSession = createNativeHostSessionInstaller(() => localServerUrl,
-  id => id === mainWindow?.webContents.id || id === floatingWindow?.webContents.id)
+  id => id === mainWindow?.webContents.id || id === floatingWindow?.webContents.id || id === agentsWindow?.webContents.id)
 
 const LOCAL_SERVER_PREFERRED_PORT = 3002
 const LOCAL_SERVER_FALLBACK_PORTS = Array.from({ length: 13 }, (_, index) => LOCAL_SERVER_PREFERRED_PORT + 1 + index)
-const localServerAllowRemoteEnvRaw = (process.env.YGG_LOCAL_SERVER_ALLOW_REMOTE || '').trim().toLowerCase()
-const LOCAL_SERVER_ALLOW_REMOTE =
-  localServerAllowRemoteEnvRaw.length > 0
-    ? ['1', 'true', 'yes', 'on'].includes(localServerAllowRemoteEnvRaw)
-    : true
-const LOCAL_SERVER_HOST =
-  process.env.YGG_LOCAL_SERVER_HOST?.trim() || (LOCAL_SERVER_ALLOW_REMOTE ? '0.0.0.0' : '127.0.0.1')
-const LOCAL_SERVER_ADVERTISE_HOST =
-  process.env.YGG_LOCAL_SERVER_ADVERTISE_HOST?.trim() ||
-  (LOCAL_SERVER_HOST === '0.0.0.0' ? '127.0.0.1' : LOCAL_SERVER_HOST)
-const LOCAL_SERVER_LAN_ADVERTISE_HOST = process.env.YGG_LOCAL_SERVER_LAN_ADVERTISE_HOST?.trim() || ''
+const HOST_NETWORK_BINDING_KEY = 'host_network_binding'
+let activeNetworkBinding = resolveHostNetworkBinding({ mode: 'loopback' }, {}, [])
+
+function getNetworkBindingStatus(): HostNetworkBindingStatus {
+  const saved = readHostNetworkBinding(getFromStore(HOST_NETWORK_BINDING_KEY))
+  return {
+    saved,
+    environmentOverride: activeNetworkBinding.environmentOverride,
+    restartRequired: !activeNetworkBinding.environmentOverride && hostForNetworkBinding(saved) !== activeNetworkBinding.bindHost,
+    startupWarning: saved.mode === 'custom' && customBindingUnavailable(saved, getAssignedLanIpv4())
+      ? activeNetworkBinding.startupWarning
+      : null,
+  }
+}
 const LOCAL_SERVER_ALLOW_EPHEMERAL_PORT = true
 const BROWSER_SETTINGS_STORAGE_KEY = 'ygg_browser_settings'
 const DEFAULT_GUEST_DEVTOOLS_ENABLED = true
@@ -249,11 +257,7 @@ function isPrivateIpv4(address: string): boolean {
   return Number.isInteger(secondOctet) && secondOctet >= 16 && secondOctet <= 31
 }
 
-function detectPreferredLanIpv4(): string | null {
-  if (LOCAL_SERVER_LAN_ADVERTISE_HOST) {
-    return LOCAL_SERVER_LAN_ADVERTISE_HOST
-  }
-
+function getAssignedLanIpv4(): string[] {
   const interfaces = os.networkInterfaces()
   const candidates: string[] = []
 
@@ -265,10 +269,11 @@ function detectPreferredLanIpv4(): string | null {
     }
   }
 
-  if (candidates.length === 0) return null
+  return candidates
+}
 
-  const privateCandidate = candidates.find(isPrivateIpv4)
-  return privateCandidate || candidates[0] || null
+function detectPreferredLanIpv4(candidates: readonly string[]): string | null {
+  return process.env.YGG_LOCAL_SERVER_LAN_ADVERTISE_HOST?.trim() || candidates.find(isPrivateIpv4) || candidates[0] || null
 }
 const activeReadStreams = new Map<
   string,
@@ -964,6 +969,87 @@ function createFloatingWindow() {
   })
 }
 
+// Detached agents window: the same renderer at #/agents-window, showing only the agents
+// pill's expanded view. "Open chat" there is handed to the main window (window:openInMain).
+const AGENTS_WINDOW_HASH = '/agents-window'
+let pendingMainNavigation: string | null = null
+
+function createAgentsWindow() {
+  if (agentsWindow && !agentsWindow.isDestroyed()) {
+    if (agentsWindow.isMinimized()) agentsWindow.restore()
+    agentsWindow.show()
+    agentsWindow.focus()
+    return
+  }
+  const win = new BrowserWindow({
+    title: 'Graviton - Agents',
+    icon: getIconPath(nativeTheme.shouldUseDarkColors),
+    width: 1100,
+    height: 760,
+    minWidth: 420,
+    minHeight: 320,
+    show: false,
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#111113' : '#ffffff',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.mjs'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+      spellcheck: true,
+    },
+  })
+  agentsWindow = win
+  installNativeHostSession(win.webContents.session)
+  if (app.isPackaged) { win.setMenu(null); win.removeMenu() }
+  const isDev = !app.isPackaged
+  const entryUrl = isDev ? 'http://localhost:5173/' : pathToFileURL(path.join(__dirname, '../dist-electron/index.html')).href
+  installNavigationGuards(win, entryUrl, process.platform, url => openExternalLink(url, win))
+  win.once('ready-to-show', () => win.show())
+  if (isDev) void win.loadURL(`http://localhost:5173/#${AGENTS_WINDOW_HASH}`)
+  else void win.loadFile(path.join(__dirname, '../dist-electron/index.html'), { hash: AGENTS_WINDOW_HASH })
+  if (shouldOpenDetachedDevTools) win.webContents.openDevTools({ mode: 'detach' })
+  win.on('closed', () => { if (agentsWindow === win) agentsWindow = null })
+  // Copy/paste and spelling suggestions for the follow-up composer.
+  win.webContents.on('context-menu', (_event, params) => {
+    const items: Electron.MenuItemConstructorOptions[] = []
+    if (params.misspelledWord) {
+      for (const suggestion of params.dictionarySuggestions.slice(0, 5))
+        items.push({ label: suggestion, click: () => win.webContents.replaceMisspelling(suggestion) })
+      items.push({ label: 'Add to Dictionary', click: () => win.webContents.session.addWordToSpellCheckerDictionary(params.misspelledWord) })
+      items.push({ type: 'separator' })
+    }
+    items.push(
+      { role: 'undo', enabled: params.editFlags.canUndo },
+      { role: 'redo', enabled: params.editFlags.canRedo },
+      { type: 'separator' },
+      { role: 'cut', enabled: params.editFlags.canCut },
+      { role: 'copy', enabled: params.editFlags.canCopy },
+      { role: 'paste', enabled: params.editFlags.canPaste },
+      { type: 'separator' },
+      { role: 'selectAll', enabled: params.editFlags.canSelectAll },
+    )
+    Menu.buildFromTemplate(items).popup()
+  })
+}
+
+/** An in-app hash route such as `/chat/p/c/lineage/l?focus=m`; never a URL or another scheme. */
+function isAppRoute(href: unknown): href is string {
+  return typeof href === 'string' && href.length <= 2048 && href.startsWith('/') && !href.startsWith('//') && !/[\\\s]/.test(href)
+}
+
+// Show a route in the main window. The renderer takes it with window:takeNavigation, both
+// on this ping and when it mounts, so a main window that is still loading does not miss it.
+function openInMainWindow(href: string) {
+  pendingMainNavigation = href
+  if (!mainWindow || mainWindow.isDestroyed()) createWindow()
+  const target = mainWindow
+  if (!target) return
+  if (target.isMinimized()) target.restore()
+  target.show()
+  target.focus()
+  if (!target.webContents.isLoading()) target.webContents.send('window:navigate')
+}
+
 // Toggle floating window on/off
 function toggleFloatingWindow() {
   if (floatingWindow) {
@@ -1037,16 +1123,24 @@ app.whenReady().then(async () => {
       console.log(`[Electron] Debug mode enabled (${debugReasons.join(', ') || 'manual'})`)
     }
 
-    // Start local SQLite server for dual-sync (prefer 3002, fallback to other local ports)
-    console.log(
-      `[Electron] Local server bind host: ${LOCAL_SERVER_HOST}, advertise host: ${LOCAL_SERVER_ADVERTISE_HOST}, remote access: ${LOCAL_SERVER_ALLOW_REMOTE}`
-    )
+    // Start the local server on the saved interface (prefer 3002, fallback to other local ports).
+    const assignedLanIpv4 = getAssignedLanIpv4()
+    activeNetworkBinding = resolveHostNetworkBinding(readHostNetworkBinding(getFromStore(HOST_NETWORK_BINDING_KEY)), {
+      host: process.env.YGG_LOCAL_SERVER_HOST,
+      allowRemote: process.env.YGG_LOCAL_SERVER_ALLOW_REMOTE,
+    }, assignedLanIpv4)
+    const { bindHost, startupWarning } = activeNetworkBinding
+    const remoteAccess = !isLoopbackHost(bindHost)
+    const advertiseHost = (!startupWarning && process.env.YGG_LOCAL_SERVER_ADVERTISE_HOST?.trim()) || getRendererBindHost(bindHost)
+    if (startupWarning) console.warn(`[Electron] ${startupWarning}`)
+    console.log(`[Electron] Local server bind host: ${bindHost}, advertise host: ${advertiseHost}, remote access: ${remoteAccess}`)
     try {
       // Shared factory (Phase 1 server/client separation): Electron supplies
       // paths/capabilities; the runtime-neutral graph owns everything else.
       localServerHandle = await createYggServer(
         buildElectronServerConfig({
-          bindHost: LOCAL_SERVER_HOST,
+          bindHost,
+          allowNonLoopbackBind: remoteAccess,
           preferredPort: LOCAL_SERVER_PREFERRED_PORT,
           fallbackPorts: LOCAL_SERVER_FALLBACK_PORTS,
           allowEphemeralPort: LOCAL_SERVER_ALLOW_EPHEMERAL_PORT,
@@ -1060,8 +1154,10 @@ app.whenReady().then(async () => {
       powerMonitor.on('resume', () => { void getAuthManager().check().catch(() => undefined) })
       localServerStarted = true
       localServerPort = localServerHandle.port
-      localServerUrl = `http://${LOCAL_SERVER_ADVERTISE_HOST}:${localServerHandle.port}`
-      const detectedLanHost = LOCAL_SERVER_ALLOW_REMOTE ? detectPreferredLanIpv4() : null
+      localServerUrl = `http://${advertiseHost}:${localServerHandle.port}`
+      const detectedLanHost = !remoteAccess ? null :
+        bindHost === ALL_IPV4_BIND_HOST || bindHost === '::' ? detectPreferredLanIpv4(assignedLanIpv4) :
+        process.env.YGG_LOCAL_SERVER_LAN_ADVERTISE_HOST?.trim() || getRendererBindHost(bindHost)
       localServerLanUrl = detectedLanHost ? `http://${detectedLanHost}:${localServerHandle.port}` : null
       localServerError = null
       process.env.YGG_LOCAL_SERVER_PORT = String(localServerHandle.port)
@@ -1173,17 +1269,29 @@ app.on('before-quit', event => {
 
 // IPC Handlers for Electron-specific features
 
-// IPC that only the trusted main window's main frame may call (ChatGPT connection status,
-// legacy token handoff, opening external URLs).
-function authHandle(channel: string, handler: (...args: any[]) => any): void {
+// IPC that only the trusted main window's main frame may call.
+function mainWindowHandle(channel: string, handler: (...args: any[]) => any): void {
   ipcMain.handle(channel, (event, ...args) => {
-    if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== event.sender.mainFrame) throw new Error('Untrusted auth caller')
+    if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents || event.senderFrame !== event.sender.mainFrame) throw new Error('Untrusted main window caller')
     return handler(event, ...args)
   })
 }
+mainWindowHandle('network-binding:read', () => getNetworkBindingStatus())
+mainWindowHandle('network-binding:save', (_event, raw: unknown) => {
+  try {
+    const binding = parseHostNetworkBinding(raw)
+    const unavailable = customBindingUnavailable(binding, getAssignedLanIpv4())
+    if (unavailable) return { error: unavailable }
+    if (!store) return { error: 'Persistent settings storage is unavailable.' }
+    store.set(HOST_NETWORK_BINDING_KEY, binding)
+    return { status: getNetworkBindingStatus() }
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : 'Could not save network binding.' }
+  }
+})
 function promptHandle(channel: string, handler: (...args: any[]) => any): void {
   ipcMain.handle(channel, (event, ...args) => {
-    const trusted = [mainWindow, floatingWindow].some(window => window && !window.isDestroyed() && window.webContents === event.sender)
+    const trusted = [mainWindow, floatingWindow, agentsWindow].some(window => window && !window.isDestroyed() && window.webContents === event.sender)
     if (!trusted || event.senderFrame !== event.sender.mainFrame) throw new Error('Untrusted prompt caller')
     return handler(event, ...args)
   })
@@ -1200,12 +1308,60 @@ promptHandle('prompts:import', (event, prompts: unknown) => {
   if (event.sender !== mainWindow?.webContents) return getHostPromptStore().snapshot()
   return getHostPromptStore().importLegacy(prompts)
 })
-authHandle('auth:status', () => publicAuthState())
+
+// OS run-completion notifications. A click focuses the main window and parks the
+// payload until the renderer takes it, so a window that is still loading (or one
+// created by the click) cannot miss the activation.
+let pendingNotificationActivation: RunNotificationPayload | null = null
+const systemNotifier = createSystemNotifier({
+  isSupported: () => Notification.isSupported(),
+  createNotification: options => new Notification(options),
+  isAppFocused: () => BrowserWindow.getFocusedWindow() != null,
+  activate: payload => {
+    pendingNotificationActivation = payload
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      createWindow()
+      return
+    }
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.show()
+    mainWindow.focus()
+    if (process.platform === 'darwin') app.focus({ steal: true })
+    if (!mainWindow.webContents.isDestroyed()) mainWindow.webContents.send('notifications:activated')
+  },
+})
+promptHandle('notifications:show', (_event, payload: unknown, options?: RunNotificationOptions) => {
+  const safeOptions: RunNotificationOptions = {
+    onlyWhenUnfocused: options?.onlyWhenUnfocused === true,
+    force: options?.force === true,
+  }
+  return systemNotifier.show(payload, safeOptions)
+})
+promptHandle('notifications:takeActivation', event => {
+  // Only the main window navigates to the activated run.
+  if (event.sender !== mainWindow?.webContents) return null
+  const payload = pendingNotificationActivation
+  pendingNotificationActivation = null
+  return payload
+})
+// Token-free auth snapshots are also readable by the agents window, which needs the local
+// identity to render. Legacy token import stays main-window only.
+function authReadHandle(channel: string, handler: (...args: any[]) => any): void {
+  ipcMain.handle(channel, (event, ...args) => {
+    const trusted = [mainWindow, agentsWindow].some(window => window && !window.isDestroyed() && window.webContents === event.sender)
+    if (!trusted || event.senderFrame !== event.sender.mainFrame) throw new Error('Untrusted auth caller')
+    return handler(event, ...args)
+  })
+}
+authReadHandle('auth:status', () => publicAuthState())
 // Codex-only legacy localStorage handoff (Q19: delete next release).
-authHandle('auth:migrate', (_event, values) => { importLegacyRenderer({ codex: values?.codex }); return publicAuthState() })
-authHandle('auth:check', async () => { await getAuthManager().check(); return publicAuthState() })
+authReadHandle('auth:migrate', (event, values) => {
+  if (event.sender === mainWindow?.webContents) importLegacyRenderer({ codex: values?.codex })
+  return publicAuthState()
+})
+authReadHandle('auth:check', async () => { await getAuthManager().check(); return publicAuthState() })
 let authEventsAttached = false
-authHandle('auth:subscribe', () => {
+authReadHandle('auth:subscribe', () => {
   if (!authEventsAttached) {
     authEventsAttached = true
     getAuthManager().subscribe(() => {
@@ -1238,6 +1394,7 @@ ipcMain.handle('storage:get', async (_event, key: string) => {
 
 ipcMain.handle('storage:set', async (_event, key: string, value: any) => {
   if (isAuthStorageKey(key)) throw new Error('Use the authentication API')
+  if (key === HOST_NETWORK_BINDING_KEY || key.startsWith(`${HOST_NETWORK_BINDING_KEY}.`)) throw new Error('Use the network binding API')
   // console.log('[Electron IPC] storage:set called for key:', key)
 
   if (!storeInitialized) {
@@ -1291,7 +1448,7 @@ ipcMain.handle('storage:clear', async () => {
   }
 })
 
-authHandle('secrets:consolidate', async () => {
+mainWindowHandle('secrets:consolidate', async () => {
   try {
     const result = await consolidateSecureSecrets()
     await mcpManager.consolidatePlaintextCredentials()
@@ -1302,7 +1459,7 @@ authHandle('secrets:consolidate', async () => {
   }
 })
 
-authHandle('secrets:braveSearch:get', async () => {
+mainWindowHandle('secrets:braveSearch:get', async () => {
   try {
     const value = await getBraveApiKey()
     return { success: true, value }
@@ -1312,7 +1469,7 @@ authHandle('secrets:braveSearch:get', async () => {
   }
 })
 
-authHandle('secrets:braveSearch:has', async () => {
+mainWindowHandle('secrets:braveSearch:has', async () => {
   try {
     const configured = await hasBraveApiKey()
     return { success: true, configured }
@@ -1322,7 +1479,7 @@ authHandle('secrets:braveSearch:has', async () => {
   }
 })
 
-authHandle('secrets:braveSearch:set', async (_event, value: string) => {
+mainWindowHandle('secrets:braveSearch:set', async (_event, value: string) => {
   try {
     if (typeof value !== 'string') throw new Error('Secret value must be a string')
     await setBraveApiKey(value)
@@ -1333,7 +1490,7 @@ authHandle('secrets:braveSearch:set', async (_event, value: string) => {
   }
 })
 
-authHandle('secrets:braveSearch:delete', async () => {
+mainWindowHandle('secrets:braveSearch:delete', async () => {
   try {
     await deleteBraveApiKey()
     return { success: true }
@@ -1391,7 +1548,7 @@ ipcMain.handle('autoUpdater:installNow', async () => {
 // Open a link with the OS (web, mail, editor and confirmed app links; ChatGPT sign-in).
 // Main or floating window main frame only; the shared link policy refuses dangerous schemes.
 ipcMain.handle('shell:openExternal', async (event, url: unknown) => {
-  const window = [mainWindow, floatingWindow].find(candidate => candidate && !candidate.isDestroyed() && candidate.webContents === event.sender)
+  const window = [mainWindow, floatingWindow, agentsWindow].find(candidate => candidate && !candidate.isDestroyed() && candidate.webContents === event.sender)
   if (!window || event.senderFrame !== event.sender.mainFrame) throw new Error('Untrusted link caller')
   const result = await openExternalLink(url, window)
   if (!result.success && !result.cancelled) console.error('[Electron IPC] Failed to open external URL:', result.error)
@@ -2113,6 +2270,34 @@ ipcMain.handle('window:isFloatingOpen', async () => {
   return floatingWindow !== null
 })
 
+// Detached agents window (main frame of the main window only).
+ipcMain.handle('window:openAgents', async event => {
+  if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== event.sender.mainFrame) return { success: false, error: 'Untrusted caller' }
+  try {
+    createAgentsWindow()
+    return { success: true }
+  } catch (error) {
+    console.error('[Electron IPC] Failed to open agents window:', error)
+    return { success: false, error: error instanceof Error ? error.message : String(error) }
+  }
+})
+
+// From the agents window only: focus the main window and show an in-app route there.
+ipcMain.handle('window:openInMain', async (event, href: unknown) => {
+  if (!agentsWindow || event.sender !== agentsWindow.webContents || event.senderFrame !== event.sender.mainFrame) return { success: false, error: 'Untrusted caller' }
+  if (!isAppRoute(href)) return { success: false, error: 'Invalid route' }
+  openInMainWindow(href)
+  return { success: true }
+})
+
+// Main window: take (and clear) the route the agents window asked it to show.
+ipcMain.handle('window:takeNavigation', async event => {
+  if (!mainWindow || event.sender !== mainWindow.webContents) return null
+  const href = pendingMainNavigation
+  pendingMainNavigation = null
+  return href
+})
+
 // Compact mode controls (uses main window instead of spawning a new one)
 ipcMain.handle('window:toggleCompact', async () => {
   // console.log('[Electron IPC] Toggling compact mode')
@@ -2154,8 +2339,8 @@ ipcMain.handle('sync:status', async () => {
     localServerPort,
     localServerUrl,
     localServerLanUrl,
-    localServerBindHost: LOCAL_SERVER_HOST,
-    localServerExposure: LOCAL_SERVER_ALLOW_REMOTE ? 'trusted-network-unprotected' : 'loopback',
+    localServerBindHost: activeNetworkBinding.bindHost,
+    localServerExposure: isLoopbackHost(activeNetworkBinding.bindHost) ? 'loopback' : 'trusted-network-unprotected',
     localServerError: health.ok ? null : (health.error ?? localServerError),
     localServerForeign: health.foreign,
   }

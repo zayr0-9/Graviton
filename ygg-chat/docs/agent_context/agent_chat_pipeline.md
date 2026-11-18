@@ -366,6 +366,9 @@ resume resolver thunks, and the manual-compaction `compactBranch` thunk.
   mode/post-compaction restoration). Returning to the already-announced mode adds nothing.
 - `POST /api/conversations/:id/operation-mode` requires the active `streamId`, `mode`,
   and `requestId`. It never persists idle toggles or starts a new inference run.
+  The renderer tracks pending switches per run (`operationModeChangeKey`), not per
+  conversation, so parallel forks switch independently. `started` carries the run's
+  `operationMode`, recorded on `StreamState.operationMode`.
 - New tool dispatch uses the accepted server mode; already-running tools are not aborted.
   The existing Chat tool policy is unchanged, including its shell-tool allowance.
 - Mode notifications are persisted user messages (`meta.kind = 'operation_mode_change'`)
@@ -394,6 +397,9 @@ resume resolver thunks, and the manual-compaction `compactBranch` thunk.
   and prepared `attachmentsBase64`. GET returns a revisioned snapshot; DELETE
   `.../queue/:requestId` removes an unclaimed submission. The server validates conversation
   ownership. Request IDs deduplicate retries; changing an existing payload is rejected.
+  An optional `operationMode` (`plan`/`execute`) sets the mode of the successor run a
+  submission starts after normal completion, replacing the finished run's mode and Claude
+  plan mode. Live runs ignore it; the agents pill switches them through the mode route.
 - `MessageInputQueue` is a bounded, server-owned in-memory mailbox (100 entries / 24 MiB
   per run, bounded retained terminal mailboxes). It survives renderer detach/reload, not
   server restart. `message_queue_updated` SSE and GET snapshots distinguish queued,
@@ -442,6 +448,8 @@ Compaction now uses the normal `ToolLoopService` provider/tool path. Safe-bounda
 ### Queue intake during compaction
 
 Compaction blocks delivery, not queue admission. Primary composer eligibility separates immediate sends from active-stream queueing; both automatic and manual compaction accept follow-ups. `ToolLoopService` holds them through summary commit and context/session restoration, then drains FIFO and continues the same run. An idle manual compaction still ends at its summary when nothing is queued. Queued user rows and completion-race successors explicitly clear `manualCompaction` so follow-ups are ordinary messages, not another compaction request. `compactBranch` resolves the committed summary along the final answer's ancestry when queued input extends its run.
+
+Claude `/compact` runs differ: Claude ends the run at its summary, so held entries continue in one successor run started from the summary (see `../claude-provider-v1.md` § Queued input). The compaction's `complete` frame names it in `continuation`.
 
 ## Pending explicit-operation queue isolation
 

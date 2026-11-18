@@ -1,7 +1,7 @@
 import { useCallback, useLayoutEffect, useRef, useState, type PointerEvent, type KeyboardEvent } from 'react'
 import { useAppDispatch, useAppSelector } from '../../hooks/redux'
 import { runningAgentsUiActions, type AgentsPillSize } from '../../features/ui/runningAgentsUiSlice'
-import { clampAgentsPillSize, resizeAgentsPillFromCorner, type PillSpace } from './agentsPillResize'
+import { clampAgentsPillSize, getAgentsPillLimits, resizeAgentsPillFromCorner, type PillSpace } from './agentsPillResize'
 
 export function useAgentsPillResize(expanded: boolean, anchorKey: string, enabled = true) {
   const dispatch = useAppDispatch()
@@ -29,6 +29,7 @@ export function useAgentsPillResize(expanded: boolean, anchorKey: string, enable
     spaceRef.current = {
       right: window.innerWidth - (Number.isFinite(right) ? right : 16),
       bottom: window.innerHeight - (Number.isFinite(bottom) ? bottom : 16),
+      top: parseFloat(style.getPropertyValue('--titlebar-height')) || 0,
     }
   }, [])
 
@@ -46,21 +47,36 @@ export function useAgentsPillResize(expanded: boolean, anchorKey: string, enable
       setDragging(false)
       return
     }
-    const update = () => {
+    const applySpace = () => {
       cancelDrag()
       setDragging(false)
-      measureSpace()
-      setLimits({ width: Math.max(1, spaceRef.current.right - 12), height: Math.max(1, spaceRef.current.bottom - 12) })
+      setLimits(getAgentsPillLimits(spaceRef.current))
       setResolved(preferred ? clampAgentsPillSize(preferred, spaceRef.current) : null)
+    }
+    const update = () => {
+      measureSpace()
+      applySpace()
     }
     update()
     window.addEventListener('resize', update)
+    // Electron adds the title bar class after platform detection, without resizing the viewport.
+    const titleBarObserver = new MutationObserver(() => {
+      const previousTop = spaceRef.current.top
+      measureSpace()
+      if (spaceRef.current.top !== previousTop) applySpace()
+    })
+    titleBarObserver.observe(document.body, { attributes: true, attributeFilter: ['class'] })
     const observer = new ResizeObserver(() => {
       const height = headerRef.current?.getBoundingClientRect().height
       if (height) setHeaderHeight(height)
     })
     if (headerRef.current) observer.observe(headerRef.current)
-    return () => { window.removeEventListener('resize', update); observer.disconnect(); cancelDrag() }
+    return () => {
+      window.removeEventListener('resize', update)
+      titleBarObserver.disconnect()
+      observer.disconnect()
+      cancelDrag()
+    }
   }, [expanded, preferred, anchorKey, enabled, measureSpace, cancelDrag])
 
   const finish = (event: PointerEvent<HTMLButtonElement>, save: boolean) => {

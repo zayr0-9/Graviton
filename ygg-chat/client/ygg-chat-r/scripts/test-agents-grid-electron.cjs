@@ -39,11 +39,11 @@ if (!process.versions.electron) {
         builder.onLoad({ filter: /[/\\]runAdmissionClient\.ts$/ }, () => ({ contents: 'export const getAdmissionEpoch = async () => "fixture-epoch";' }))
         builder.onLoad({ filter: /[/\\]useRunningAgentStreams\.ts$/ }, async args => {
           const source = fs.readFileSync(args.path, 'utf8')
-          const start = source.indexOf('export const getAgentForkKey')
+          const start = source.indexOf('export const getLineageForkKey')
           const end = source.indexOf('\nexport ', source.indexOf('export const summarizeAgentStreamId') + 10)
           return { contents: source.slice(start, end), loader: 'ts' }
         })
-        builder.onLoad({ filter: /[/\\]ThemeManager[/\\]themeConfig\.ts$/ }, () => ({ contents: 'export const useCustomChatTheme = () => ({theme: {colors: {}}, enabled: false}); export const useHtmlDarkMode = () => false; export const getThemeModeColor = color => color;' }))
+        builder.onLoad({ filter: /[/\\]ThemeManager[/\\]themeConfig\.ts$/ }, () => ({ contents: 'export const useCustomChatTheme = () => ({theme: {colors: {}}, enabled: false}); export const useHtmlDarkMode = () => false; export const getThemeModeColor = color => color; export const createDefaultCustomChatTheme = () => ({colors: {}});' }))
         builder.onLoad({ filter: /[/\\]ChatMessage[/\\]ChatMessage\.tsx$/ }, () => ({ contents: 'export function ChatMessage({contentBlocks}) { window.__messageRenders = (window.__messageRenders || 0) + 1; return <p data-fixture-message style={{minHeight: 1400}}>{contentBlocks.filter(b => b.type === "text").map(b => b.content).join(" ")}</p> }', loader: 'tsx' }))
         builder.onLoad({ filter: /[/\\]ChatMessage[/\\]WatcherCompletionNotice\.tsx$/ }, () => ({ contents: 'export const WatcherCompletionNotice = () => null' }))
         builder.onLoad({ filter: /[/\\]ChatMessage[/\\]SummarisedMessage\.tsx$/ }, () => ({ contents: 'export const SummarisedMessage = () => null' }))

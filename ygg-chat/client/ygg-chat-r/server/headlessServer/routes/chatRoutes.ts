@@ -84,6 +84,8 @@ interface RegisterChatRoutesDeps {
   runSessions?: RunSessionRegistry
   /** Master gate: when false the route keeps the legacy disconnect==abort behavior. */
   resumableRuns?: boolean
+  /** Current rows by ID within one conversation, for finished-run transcripts. */
+  readRunMessages?: (conversationId: string, ids: string[]) => any[]
 }
 
 /** Adapt an Express SSE response to the registry's transport-agnostic sink. */
@@ -458,6 +460,7 @@ export function launchQueuedSuccessor(orchestrator: HeadlessChatOrchestrator, ru
 export function registerChatRoutes(app: Express, deps: RegisterChatRoutesDeps): void {
   const { orchestrator, compactionService, decisionBroker, runSessions, resumableRuns } = deps
   decisionBroker?.subscribe(event => runSessions?.get(event.streamId)?.publish(event))
+  if (runSessions && resumableRuns) orchestrator.setSuccessorLauncher?.(request => launchQueuedSuccessor(orchestrator, runSessions, request))
 
   app.get('/api/conversations/:id/admissions/:operationId', (req, res) => {
     const receipt = deps.admissions?.lookup(String(req.params.operationId))
@@ -488,6 +491,22 @@ export function registerChatRoutes(app: Express, deps: RegisterChatRoutesDeps): 
       streamId: session.streamId, conversationId: session.conversationId, lineageId: session.lineageId,
       parentId: session.parentId, createdAt: session.createdAt, effectiveConfiguration: session.effectiveConfiguration,
     })) })
+  })
+
+  // Recently finished main runs (newest first), so a new agents window or a reloaded
+  // renderer can list them. In memory only: an app restart forgets them.
+  app.get('/api/host/runs/finished', (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store')
+    res.json({ runs: runSessions?.listFinished() ?? [] })
+  })
+
+  // A finished run's transcript: its current rows, read now (so later edits/deletes show).
+  app.get('/api/host/runs/:streamId/transcript', (req, res) => {
+    res.setHeader('Cache-Control', 'no-store')
+    const ids = runSessions?.finishedTranscript(String(req.params.streamId))
+    if (!ids || !deps.readRunMessages) { res.status(404).json({ error: 'Unknown finished run' }); return }
+    const messages = deps.readRunMessages(ids.conversationId, ids.messageIds.filter(id => id !== ids.excludedParentId))
+    res.json({ streamId: String(req.params.streamId), conversationId: ids.conversationId, messages })
   })
 
   app.get('/api/conversations/:id/live-runs', (req, res) => {
@@ -544,8 +563,9 @@ export function registerChatRoutes(app: Express, deps: RegisterChatRoutesDeps): 
     } catch (error) { res.status(409).json({ error: error instanceof Error ? error.message : String(error) }) }
   })
   app.post('/api/conversations/:id/streams/:streamId/queue', (req, res) => {
-    const { requestId, content, attachmentsBase64, selectedFiles, fullAccess, fullAccessNotificationId } = req.body ?? {}
+    const { requestId, content, attachmentsBase64, selectedFiles, fullAccess, fullAccessNotificationId, operationMode } = req.body ?? {}
     if (typeof requestId !== 'string' || !requestId || requestId.length > 128 || typeof content !== 'string' || !content.trim() ||
+      (operationMode != null && operationMode !== 'plan' && operationMode !== 'execute') ||
       content.length > 200_000 || !validSelectedFiles(selectedFiles) || (fullAccess != null && typeof fullAccess !== 'boolean') ||
       (fullAccessNotificationId != null && (typeof fullAccessNotificationId !== 'string' || !fullAccessNotificationId || fullAccessNotificationId.length > 128)) ||
       (attachmentsBase64 != null && (!Array.isArray(attachmentsBase64) || attachmentsBase64.length > 20 ||
@@ -558,12 +578,14 @@ export function registerChatRoutes(app: Express, deps: RegisterChatRoutesDeps): 
       if (!orchestrator.submitQueuedMessage || !runSessions || !resumableRuns) throw new Error('Queued messages require resumable runs')
       if (deps.admissions) {
         const result = deps.admissions.enqueue(String(req.params.id), String(req.params.streamId),
-          { requestId, content, attachmentsBase64, selectedFiles, fullAccess, fullAccessNotificationId },
+          { requestId, content, attachmentsBase64, selectedFiles, fullAccess, fullAccessNotificationId,
+            ...(operationMode ? { operationMode } : {}) },
           typeof req.body?.epoch === 'string' ? req.body.epoch : hostEpoch)
         res.json(result); return
       }
       const result = orchestrator.submitQueuedMessage(String(req.params.id), String(req.params.streamId), {
         requestId, content, attachmentsBase64, selectedFiles, fullAccess, fullAccessNotificationId,
+        ...(operationMode ? { operationMode } : {}),
       })
       if (result.restart) {
         const request = result.restart

@@ -94,6 +94,17 @@ export class MessageInputQueue {
     this.changed()
     return true
   }
+  /** Queued entries moved to a successor run's mailbox: no longer this run's to deliver or fail. */
+  handOff(requestIds: string[]): void {
+    let moved = false
+    for (const requestId of requestIds) {
+      const entry = this.entries.get(requestId)
+      if (entry?.view.status !== 'queued') continue
+      entry.view = { ...entry.view, status: 'delivered' }
+      moved = true
+    }
+    if (moved) this.changed()
+  }
   /** Called immediately before natural completion; false means the loop must continue. */
   tryClose(): boolean {
     if (this.hasPending) return false

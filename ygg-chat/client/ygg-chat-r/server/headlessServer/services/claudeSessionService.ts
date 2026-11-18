@@ -19,7 +19,12 @@ import { OperationModeControl } from './operationModeControl.js'
 import type { OperationMode } from '../../../../../shared/operationModeToolPolicy.js'
 import type { ClarifyDecision, DecisionBroker, OperationModeUpgradeDecision, PermissionDecision } from './decisionBroker.js'
 import type { ChatHookSession } from './chatHookService.js'
-import type { ToolExecutionContext } from './toolLoopService.js'
+import { toToolResultContent, type ToolExecutionContext, type ToolExecutor } from './toolLoopService.js'
+import { claudeGravitonToolName, gravitonResultText, gravitonToolName, type GravitonToolCall, type GravitonToolDefinition, type GravitonToolOutcome } from './claudeGravitonTools.js'
+import { requiresAgentMode } from '../../../../../shared/operationModeToolPolicy.js'
+import type { BranchContextStatus } from './contextStatusTool.js'
+import { createOperationModeSwitcher, type OperationModeSwitcher } from './operationModeSwitchTool.js'
+import type { ProviderToolCall } from '../providers/providerTypes.js'
 import type { HookEventName, HookRunRecord, HookRunStatus, HookRunTracker } from '../../hooks/hookTypes.js'
 import { getHookRunTracker } from '../../hooks/hookRunTracker.js'
 import { redactHookDiagnostic, toSafeHookRunRecord } from '../../hooks/hookDiagnostics.js'
@@ -61,6 +66,19 @@ export function claudeModeSwitchNotice(mode: OperationMode): string {
     ? '(Graviton switched to Chat mode: file edits are now disabled, including through Bash. Answer, read and run read-only commands; the user can switch back to Agent mode for changes.)'
     : '(Graviton switched to Agent mode: file edits are enabled again.)'
 }
+/** Graviton's own tools in Claude runs (`claudeGravitonTools.ts`). */
+export interface ClaudeGravitonToolsDeps {
+  /** Graviton tools Claude may use now: built-ins on this host, switched on in Settings. Read at every check. */
+  available: () => GravitonToolDefinition[]
+  /**
+   * The run's Graviton tool executor: Graviton's own per-call wrapper (hooks, approval, plan_md
+   * questions, nested multi_call/repl calls) around its tool executor, as in its own loop.
+   */
+  executor: (run: { streamId: string; emit: (event: HeadlessStreamEvent) => void; signal: AbortSignal
+    hookSession?: ChatHookSession; modeControl: OperationModeControl }) => ToolExecutor
+}
+/** A Graviton tool under its plain name, as Graviton's own hooks and rows name it. */
+const hookToolName = (name: string) => gravitonToolName(name) ?? name
 /** A mode switch Claude read at this point of the run, recorded as a mode row. */
 export interface ClaudeModeSwitch { mode: OperationMode; previousMode: OperationMode; revision: number; content: string }
 // Claude Code's own settings layers, as the CLI loads them: skills, hooks, plugins and CLAUDE.md.
@@ -68,6 +86,8 @@ export const CLAUDE_SETTING_SOURCES: NonNullable<Options['settingSources']> = ['
 const COMMAND_LOOKUP_TIMEOUT_MS = 15_000
 // Live settings a reused CLI applies before the turn (setModel took ~730 ms on CLI 2.1.318).
 const WARM_SETTINGS_TIMEOUT_MS = 10_000
+// Claude lists an in-process server's tools again ~50-70 ms after list_changed (CLI 2.1.323).
+const GRAVITON_SYNC_TIMEOUT_MS = 3_000
 // Hook events whose `hook_name` matcher is a tool name (`PreToolUse:Bash`).
 const NATIVE_TOOL_HOOK_EVENTS = new Set(['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'PermissionRequest', 'PermissionDenied'])
 const SKILL_BASE_DIRECTORY = /^Base directory for this skill: ([^\n]+)/
@@ -357,7 +377,9 @@ export class ClaudeSessionService {
     /** Host setting for Claude Code's own MCP servers, read at each run start; absent keeps MCP off. */
     nativeMcp?: () => HostClaudeMcpPreferences | null | undefined
     /** Keep a branch's CLI open between runs (warm sessions); absent or null starts a CLI per run. */
-    warm?: ClaudeWarmConfig | null }) {
+    warm?: ClaudeWarmConfig | null
+    /** Graviton's own tools, served to Claude as the `graviton` MCP server; absent keeps them out. */
+    gravitonTools?: ClaudeGravitonToolsDeps | null }) {
     this.warm = new ClaudeWarmRegistry(deps.warm ?? null, process => {
       // The CLI worked with no run attached: the transcript moved past the checkpoint unseen.
       try { if (process.sessionId) this.deps.sessions.session(process.lineageId, process.sessionId, 'interrupted') }
@@ -366,6 +388,25 @@ export class ClaudeSessionService {
   }
 
   private readonly warm: ClaudeWarmRegistry
+  /** Processes serving Graviton tools, for live tool-list changes. */
+  private readonly gravitonProcesses = new Set<ClaudeWarmProcess>()
+
+  /** Graviton tools Claude may use now; empty when unreadable. */
+  private gravitonAvailable(): GravitonToolDefinition[] {
+    try { return this.deps.gravitonTools?.available() ?? [] }
+    catch (error) {
+      console.warn('[ClaudeSession] Graviton tool settings unreadable; no Graviton tools for now', error instanceof Error ? error.message : error)
+      return []
+    }
+  }
+
+  /**
+   * Settings → Tools changed: tell each running Claude its Graviton tool list changed. It lists
+   * again before its next model call. A parked CLI catches up when the next send claims it.
+   */
+  gravitonToolsChanged(): void {
+    for (const process of this.gravitonProcesses) if (process.state === 'owned') process.graviton?.notifyIfChanged()
+  }
 
   /** Host shutdown: close every kept Claude process. */
   dispose(): Promise<void> { return this.warm.disposeAll() }
@@ -456,7 +497,8 @@ export class ClaudeSessionService {
     const drained = () => session.drainHookContext().join('\n\n') || undefined
     return {
       PreToolUse: [{ hooks: [async (hook, _toolUseId, { signal }) => {
-        if (hook.hook_event_name !== 'PreToolUse' || !scope.active(hook, signal)) return {}
+        // Graviton tools run Graviton's hooks in Graviton's own wrapper (the run's Graviton executor).
+        if (hook.hook_event_name !== 'PreToolUse' || !scope.active(hook, signal) || gravitonToolName(hook.tool_name)) return {}
         const result = await session.runPreToolUse({ id: hook.tool_use_id, name: hook.tool_name, arguments: hook.tool_input ?? {} },
           await scope.context(hook.tool_use_id, signal))
         const additionalContext = drained()
@@ -469,7 +511,7 @@ export class ClaudeSessionService {
         return { hookSpecificOutput: { hookEventName: 'PreToolUse', ...decision, ...(additionalContext ? { additionalContext } : {}) } }
       }] }],
       PostToolUse: [{ hooks: [async (hook, _toolUseId, { signal }) => {
-        if (hook.hook_event_name !== 'PostToolUse' || !scope.active(hook, signal)) return {}
+        if (hook.hook_event_name !== 'PostToolUse' || !scope.active(hook, signal) || gravitonToolName(hook.tool_name)) return {}
         await session.runPostToolUse({ id: hook.tool_use_id, name: hook.tool_name, arguments: hook.tool_input ?? {} },
           hook.tool_response, await scope.context(hook.tool_use_id, signal))
         const additionalContext = drained()
@@ -477,7 +519,7 @@ export class ClaudeSessionService {
       }] }],
       PostToolUseFailure: [{ hooks: [async (hook, _toolUseId, { signal }) => {
         // Parity with the Graviton loop: no failure hook on cancellation.
-        if (hook.hook_event_name !== 'PostToolUseFailure' || hook.is_interrupt || !scope.active(hook, signal)) return {}
+        if (hook.hook_event_name !== 'PostToolUseFailure' || hook.is_interrupt || !scope.active(hook, signal) || gravitonToolName(hook.tool_name)) return {}
         await session.runPostToolUseFailure({ id: hook.tool_use_id, name: hook.tool_name, arguments: hook.tool_input ?? {} },
           hook.error, await scope.context(hook.tool_use_id, signal))
         const additionalContext = drained()
@@ -537,8 +579,9 @@ export class ClaudeSessionService {
     // Native plan mode is the user's choice (Plan toggle or /plan) and wins over auto mode.
     const permissionMode = request.claudePlanMode === true ? 'plan' : request.claudePermissionMode === 'auto' ? 'auto' : 'default'
     const liveSettings: ClaudeWarmSettings = { model: request.modelName, effort: selectedEffort ?? null, ultracode: request.claudeUltracode === true }
+    const gravitonTools = this.deps.gravitonTools ?? null
     const launchKey = this.warm.enabled ? await claudeLaunchKey({ cwd, additionalDirectories: input.additionalDirectories, adaptiveThinking, mcp,
-      plansDirectory: CLAUDE_PLANS_DIRECTORY, executable, hookShape: input.hookSession ? 'graviton-hooks' : 'native-only' }) : ''
+      plansDirectory: CLAUDE_PLANS_DIRECTORY, executable, hookShape: input.hookSession ? 'graviton-hooks' : 'native-only', gravitonTools: Boolean(gravitonTools) }) : ''
     // The branch's parked CLI, taken synchronously after the last await so nothing else closes or
     // claims it. It is reused only for a send at the exact head it parked at; anything else closes it.
     let warm = this.warm.take(lineageId)
@@ -602,6 +645,9 @@ export class ClaudeSessionService {
         if (reused.settings.model !== request.modelName) await live(reused.query.setModel(request.modelName))
         // Both keys, explicitly: null returns effort to the model default, false turns ultracode off.
         await live(reused.query.applyFlagSettings({ effortLevel: selectedEffort ?? null, ultracode: liveSettings.ultracode }))
+        // Settings → Tools may have changed while it was parked. Claude must hold the current
+        // Graviton list before the turn; a CLI that does not list again in time is relaunched.
+        if (reused.graviton && !await live(reused.graviton.sync(GRAVITON_SYNC_TIMEOUT_MS))) throw new Error('Claude did not refresh the Graviton tool list')
         // A failed server is not retried inside a session (CLI #105752); a new CLI reconnects it.
         if (nativeMcp?.enabled) {
           const servers = await live(reused.query.mcpServerStatus())
@@ -707,7 +753,7 @@ export class ClaudeSessionService {
         // Native hook events carry no tool_use_id: the latest call to that tool owns them.
         if (matcher && NATIVE_TOOL_HOOK_EVENTS.has(event)) {
           for (const [id, owner] of [...toolOwners.entries()].reverse()) {
-            if (owner.calls.some(call => call.id === id && call.name === matcher)) return String(owner.message.id)
+            if (owner.calls.some(call => call.id === id && call.name === hookToolName(matcher))) return String(owner.message.id)
           }
         }
         const head = finalMessage?.id ?? parent
@@ -819,9 +865,21 @@ export class ClaudeSessionService {
       if (planState.active) return PLAN_WRITE_TOOLS.has(name) && await isClaudePlanFile(plansDir, cwd, args?.file_path) ? null : PLAN_MODE_EDIT_DENIAL
       return control.mode === 'plan' ? CHAT_MODE_EDIT_DENIAL : null
     }
+    // A Graviton tool switched off in Settings → Tools never runs. Native plan mode is the user's
+    // read-only planning, so tools that need Agent mode wait for the approved plan. Chat mode asks
+    // to switch when the call runs, as Graviton's own loop does.
+    const gravitonDenial = (name: string, args: unknown): string | null => {
+      const tool = gravitonToolName(name)
+      if (!tool) return null
+      if (!gravitonTools || !this.gravitonAvailable().some(entry => entry.name === tool)) {
+        return `The Graviton tool "${tool}" is turned off in Graviton's Settings → Tools, or not available on this host.`
+      }
+      return planState.active && requiresAgentMode({ name: tool, arguments: args }, 'plan')
+        ? `The Graviton tool "${tool}" is not available while plan mode is on. Call ExitPlanMode once the plan is ready.` : null
+    }
     hooks.PreToolUse = [...(hooks.PreToolUse ?? []), { hooks: [async hook => {
       if (hook.hook_event_name !== 'PreToolUse') return {}
-      const reason = await editDenial(hook.tool_name, hook.tool_input as Record<string, unknown> | undefined)
+      const reason = gravitonDenial(hook.tool_name, hook.tool_input) ?? await editDenial(hook.tool_name, hook.tool_input as Record<string, unknown> | undefined)
       if (!reason) return {}
       return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } }
     }] }]
@@ -898,8 +956,10 @@ export class ClaudeSessionService {
       // Auto-approval answers permission requests; it must not let Chat mode edit files.
       // The PreToolUse hook denies these first; this guards a CLI that still asks.
       // Only edit tools await the check, so every other call reaches the broker in this tick.
-      const denial = CHAT_MODE_BLOCKED_TOOLS.includes(name) ? await editDenial(name, args) : null
+      const denial = CHAT_MODE_BLOCKED_TOOLS.includes(name) ? await editDenial(name, args) : gravitonDenial(name, args)
       if (denial) return { behavior: 'deny', message: denial }
+      // Graviton's own wrapper asks about Graviton tools (approval, plan_md questions), as in its loop.
+      if (gravitonToolName(name)) return { behavior: 'allow', updatedInput: args }
       if (!this.deps.broker) return { behavior: 'deny', message: 'Approval UI unavailable' }
       const id = context.toolUseID || randomUUID()
       const event = { type: 'permission_required' as const, streamId: request.streamId!, toolCallId: id, toolName: name, toolInput: args }
@@ -919,6 +979,89 @@ export class ClaudeSessionService {
       if (decision !== 'deny') return { behavior: 'allow', updatedInput: args }
       // A switch to Chat mode denies edit prompts that were still waiting.
       return { behavior: 'deny', message: (await editDenial(name, args)) ?? 'Denied by user' }
+    }
+    // Graviton tool calls from Claude run as in Graviton's own loop: its per-call wrapper (hooks,
+    // approval, plan_md questions, nested multi_call/repl calls) and the run context its run-scoped
+    // tools read (switch_mode, context_status, subagents, watcher). The result Graviton persists
+    // (what its tool cards read) replaces Claude's text copy on the row.
+    const gravitonExecutor = gravitonTools?.executor({ streamId: request.streamId!, emit, signal: abortController.signal,
+      hookSession: hookSession ?? undefined, modeControl: control }) ?? null
+    const gravitonResults = new Map<string, { content: string; isError: boolean }>()
+    // User messages Claude has read this run; new input lets switch_mode ask again after a decline.
+    let deliveredInputs = 0
+    // Chat → Agent through the usual upgrade dialog, like ExitPlanMode. Claude learns from the result.
+    const requestUpgrade = async (toolCall: ProviderToolCall): Promise<boolean> => {
+      const broker = this.deps.broker
+      if (!broker) return false
+      const requested = control.revision
+      const event = { type: 'operation_mode_upgrade_required' as const, streamId: request.streamId!, toolCallId: toolCall.id,
+        toolName: toolCall.name, toolInput: toolCall.arguments }
+      const pending = broker.requestDecision<OperationModeUpgradeDecision>({ streamId: request.streamId!, toolCallId: toolCall.id,
+        kind: 'operation_mode_upgrade', signal: abortController.signal, prompt: event })
+      if (broker.hasPending(request.streamId!, toolCall.id)) emit(event)
+      const decision = await pending
+      if (requested !== control.revision) return control.mode === 'execute'
+      if (decision !== 'switch_to_execute') return false
+      control.change('execute', `upgrade:${toolCall.id}`)
+      readMode = 'execute'
+      syncToldMode()
+      return true
+    }
+    const switcher = createOperationModeSwitcher({ control, requestUpgrade, userInputCount: () => deliveredInputs })
+    // Claude reads the switch in the tool result, so no notice follows it.
+    const switchOperationMode: OperationModeSwitcher = async (toolCall, mode) => {
+      const result = await switcher(toolCall, mode)
+      readMode = control.mode
+      syncToldMode()
+      return result
+    }
+    // Claude's last main-agent call, against the window Claude reported (or the selected model's).
+    const getContextStatus = (): BranchContextStatus => {
+      const usage = callUsage ? claudeContextUsage({ usage: callUsage.usage, model: callUsage.model, responseId: callUsage.id }) : null
+      const usedTokens = usage?.usedTokens ?? 0
+      const limit = runUsage?.contextWindow ?? (request.contextLength && request.contextLength > 0 ? request.contextLength : 200_000)
+      const remainingTokens = Math.max(0, limit - usedTokens)
+      return { conversationId: request.conversationId, lineageId, streamId: request.streamId ?? null, messageId: String(finalMessage?.id ?? parent ?? ''),
+        provider: request.provider, modelName: request.modelName, usedTokens, totalContextLimit: limit, remainingTokens,
+        usedPercent: Math.min(100, (usedTokens / limit) * 100), remainingPercent: Math.max(0, (remainingTokens / limit) * 100),
+        source: usage ? 'reported' : 'estimated', recordedAt: new Date().toISOString() }
+    }
+    const gravitonTool = async (call: GravitonToolCall): Promise<GravitonToolOutcome> => {
+      // Backstop for calls Claude's own allow rules let through without asking.
+      const denial = gravitonDenial(claudeGravitonToolName(call.name), call.arguments)
+      if (denial || !gravitonExecutor) return { text: denial ?? 'Graviton tools are unavailable.', isError: true }
+      const signal = AbortSignal.any([call.signal, abortController.signal])
+      const toolCall: ProviderToolCall = { id: call.toolUseId ?? randomUUID(), name: call.name, arguments: call.arguments }
+      let outcome: GravitonToolOutcome
+      let persisted: string
+      try {
+        if (requiresAgentMode(toolCall, control.mode) && !await requestUpgrade(toolCall)) {
+          throw new Error(`"${call.name}" needs Agent mode, and the user chose to stay in Chat mode. Continue read-only or explain what you would change.`)
+        }
+        const result = await gravitonExecutor(toolCall, {
+          conversationId: request.conversationId, streamId: request.streamId ?? null, lineageId,
+          messageId: call.toolUseId ? await ownerMessageId(call.toolUseId, signal) : String(finalMessage?.id ?? parent ?? ''),
+          rootPath: cwd, additionalRoots: input.additionalDirectories ?? [], operationMode: control.mode,
+          provider: request.provider, modelName: request.modelName, signal,
+          autoApprove: this.deps.broker?.isAutoApproveAll(request.streamId!) ?? false,
+          timeoutMs: request.toolTimeoutMs, bashTimeoutMs: request.bashTimeoutMs,
+          subagentDefaults: request.subagentDefaults, subagentReasoningEffort: request.subagentReasoningEffort,
+          subagentSystemPrompt: request.subagentModePrompt ?? null, contextDirectories: request.contextDirectories ?? null,
+          allowedToolNames: new Set(this.gravitonAvailable().map(tool => tool.name)),
+          getContextStatus, switchOperationMode,
+        })
+        persisted = toToolResultContent(result)
+        outcome = { text: gravitonResultText(result), isError: false }
+      } catch (error) {
+        if (signal.aborted) throw error
+        persisted = error instanceof Error ? error.message : String(error)
+        outcome = { text: persisted, isError: true }
+      }
+      // Context Graviton's hooks added around the call goes back with its result.
+      const hookContext = hookSession?.drainHookContext().join('\n\n')
+      if (hookContext) outcome = { ...outcome, text: `${outcome.text}\n\n${hookContext}` }
+      if (call.toolUseId) gravitonResults.set(call.toolUseId, { content: persisted, isError: outcome.isError })
+      return outcome
     }
     const options: Options = {
       cwd, model: request.modelName, ...(sessionId ? { resume: sessionId } : {}),
@@ -1186,11 +1329,17 @@ export class ClaudeSessionService {
     let unbindTasks: (() => void) | undefined
     try {
       signal?.throwIfAborted()
-      const bindings = { canUseTool, hooks }
+      const bindings = { canUseTool, hooks, ...(gravitonTools ? { gravitonTool } : {}) }
       if (proc) {
         if (!proc.activate(bindings)) throw new Error('The Claude process ended before this turn started. Send again.')
       } else {
-        proc = new ClaudeWarmProcess(params => sdk.query(params), options, bindings, lineageId, launchKey, sessionId ?? null, liveSettings)
+        proc = new ClaudeWarmProcess(params => sdk.query(params), options, bindings, lineageId, launchKey, sessionId ?? null, liveSettings,
+          gravitonTools ? { tools: () => this.gravitonAvailable() } : null)
+        if (proc.graviton) {
+          const started = proc
+          this.gravitonProcesses.add(started)
+          void started.events.exited.then(() => this.gravitonProcesses.delete(started))
+        }
       }
       const running = proc
       query = running.query
@@ -1252,7 +1401,7 @@ export class ClaudeSessionService {
             const modeSwitch = told && told.mode !== readMode
               ? { mode: told.mode, previousMode: readMode, revision: told.revision, content: claudeModeSwitchNotice(told.mode) } : null
             if (told) readMode = told.mode
-            if (requestId) parent = queued!.deliver(requestId, parent, { mode: told?.mode ?? control.mode, planMode: planState.active, modeSwitch }).id
+            if (requestId) { parent = queued!.deliver(requestId, parent, { mode: told?.mode ?? control.mode, planMode: planState.active, modeSwitch }).id; deliveredInputs++ }
             else if (modeSwitch) parent = queued!.recordModeSwitch(modeSwitch, parent).id
           } else if (requestId) {
             queued!.release(requestId, state === 'cancelled' ? { cancelled: true } : { error: `Claude did not run this message (${state}).` })
@@ -1347,7 +1496,8 @@ export class ClaudeSessionService {
                 path.resolve(cwd, input.file_path).startsWith(plansDir + path.sep)) lastPlanPath = path.resolve(cwd, input.file_path)
               const plan = pendingPlans.get(block.id)
               pendingPlans.delete(block.id)
-              return { type: 'tool_use', id: block.id, name: block.name, input: plan ? { ...input, ...plan } : input, index }
+              // A Graviton tool shows under its own name, so Graviton's tool cards render it.
+              return { type: 'tool_use', id: block.id, name: gravitonToolName(block.name) ?? block.name, input: plan ? { ...input, ...plan } : input, index }
             }
             return { type: 'text', content: `[Claude ${block.type}]`, index }
           })
@@ -1401,7 +1551,9 @@ export class ClaudeSessionService {
             if (result.type !== 'tool_result') continue
             toolsInFlight.delete(result.tool_use_id)
             const owner = toolOwners.get(result.tool_use_id)
-            const content = textOf(result.content)
+            const graviton = gravitonResults.get(result.tool_use_id)
+            gravitonResults.delete(result.tool_use_id)
+            const content = graviton?.content ?? textOf(result.content)
             const toolName = owner?.calls.find(call => call.id === result.tool_use_id)?.name
             const patch = soleResult && !result.is_error && CLAUDE_FILE_EDIT_TOOLS.has(toolName ?? '') ? claudeFilePatch(event.tool_use_result) : undefined
             if (owner) {

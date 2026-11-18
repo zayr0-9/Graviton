@@ -1109,6 +1109,11 @@ export const Heimdall: React.FC<HeimdallProps> = ({
       )
       // Keep highlights readable while zoomed out without rebuilding node JSX during gestures.
       graphTransformRef.current?.style.setProperty('--heimdall-highlight-stroke-scale', String(Math.max(1, 1 / nextZoom)))
+      // Scale the whole note pill (including text) without rebuilding nodes during gestures.
+      graphTransformRef.current?.style.setProperty(
+        '--heimdall-note-pill-scale',
+        String(Math.min(1.6, Math.max(0.8, 1 / Math.sqrt(nextZoom))))
+      )
     },
     [dimensions.width]
   )
@@ -3843,11 +3848,12 @@ export const Heimdall: React.FC<HeimdallProps> = ({
 
               const badge = getNoteBadgeMetrics(message?.note)
               const pillColors = getNotePillColors(message?.note_color)
-              const badgeX = nodeWidth - badge.width - 8
-              const badgeY = nodeHeight - badge.height + 10
+              // Grow inward from the bottom-right anchor, but leave message content visible.
+              const maxBadgeScale = Math.min(1.6, (nodeWidth * 0.85) / badge.width, (nodeHeight * 0.6) / badge.height)
+              const badgeTransform = `translate(${nodeWidth - 8}px, ${nodeHeight + 10}px) scale(min(var(--heimdall-note-pill-scale, 1), ${maxBadgeScale})) translate(${-badge.width}px, ${-badge.height}px)`
               return (
                 <g
-                  transform={`translate(${badgeX}, ${badgeY})`}
+                  style={{ transform: badgeTransform }}
                   className='cursor-pointer'
                   onPointerDown={e => e.stopPropagation()}
                   onMouseEnter={e => handleNoteBadgeHover(e, node, message.note || '')}
@@ -4069,7 +4075,10 @@ export const Heimdall: React.FC<HeimdallProps> = ({
               const badgeY = y + circleRadius + 8
               return (
                 <g
-                  transform={`translate(${badgeX}, ${badgeY})`}
+                  style={{
+                    // Keep the top-left anchor outside the circle; grow away from the node.
+                    transform: `translate(${badgeX}px, ${badgeY}px) scale(var(--heimdall-note-pill-scale, 1))`,
+                  }}
                   className='cursor-pointer'
                   onPointerDown={e => e.stopPropagation()}
                   onMouseEnter={e => handleNoteBadgeHover(e, node, message.note || '')}

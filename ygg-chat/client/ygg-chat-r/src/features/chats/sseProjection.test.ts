@@ -137,6 +137,12 @@ describe('projectServerEvent', () => {
     expect(projectServerEvent(partial({ type: 'started', parentId: null }), ctx)).toEqual([])
   })
 
+  it('started records the run mode before its anchors', () => {
+    const a = projectServerEvent(partial({ type: 'started', parentId: 'p1', operationMode: 'plan' }), ctx)
+    expect(types(a)).toEqual([chatSliceActions.streamOperationModeObserved.type, chatSliceActions.streamLineageUpdated.type])
+    expect(a[0].payload).toEqual({ streamId: 'stream-1', mode: 'plan' })
+  })
+
   it('user_message_persisted => messageAdded, messageBranchCreated, streamLineageUpdated (in order)', () => {
     const a = projectServerEvent(
       {

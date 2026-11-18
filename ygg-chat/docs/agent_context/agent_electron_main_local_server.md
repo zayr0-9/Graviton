@@ -55,7 +55,7 @@ Use this when changing:
 
 - Electron main process owns native capabilities.
 - Renderer should access native/local features through preload/local API, not direct Node APIs.
-- Local server listens on `127.0.0.1:3002` in Electron local mode (fallback ports if taken). `:3002` hosts three surfaces on one app: local `/api/app/*` CRUD, the local data gateway (`/api/gw/*`), and the server-owned chat SSE routes.
+- Electron defaults to `127.0.0.1:3002` (fallback ports if taken). Settings → Remote UI Access persists the listener choice in Electron main, via main-window IPC: local only, all IPv4 interfaces (`0.0.0.0`), or one assigned LAN IPv4 address. Changes take effect on the next app launch. An unavailable saved LAN address falls back to loopback without discarding the preference. Explicit `YGG_LOCAL_SERVER_HOST` / `YGG_LOCAL_SERVER_ALLOW_REMOTE` launch overrides still take precedence. The separate Remote Server Base URL sets the shared link, not the listener. Non-loopback bindings are for trusted networks only and do not add device authentication. `:3002` hosts three surfaces on one app: local `/api/app/*` CRUD, the local data gateway (`/api/gw/*`), and the server-owned chat SSE routes.
 - The MAIN chat agent loop is NO LONGER renderer-owned. It runs server-side (`ChatOrchestrator` → `ToolLoopService`); the renderer's chat thunks POST the SSE routes and project the events onto existing Redux state. Tool execution, permission/hook/compaction orchestration all live server-side. The chat thunks require a local-server runtime — Electron or the standalone browser target (`isLocalServerRuntime()` in `src/utils/api.ts`); there is no plain web mode.
 
 ### Standalone server (Phase 1)
@@ -152,6 +152,14 @@ Recovery validation (2026-10-23): 35 recovery + 7 quit unit tests passed; full m
 
 Ordinary-send admission rejections (`lineage_mismatch`, "The selected parent is not the current branch head") log `[LineageForkDebug][Main] admission-mismatch` in the main log with a `reason` (`AdmissionMismatchReason` in `shared/runAdmission.ts`) and the resolved lineage/head/path state. The reason is returned in the 409. The renderer then logs `[LineageForkDebug][Renderer] admission-rejected` to `client-errors.ndjson` with its selected lineage/path, selection revisions and the conversation's stream slots.
 
+### OS run-completion notifications
+
+`electron/systemNotifications.ts` owns native notifications (`createSystemNotifier`, with the Electron `Notification` injected so `server/__tests__/systemNotifications.test.ts` runs without Electron). IPC through `promptHandle` (main/floating main frame only): `notifications:show` (payload re-validated and clipped, `onlyWhenUnfocused` / `force` options, response-keyed 6-hour de-duplication) and `notifications:takeActivation` (main window only; exactly-once). A click focuses or creates the main window and sends `notifications:activated`. Renderer side and settings: `agent_floating_agent_button_design.md` → "OS system notifications".
+
 ### Link opening and navigation guards
 
 `electron/externalLinks.ts` is the only place main hands a renderer-supplied link to the OS. `installNavigationGuards` runs on the main and floating windows: `will-navigate` away from the app document is cancelled, and `setWindowOpenHandler` always denies. In both cases the URL is routed to `openExternalLink` (file URLs go to `shell.openPath`). Web, mail and editor schemes open directly. Other app schemes need a native confirmation. Dangerous schemes (`shared/linkPolicy.ts`) are refused. `isAppDocumentUrl` is shared with renderer recovery, so both agree on what counts as the app's own document. The renderer side is documented in `agent_md_renderer.md` under "Markdown links". Tests: `server/__tests__/externalLinks.test.ts`.
+
+### Detached agents window
+
+`createAgentsWindow` (`main.ts`) opens one framed `Graviton - Agents` window on the same renderer entry with hash `/agents-window`. It gets the native host session fence, navigation guards and an edit/spelling context menu, and is trusted by `promptHandle`, `shell:openExternal` and the token-free auth reads (`authReadHandle`: `auth:status`, `auth:check`, `auth:subscribe`; `auth:migrate` imports legacy tokens only from the main window). IPC: `window:openAgents` (main window main frame only), `window:openInMain` (agents window only; accepts in-app routes, not URLs), `window:takeNavigation` (main window takes the pending route). Renderer side: `agent_floating_agent_button_design.md` → "Detached agents window".

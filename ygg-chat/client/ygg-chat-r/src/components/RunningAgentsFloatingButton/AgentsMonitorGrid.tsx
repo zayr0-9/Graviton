@@ -8,6 +8,7 @@ import type { AgentPreviewScrollState } from './AgentRunPreview'
 import { AgentForkCard, agentCardToneClass, agentStatusDotClass, cardIconButtonClass, forkName, getAgentCardStatus, useAgentCardTheme } from './AgentForkCard'
 import { AgentGridRow } from './AgentGridRow'
 import { getAgentGridColumns } from './agentGridSplit'
+import { arrangeAgentGridRows, type AgentGridLayout, type AgentGridOrderMode } from './agentGridLayout'
 import { useVisibleAgentGridRows } from './useVisibleAgentGridRows'
 
 interface AgentsMonitorGridProps {
@@ -33,6 +34,8 @@ interface AgentsMonitorGridProps {
   onToggleForkCollapsed?: (key: string, collapsed: boolean) => void
   /** Owned by the pill so reading positions survive opening a preview and coming back. */
   scrollStates?: Map<string, AgentPreviewScrollState>
+  /** How cards may move when fork order changes (see `agentGridLayout.ts`). */
+  orderMode?: AgentGridOrderMode
 }
 
 const NO_COLLAPSED_FORKS: readonly string[] = []
@@ -91,7 +94,7 @@ export function getAgentGridCardHeight(columns: number, viewportPx?: number | nu
 export function AgentsMonitorGrid({ activeStreams, streamHistory, grouped, onOpenFork, onOpenChat, resizing = false,
   hiddenForks = NO_HIDDEN_FORKS, onHideFork, onShowFork, onShowAllForks,
   hiddenListOpen = false, hiddenListId, onHiddenListOpenChange, hiddenToggleRef,
-  collapsedForks = NO_COLLAPSED_FORKS, onToggleForkCollapsed, scrollStates: sharedScrollStates }: AgentsMonitorGridProps) {
+  collapsedForks = NO_COLLAPSED_FORKS, onToggleForkCollapsed, scrollStates: sharedScrollStates, orderMode = 'rows' }: AgentsMonitorGridProps) {
   const gridRef = useRef<HTMLDivElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const [viewportHeight, setViewportHeight] = useState<number | null>(null)
@@ -133,7 +136,14 @@ export function AgentsMonitorGrid({ activeStreams, streamHistory, grouped, onOpe
     const keys = new Set(forks.map(fork => fork.key))
     for (const key of scrollStates.keys()) if (!keys.has(key)) scrollStates.delete(key)
   }, [forks, scrollStates])
-  const rowCount = Math.ceil(forks.length / columns)
+  // Rows are laid out against the previous render so reordering never shuffles a row's columns.
+  const layoutRef = useRef<AgentGridLayout | null>(null)
+  const forkKeysJson = JSON.stringify(forks.map(fork => fork.key))
+  const rowKeys = useMemo(() => arrangeAgentGridRows(layoutRef.current, JSON.parse(forkKeysJson) as string[], columns, orderMode),
+    [forkKeysJson, columns, orderMode])
+  useLayoutEffect(() => { layoutRef.current = { columns, rows: rowKeys } }, [columns, rowKeys])
+  const forkByKey = new Map(forks.map(fork => [fork.key, fork]))
+  const rowCount = rowKeys.length
   const visibleRows = useVisibleAgentGridRows(gridRef, scrollRef, rowCount, columns)
   const textStyle: CSSProperties & Record<'--agents-grid-streaming-bg' | '--agents-grid-idle-bg', string | undefined> = {
     color: color('toolJobsPrimaryText'),
@@ -146,7 +156,8 @@ export function AgentsMonitorGrid({ activeStreams, streamHistory, grouped, onOpe
     if (!grid) return
     const updateColumns = () => {
       const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16
-      setColumns(getAgentGridColumns(grid.getBoundingClientRect().width, window.innerWidth, rem, forks.length))
+      // Capacity, not min(capacity, count): a fork arriving or leaving must not reflow every row.
+      setColumns(getAgentGridColumns(grid.getBoundingClientRect().width, window.innerWidth, rem, Number.POSITIVE_INFINITY))
     }
     updateColumns()
     const observer = new ResizeObserver(updateColumns)
@@ -157,7 +168,7 @@ export function AgentsMonitorGrid({ activeStreams, streamHistory, grouped, onOpe
       observer.disconnect()
       window.removeEventListener('resize', updateColumns)
     }
-  }, [forks.length])
+  }, [])
 
   // Observe the scroller, not the grid: the grid's height depends on card height.
   // Never re-measure per frame during a pill drag; other resizes commit once settled.
@@ -229,7 +240,7 @@ export function AgentsMonitorGrid({ activeStreams, streamHistory, grouped, onOpe
         </p>}
         <div ref={gridRef} className='flex flex-col gap-3'>
           {Array.from({ length: rowCount }, (_, rowIndex) => {
-            const row = forks.slice(rowIndex * columns, (rowIndex + 1) * columns)
+            const row = rowKeys[rowIndex].map(key => forkByKey.get(key)!)
             const collapsedCells = getEffectiveCollapsedCells(row.map(fork => fork.key), collapsedSet)
             const expandedCount = collapsedCells.filter(collapsed => !collapsed).length
             return <div key={rowIndex} data-agent-grid-row={rowIndex}>
@@ -243,7 +254,7 @@ export function AgentsMonitorGrid({ activeStreams, streamHistory, grouped, onOpe
             }
             const status = getAgentCardStatus(fork)
             const name = forkName(fork)
-            const cardHeight = getAgentGridCardHeight(columns, viewportHeight)
+            const cardHeight = getAgentGridCardHeight(Math.min(columns, forks.length), viewportHeight)
             if (collapsedCells[cellIndex]) return (
               <section key={fork.key} data-agent-fork-key={fork.key} aria-label={`${name} · ${fork.displayName} (collapsed)`}
                 className={`flex min-w-0 flex-col items-center gap-2 overflow-hidden rounded-2xl py-2 ${agentCardToneClass(status.active)}`}

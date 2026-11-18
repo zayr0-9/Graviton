@@ -17,6 +17,8 @@ export function normalizeSubagentModelName(
   const stripped = raw.replace(/^(openai\s*\(chatgpt\)|openaichatgpt|openai)\s*\//i, '')
   const slug = stripped.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
 
+  if (slug.includes('gpt-6-2-astra')) return 'gpt-6.2-astra'
+  if (slug.includes('gpt-6-2-sol')) return 'gpt-6.2-sol'
   if (slug.includes('gpt-6-astra')) return 'gpt-6-astra'
   if (slug.includes('gpt-6-1-sol')) return 'gpt-6.1-sol'
   if (slug.includes('gpt-6-sol')) return 'gpt-6-sol'

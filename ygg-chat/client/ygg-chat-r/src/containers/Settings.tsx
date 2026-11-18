@@ -1,4 +1,5 @@
 import { isNativeShell } from '../platform/clientCapabilities'
+import type { HostNetworkBinding, HostNetworkBindingStatus } from '../../../../shared/hostNetworkBinding'
 import MatrixBackgroundSettings from '../components/MatrixBackgroundSettings'
 import { HOST_EXECUTION_CHANGED } from '../services/hostExecutionClient'
 import { buildSharedBrowserUrl } from '../helpers/remoteServerSettingsStorage'
@@ -329,6 +330,12 @@ const Settings: React.FC = () => {
   )
   const [detectedLocalServerOrigin, setDetectedLocalServerOrigin] = useState<string>('')
   const [hostExposureStatus, setHostExposureStatus] = useState('')
+  const [hostExposed, setHostExposed] = useState(false)
+  const [networkBindingStatus, setNetworkBindingStatus] = useState<HostNetworkBindingStatus | null>(null)
+  const [networkBindingMode, setNetworkBindingMode] = useState<HostNetworkBinding['mode']>('loopback')
+  const [customBindAddress, setCustomBindAddress] = useState('')
+  const [networkBindingSaving, setNetworkBindingSaving] = useState(false)
+  const [networkBindingError, setNetworkBindingError] = useState('')
   const [localUsers, setLocalUsers] = useState<LocalUserSummary[]>([])
   const [localUsersLoading, setLocalUsersLoading] = useState(false)
   const [migratingOwnership, setMigratingOwnership] = useState(false)
@@ -549,8 +556,24 @@ const Settings: React.FC = () => {
     let active = true
 
     void window.electronAPI?.sync?.status().then(status => {
-      if (active) setHostExposureStatus(`Bound ${status.localServerBindHost || 'unknown'}:${status.localServerPort ?? 'not listening'} · ${status.localServerExposure || 'unknown exposure'} · no device authentication`)
+      if (!active || !status.localServerBindHost) return
+      setHostExposed(status.localServerRunning && status.localServerExposure === 'trusted-network-unprotected')
+      if (status.localServerRunning) {
+        const host = status.localServerBindHost.includes(':') ? `[${status.localServerBindHost}]` : status.localServerBindHost
+        setHostExposureStatus(`Bound ${host}:${status.localServerPort}`)
+      } else {
+        setHostExposureStatus(`Not listening${status.localServerError ? `: ${status.localServerError}` : ''}`)
+      }
     }).catch(() => {})
+    const bindingApi = window.electronAPI?.networkBinding
+    if (bindingApi) {
+      void bindingApi.read().then(status => {
+        if (!active) return
+        setNetworkBindingStatus(status)
+        setNetworkBindingMode(status.saved.mode)
+        setCustomBindAddress(status.saved.mode === 'custom' ? status.saved.address : '')
+      }).catch(() => { if (active) setNetworkBindingError('Could not read the network binding.') })
+    }
     Promise.all([getLocalServerLanOrigin(), getLocalServerOrigin()])
       .then(([lanOrigin, fallbackOrigin]) => {
         if (!active) return
@@ -1414,6 +1437,30 @@ const Settings: React.FC = () => {
       })
     } finally {
       setBraveApiKeySaving(false)
+    }
+  }
+
+  const handleSaveNetworkBinding = async () => {
+    const bindingApi = window.electronAPI?.networkBinding
+    if (!bindingApi || !networkBindingStatus || networkBindingSaving || networkBindingStatus.environmentOverride) return
+    const binding: HostNetworkBinding = networkBindingMode === 'custom'
+      ? { mode: 'custom', address: customBindAddress.trim() }
+      : { mode: networkBindingMode }
+    setNetworkBindingSaving(true)
+    setNetworkBindingError('')
+    try {
+      const result = await bindingApi.save(binding)
+      if ('error' in result) {
+        setNetworkBindingError(result.error)
+        return
+      }
+      setNetworkBindingStatus(result.status)
+      if (result.status.saved.mode === 'custom') setCustomBindAddress(result.status.saved.address)
+      showStatus({ type: 'success', text: result.status.restartRequired ? 'Binding saved. Quit and reopen Graviton to apply it.' : 'Binding saved.' })
+    } catch {
+      setNetworkBindingError('Could not save the network binding.')
+    } finally {
+      setNetworkBindingSaving(false)
     }
   }
 
@@ -3957,9 +4004,64 @@ const Settings: React.FC = () => {
         {isNativeShell && (
           <SettingsSection
             title='Remote UI Access'
-            description='Keep Graviton running. Open the shared UI URL on another device on your trusted network. This grants host access without device authentication.'
-            features={['Remote server URL', 'Shared UI actions', 'QR code', 'Detected local origin']}
+            description='Choose which network interfaces Graviton listens on.'
+            features={['Network binding', 'Remote server URL', 'Shared UI actions', 'QR code']}
           >
+            <div className='mb-5 flex flex-col items-start gap-2'>
+              <label htmlFor='host-network-binding' className='text-base font-medium text-stone-900 dark:text-stone-100'>Network binding</label>
+              <select
+                id='host-network-binding'
+                value={networkBindingMode}
+                onChange={event => {
+                  const mode = event.target.value
+                  if (mode === 'loopback' || mode === 'all' || mode === 'custom') setNetworkBindingMode(mode)
+                  setNetworkBindingError('')
+                }}
+                disabled={!networkBindingStatus || networkBindingSaving || networkBindingStatus.environmentOverride}
+                className={`w-full max-w-md ${settingsInputClass}`}
+              >
+                <option value='loopback'>Local only (127.0.0.1)</option>
+                <option value='all'>All IPv4 interfaces (0.0.0.0)</option>
+                <option value='custom'>Custom LAN IPv4 address</option>
+              </select>
+              {networkBindingMode === 'custom' && (
+                <label className='flex w-full max-w-md flex-col gap-1 text-sm text-stone-700 dark:text-stone-200'>
+                  LAN IPv4 address
+                  <input
+                    value={customBindAddress}
+                    onChange={event => { setCustomBindAddress(event.target.value); setNetworkBindingError('') }}
+                    placeholder='192.168.1.20'
+                    maxLength={15}
+                    disabled={!networkBindingStatus || networkBindingSaving || networkBindingStatus.environmentOverride}
+                    className={settingsInputClass}
+                  />
+                </label>
+              )}
+              {hostExposureStatus && <p className='text-xs text-stone-500 dark:text-stone-400'>{hostExposureStatus}</p>}
+              {(hostExposed || networkBindingMode !== 'loopback') && (
+                <p className='text-xs text-stone-500 dark:text-stone-400'>Devices that can reach this address can access Graviton without device authentication. Use a trusted network only.</p>
+              )}
+              {networkBindingStatus?.environmentOverride && (
+                <p className='text-xs text-stone-500 dark:text-stone-400'>Launch environment variables override this setting. Remove the override and restart Graviton to change it here.</p>
+              )}
+              {networkBindingStatus?.startupWarning && <p className='text-xs text-stone-500 dark:text-stone-400'>{networkBindingStatus.startupWarning}</p>}
+              {networkBindingStatus?.restartRequired && <p className='text-xs text-stone-500 dark:text-stone-400'>
+                {networkBindingStatus.startupWarning
+                  ? 'Once the saved address is available, quit and reopen Graviton to retry it.'
+                  : 'Quit and reopen Graviton to apply the saved binding.'}
+              </p>}
+              {networkBindingError && <p role='alert' className='text-xs text-red-600 dark:text-red-400'>{networkBindingError}</p>}
+              <Button
+                variant='primary'
+                size='small'
+                onClick={handleSaveNetworkBinding}
+                disabled={!networkBindingStatus || networkBindingSaving || networkBindingStatus.environmentOverride ||
+                  (networkBindingMode === networkBindingStatus.saved.mode &&
+                    (networkBindingStatus.saved.mode !== 'custom' || customBindAddress.trim() === networkBindingStatus.saved.address))}
+              >
+                {networkBindingSaving ? 'Saving…' : 'Save binding'}
+              </Button>
+            </div>
             <div className='grid gap-5 lg:grid-cols-[minmax(0,1fr)_240px]'>
               <div className='flex flex-col gap-3'>
                 <div className='flex flex-col gap-2'>
@@ -3973,7 +4075,7 @@ const Settings: React.FC = () => {
                   />
                   <p className='text-xs text-stone-500 dark:text-stone-400'>
                     Leave blank to use detected local origin: {detectedLocalServerOrigin || 'resolving...'}
-                    {hostExposureStatus && <span className='block mt-1'>{hostExposureStatus}</span>}
+                    <span className='block mt-1'>This URL does not change which address Graviton listens on.</span>
                   </p>
                 </div>
 

@@ -6,11 +6,20 @@ import type { AgentRunPreview as Preview } from '../../features/chats/agentRunPr
 
 const capture = vi.hoisted(() => ({ byStreamId: {} as Record<string, Preview> }))
 vi.mock('../../hooks/redux', () => ({ useAppSelector: (selector: (state: any) => unknown) => selector({ agentRunPreviews: capture }) }))
-vi.mock('../ChatMessage/ChatMessage', () => ({ ChatMessage: () => null }))
+vi.mock('../ChatMessage/ChatMessage', () => ({ ChatMessage: ({ role, userSurfaceColor }: any) =>
+  <i data-role={role} data-surface={userSurfaceColor} /> }))
 vi.mock('../StreamingThinkingIndicator', () => ({ StreamingThinkingIndicator: ({ compacting }: any) => <span>{compacting ? 'Compacting' : 'Thinking'}</span> }))
 vi.mock('../StreamingThinkingIndicator/BackgroundTasksIndicator', () => ({ BackgroundTasksIndicator: ({ streamId, conversationId, tasks, idle }: any) =>
   <span>{`${conversationId}/${streamId}: ${idle ? 'Waiting' : 'Running'} ${tasks.length} tasks`}</span> }))
-vi.mock('../ThemeManager/themeConfig', () => ({ useCustomChatTheme: () => ({ enabled: false }), useHtmlDarkMode: () => false }))
+const themeState = vi.hoisted(() => ({ enabled: false, userBg: undefined as { light: string; dark: string } | undefined }))
+vi.mock('../ThemeManager/themeConfig', async importOriginal => {
+  const actual = await importOriginal<typeof import('../ThemeManager/themeConfig')>()
+  return { ...actual, useHtmlDarkMode: () => false, useCustomChatTheme: () => {
+    const theme = actual.createDefaultCustomChatTheme()
+    if (themeState.userBg) theme.colors.agentsGridUserMessageBg = themeState.userBg
+    return { enabled: themeState.enabled, theme }
+  } }
+})
 
 function addRun(id: string, overrides: Partial<Preview['stream']> = {}) {
   const stream = { ...createEmptyStreamState('branch'), active: true, conversationId: 'chat-1',
@@ -65,5 +74,32 @@ describe('preview background activity', () => {
     addRun('main', { ...background, backgroundTasks: [] })
     expect(render()).toContain('Thinking')
     expect(render()).not.toContain('tasks')
+  })
+})
+
+describe('preview user message surface', () => {
+  beforeEach(() => {
+    capture.byStreamId = {}
+    themeState.enabled = false
+    themeState.userBg = undefined
+  })
+  const withRequest = () => {
+    addRun('main')
+    capture.byStreamId.main.entries = [{ key: 'request', message: {
+      id: 'request', conversation_id: 'chat-1', role: 'user', content: 'Do it', content_plain_text: 'Do it',
+      children_ids: [], created_at: '2026-10-10T12:00:00Z', model_name: '', partial: false, pastedContext: [], artifacts: [],
+    } } as any]
+  }
+
+  it('tints user rows with the default pill colour when no custom theme is on', () => {
+    withRequest()
+    expect(render()).toContain('data-role="user" data-surface="color-mix(in srgb, currentColor 7%, transparent)"')
+  })
+
+  it('uses the custom theme key when a theme is enabled', () => {
+    themeState.enabled = true
+    themeState.userBg = { light: '#abcdef', dark: '#123456' }
+    withRequest()
+    expect(render()).toContain('data-surface="#abcdef"')
   })
 })

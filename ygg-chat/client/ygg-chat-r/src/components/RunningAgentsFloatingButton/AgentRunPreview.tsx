@@ -7,8 +7,10 @@ import { StreamingThinkingIndicator } from '../StreamingThinkingIndicator'
 import { BackgroundTasksIndicator } from '../StreamingThinkingIndicator/BackgroundTasksIndicator'
 import { buildAgentPreviewRows } from './agentPreviewContent'
 import { buildForkPreviewRows, createAgentPreviewRunsSelector } from './agentForkPreview'
-import { useCustomChatTheme, useHtmlDarkMode } from '../ThemeManager/themeConfig'
+import { createDefaultCustomChatTheme, getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from '../ThemeManager/themeConfig'
 import { ConversationLinkRootProvider } from '../MarkdownLink/markdownLinkRoot'
+
+const DEFAULT_THEME = createDefaultCustomChatTheme()
 
 export interface AgentPreviewScrollState { top: number; following: boolean }
 
@@ -33,6 +35,8 @@ export const AgentRunPreview = memo(function AgentRunPreview({ streamId, grouped
   const [following, setFollowing] = useState(followRef.current)
   const { theme, enabled } = useCustomChatTheme()
   const isDarkMode = useHtmlDarkMode()
+  // Chat's user surface blends into pill cards, so user rows take the pill's own key (default tint without a custom theme).
+  const userSurfaceColor = getThemeModeColor((enabled ? theme : DEFAULT_THEME).colors.agentsGridUserMessageBg, isDarkMode)
 
   useLayoutEffect(() => {
     if (scrollRef.current && scrollState && !scrollState.following) scrollRef.current.scrollTop = scrollState.top
@@ -67,7 +71,8 @@ export const AgentRunPreview = memo(function AgentRunPreview({ streamId, grouped
           <ChatMessage id={`agent-preview:${row.streamId}:${row.key}`} role={row.role}
             content={row.content} contentBlocks={row.blocks}
             width='w-full' showInlineActions={false} readOnly keepTextOutsideGroups
-            groupToolReasoningRuns={grouped} customTheme={theme} customThemeEnabled={enabled} isDarkMode={isDarkMode} />}
+            groupToolReasoningRuns={grouped} customTheme={theme} customThemeEnabled={enabled} isDarkMode={isDarkMode}
+            userSurfaceColor={userSurfaceColor} />}
           </div>
         ))}
         {showActivity && (

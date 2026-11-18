@@ -8,7 +8,9 @@ import { HtmlIframeRegistryProvider, useHtmlIframeRegistry } from './components/
 import { GlobalNotifications } from './components/GlobalNotifications/GlobalNotifications'
 import { HtmlToolsModal } from './components/HtmlToolsModal/HtmlToolsModal'
 import { RunningAgentsFloatingButton } from './components/RunningAgentsFloatingButton'
-import { ChatSelectionProvider } from './components/ChatSelection/ChatSelectionProvider'
+import { ChatSelectionProvider, useChatNavigate } from './components/ChatSelection/ChatSelectionProvider'
+import AgentsWindow from './containers/AgentsWindow'
+import { AGENTS_WINDOW_ROUTE, isAgentsWindow } from './platform/agentsWindow'
 import { LiquidGlassSVG } from './components/LiquidGlassSVG'
 import ProtectedRoute from './components/ProtectedRoute'
 import { TitleBar } from './components/TitleBar/TitleBar'
@@ -56,6 +58,7 @@ const getRouteAnimationKey = (pathname: string) => {
 }
 
 import { AgentsHeaderProvider } from './components/ChatPane/QuietComposerLayout'
+import { useSystemNotificationActivation } from './hooks/useSystemNotificationActivation'
 
 const HtmlToolsShell = ({ enabled }: { enabled: boolean }) => {
   const location = useLocation()
@@ -289,9 +292,41 @@ const GlobalCustomThemeCssVariables = () => {
   return null
 }
 
+/** Opens the run behind a clicked OS completion notification (Electron only). */
+const SystemNotificationActivation = () => {
+  useSystemNotificationActivation()
+  return null
+}
+
+/** Main window: shows the chat the detached agents window asked for ("Open chat" there). */
+const AgentsWindowNavigation = () => {
+  const navigate = useChatNavigate()
+  useEffect(() => window.electronAPI?.window?.onNavigateRequested?.(href => navigate(href)), [navigate])
+  return null
+}
+
 function App() {
   const currentUser = useAppSelector(selectCurrentUser)
   const resetKey = currentUser?.id ?? null
+
+  // The detached agents window shares this bundle but renders only the agents view.
+  if (isAgentsWindow()) {
+    return (
+      <Router>
+        <ChatSelectionProvider>
+          <GlobalCustomThemeCssVariables />
+          <VideoBackground />
+          <HtmlIframeRegistryProvider resetKey={resetKey}><AgentsHeaderProvider>
+            <Routes>
+              <Route path={`${AGENTS_WINDOW_ROUTE}/*`} element={<AgentsWindow />} />
+              <Route path='*' element={<Navigate to={AGENTS_WINDOW_ROUTE} replace />} />
+            </Routes>
+          </AgentsHeaderProvider></HtmlIframeRegistryProvider>
+          <GlobalNotifications />
+        </ChatSelectionProvider>
+      </Router>
+    )
+  }
 
   const appShell = (
     <>
@@ -316,6 +351,8 @@ function App() {
       </div>
       <HtmlToolsShell enabled={isHostClient} />
       <GlobalNotifications />
+      <SystemNotificationActivation />
+      <AgentsWindowNavigation />
     </>
   )
 

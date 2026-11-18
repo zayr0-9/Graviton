@@ -1037,6 +1037,11 @@ export const ThemeManager: React.FC = () => {
               value={theme.colors.agentsGridIdleCardBg}
               onChange={(mode, value) => handleChatSurfaceChange('agentsGridIdleCardBg', mode, value)}
             />
+            <PairEditor
+              label='User message background'
+              value={theme.colors.agentsGridUserMessageBg}
+              onChange={(mode, value) => handleChatSurfaceChange('agentsGridUserMessageBg', mode, value)}
+            />
           </div>
 
           <div className='space-y-3'>

@@ -28,6 +28,16 @@ describe('message queue routes', () => {
     expect((await post(base, { ...body, fullAccessNotificationId: 123 })).status).toBe(400)
   })
 
+  it('forwards a chosen follow-up mode and rejects unknown modes', async () => {
+    const submitQueuedMessage = vi.fn((..._args: any[]) => ({ snapshot: { streamId: 's' } }))
+    const { base } = setup({ submitQueuedMessage })
+    expect((await post(base, { requestId: 'q', content: 'go', operationMode: 'execute' })).status).toBe(200)
+    expect(submitQueuedMessage).toHaveBeenLastCalledWith('c', 's', expect.objectContaining({ operationMode: 'execute' }))
+    expect((await post(base, { requestId: 'r', content: 'go' })).status).toBe(200)
+    expect(submitQueuedMessage.mock.calls[1][2]).not.toHaveProperty('operationMode')
+    expect((await post(base, { requestId: 'x', content: 'go', operationMode: 'agent' })).status).toBe(400)
+  })
+
   it('queues and cancels without starting another run; rejects invalid payloads and cross-conversation ownership', async () => {
     const runMessage = vi.fn()
     const snapshot = { streamId: 's', conversationId: 'c', lineageId: 'l', revision: 1, items: [] }

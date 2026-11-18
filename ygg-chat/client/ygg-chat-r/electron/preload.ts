@@ -54,6 +54,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
     closeFloating: () => ipcRenderer.invoke('window:closeFloating'),
     toggleFloating: () => ipcRenderer.invoke('window:toggleFloating'),
     isFloatingOpen: () => ipcRenderer.invoke('window:isFloatingOpen'),
+    // Detached agents window
+    openAgents: () => ipcRenderer.invoke('window:openAgents'),
+    openInMain: (href: string) => ipcRenderer.invoke('window:openInMain', href),
+    // Main window: routes the agents window asked to show. Takes any pending route now
+    // (it may have been requested while this window was loading) and on each ping.
+    onNavigateRequested: (callback: (href: string) => void) => {
+      const take = () => { void ipcRenderer.invoke('window:takeNavigation').then(href => { if (typeof href === 'string') callback(href) }) }
+      ipcRenderer.on('window:navigate', take)
+      take()
+      return () => ipcRenderer.removeListener('window:navigate', take)
+    },
     // Compact mode controls
     toggleCompact: () => ipcRenderer.invoke('window:toggleCompact'),
     isCompact: () => ipcRenderer.invoke('window:isCompact'),
@@ -64,12 +75,26 @@ contextBridge.exposeInMainWorld('electronAPI', {
       return () => ipcRenderer.removeListener('window:state-changed', listener)
     },
   },
+  notifications: {
+    show: (payload: unknown, options?: { onlyWhenUnfocused?: boolean; force?: boolean }) =>
+      ipcRenderer.invoke('notifications:show', payload, options),
+    takeActivation: () => ipcRenderer.invoke('notifications:takeActivation'),
+    onActivated: (callback: () => void) => {
+      const listener = () => callback()
+      ipcRenderer.on('notifications:activated', listener)
+      return () => ipcRenderer.removeListener('notifications:activated', listener)
+    },
+  },
   theme: {
     update: (themePreference: boolean | 'light' | 'dark' | 'system') =>
       ipcRenderer.invoke('theme:update', themePreference),
   },
   sync: {
     status: () => ipcRenderer.invoke('sync:status'),
+  },
+  networkBinding: {
+    read: () => ipcRenderer.invoke('network-binding:read'),
+    save: (binding: unknown) => ipcRenderer.invoke('network-binding:save', binding),
   },
   shell: {
     openPath: (path: string) => ipcRenderer.invoke('shell:openPath', path),
