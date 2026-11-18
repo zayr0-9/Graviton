@@ -64,6 +64,15 @@ interface ElectronAPI {
     openInMain?: (href: string) => Promise<{ success: boolean; error?: string }>
     /** Main window: routes the agents window asked to show. */
     onNavigateRequested?: (callback: (href: string) => void) => () => void
+    /** Main window: hand the Task Manager entries to the detached apps window (opening it). */
+    openApps?: (handoff: unknown) => Promise<{ success: boolean; error?: string }>
+    isAppsOpen?: () => Promise<boolean>
+    onAppsWindowChanged?: (callback: (open: boolean) => void) => () => void
+    /** Main window: the entry list the closed apps window handed back, once. */
+    takeAppsReturn?: () => Promise<unknown>
+    /** Apps window: receives queued hand-offs (now and on each ping). */
+    onAppsHandoff?: (callback: (handoffs: unknown[]) => void) => () => void
+    reportApps?: (snapshot: unknown) => void
     toggleCompact: () => Promise<{ success: boolean; error?: string; compact: boolean }>
     isCompact: () => Promise<boolean>
     getState: () => Promise<{ isMaximized: boolean; isFullScreen: boolean }>

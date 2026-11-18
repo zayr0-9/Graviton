@@ -24,10 +24,10 @@ describe('credential Settings native boundary', () => {
 
   it('restricts all credential IPC operations to the trusted app frame', () => {
     for (const channel of ['consolidate', 'braveSearch:get', 'braveSearch:has', 'braveSearch:set', 'braveSearch:delete']) {
-      expect(main).toContain(`authHandle('secrets:${channel}'`)
+      expect(main).toContain(`mainWindowHandle('secrets:${channel}'`)
       expect(main).not.toContain(`ipcMain.handle('secrets:${channel}'`)
     }
-    const handler = main.slice(main.indexOf("authHandle('secrets:consolidate'"), main.indexOf("authHandle('secrets:braveSearch:get'"))
+    const handler = main.slice(main.indexOf("mainWindowHandle('secrets:consolidate'"), main.indexOf("mainWindowHandle('secrets:braveSearch:get'"))
     expect(handler).not.toMatch(/[,{]\s*(?:password|secrets|vault)\s*:/)
     expect(handler).toContain('return { success: true, ...result }')
   })

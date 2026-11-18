@@ -14,6 +14,7 @@ export type CodexMessage = {
   role: 'system' | 'developer' | 'user' | 'assistant' | 'tool'
   content?: string
   contentParts?: any[]
+  phase?: 'commentary' | 'partial_answer' | 'final_answer'
   toolCallId?: string
   name?: string
   toolCalls?: Array<{

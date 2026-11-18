@@ -553,6 +553,39 @@ describe('OpenAiChatgptProvider', () => {
     expect(JSON.stringify(result.raw?.responses_output_items)).not.toContain(fullReasoning)
   })
 
+  it.each([
+    { modelName: 'gpt-6.2-astra', includeCompletedOutput: false, fallback: false },
+    { modelName: 'gpt-5.5', includeCompletedOutput: true, fallback: true },
+  ])('replays interleaved commentary exactly once on the next $modelName request', async ({ modelName, includeCompletedOutput, fallback }) => {
+    const comment = (text: string) => ({ type: 'message', role: 'assistant', phase: 'commentary', content: [{ type: 'output_text', text }] })
+    const call = (id: string) => ({ type: 'function_call', call_id: id, name: 'read_file', arguments: '{}' })
+    const ordered = [comment('First update.'), call('a'), comment('Second update.'), call('b')]
+    const items = ordered.map((item, i) => ({ ...item, id: `item-${i}` }))
+    const events = [
+      ...items.map((item, output_index) => ({ type: 'response.output_item.added', output_index, item })),
+      ...items.map((item, output_index) => ({ type: 'response.output_item.done', output_index, item: { ...item, phase: undefined } })).reverse(),
+      { type: 'response.completed', response: includeCompletedOutput ? { output: items } : { id: 'completed' } },
+    ]
+    const reply = (frames: any[]) => new Response(createSseStream(frames), { headers: { 'content-type': 'text/event-stream' } })
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(reply(events))
+      .mockResolvedValueOnce(reply([{ type: 'response.completed', response: { output: [] } }]))
+    const provider = new OpenAiChatgptProvider()
+    const user = { role: 'user', content: 'Read both.' }
+    const first = await provider.generate({ modelName, history: [user], turnContext: { allowCommentaryFallbackText: fallback } })
+    expect(first.content).toBe(fallback ? 'Second update.' : '')
+    const results = ['a', 'b'].map(id => ({ type: 'tool_result', tool_use_id: id, content: `result-${id}` }))
+    await provider.generate({ modelName, history: [user, {
+      role: 'assistant', content: first.content, content_blocks: JSON.stringify([...first.contentBlocks!, ...results]),
+    }, ...results.map(result => ({ role: 'tool', tool_call_id: result.tool_use_id, content: result.content }))] })
+    const body = JSON.parse(String(fetchMock.mock.calls[1][1]?.body))
+    const previousInput = JSON.parse(String(fetchMock.mock.calls[0][1]?.body)).input
+    expect(body.input.slice(0, previousInput.length)).toEqual(previousInput)
+    expect(body.input.slice(previousInput.length)).toEqual([
+      ...ordered, ...results.map(result => ({ type: 'function_call_output', call_id: result.tool_use_id, output: result.content })),
+    ])
+  })
+
   it('uses full replay instead of previous_response_id for Codex tool continuations', async () => {
     process.env.OPENAI_CHATGPT_ACCESS_TOKEN = 'header.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjdC0zIn19.sig'
 

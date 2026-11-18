@@ -46,6 +46,7 @@ import { fetchMcpTools, selectCurrentConversationId } from '../../features/chats
 import { convContextSet, systemPromptSet, updateContext, updateSystemPrompt } from '../../features/conversations'
 import type { Conversation } from '../../features/conversations/conversationTypes'
 import { selectSelectedProject } from '../../features/projects'
+import { saveChatDisplayName, useChatDisplayName } from '../../helpers/chatDisplayName'
 import { useAppDispatch, useAppSelector } from '../../hooks/redux'
 import { useUserSystemPrompts } from '../../hooks/useUserSystemPrompts'
 import {
@@ -259,6 +260,19 @@ const extractTextFromDocx = async (file: File): Promise<string> => {
   const arrayBuffer = await file.arrayBuffer()
   const { value: text } = await mammoth.extractRawText({ arrayBuffer })
   return text.trim()
+}
+
+function DisplayNameSettings() {
+  const name = useChatDisplayName()
+  return (
+    <section className='space-y-2'>
+      <label htmlFor='chat-display-name' className='text-[16px] font-medium text-stone-700 dark:text-stone-200'>
+        Display name
+      </label>
+      <input id='chat-display-name' type='text' className={inputSurfaceClass} placeholder='User'
+        value={name} maxLength={64} onChange={event => saveChatDisplayName(event.target.value)} />
+    </section>
+  )
 }
 
 export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => {
@@ -1519,6 +1533,8 @@ ${block}`
               className='hidden'
               aria-hidden='true'
             />
+
+            <DisplayNameSettings />
 
             {/* System Prompt and Context Collapsible Section */}
             <div className='space-y-2'>

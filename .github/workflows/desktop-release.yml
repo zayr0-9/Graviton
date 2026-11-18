@@ -16,7 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest, windows-2022]
         node-version: [22.x]
     permissions:
       contents: read
@@ -54,7 +54,7 @@ jobs:
                 ROLLUP_PKG="@rollup/rollup-darwin-x64"
               fi
               ;;
-            windows-latest)
+            windows-2022)
               ROLLUP_PKG="@rollup/rollup-win32-x64-msvc"
               ;;
             *)
@@ -141,7 +141,7 @@ jobs:
           case "${{ matrix.os }}" in
             ubuntu-latest) npm run package:electron -- --linux --publish never ;;
             macos-latest) npm run package:electron -- --mac --publish never ;;
-            windows-latest) npm run package:electron -- --win --publish never ;;
+            windows-2022) npm run package:electron -- --win --publish never ;;
           esac
         shell: bash
 

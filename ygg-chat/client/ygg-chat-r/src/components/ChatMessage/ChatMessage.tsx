@@ -48,6 +48,7 @@ import {
   getThemeModeColor,
   resolveRoleThemeKey,
 } from '../ThemeManager/themeConfig'
+import { useChatDisplayName } from '../../helpers/chatDisplayName'
 import { ContextInjectionCard, type ContextInjectionCardEntry } from './ContextInjectionCard'
 import { HookActivityCard } from './HookActivityCard'
 import { AgentSteps } from './AgentSteps'
@@ -411,6 +412,10 @@ const ROLE_LABEL: Record<string, string> = {
   assistant: 'Assistant',
   system: 'System',
   ex_agent: 'Claude Code',
+}
+
+function UserDisplayName() {
+  return <>{useChatDisplayName().trim() || ROLE_LABEL.user}</>
 }
 
 const ROLE_LABEL_CLASS: Record<string, string> = {
@@ -1710,7 +1715,7 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
                 className={`${TEXT_MICRO_CLASS} font-semibold ${roleLabelClass}`}
                 style={roleLabelStyle}
               >
-                {roleLabel}
+                {isUserRow ? <UserDisplayName /> : roleLabel}
               </span>
             </div>
           )}
