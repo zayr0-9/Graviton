@@ -63,7 +63,7 @@ export const AgentRunPreview = memo(function AgentRunPreview({ streamId, grouped
           if (scrollState) { scrollState.top = element.scrollTop; scrollState.following = followRef.current }
         }}>
         {rows.length === 0 ? !showActivity && <p className='p-3 text-sm text-neutral-500'>Waiting for run output…</p> : rows.map(row => (
-          <div key={row.key} className={row.role === 'user' ? 'min-w-0 [&_.chat-markdown]:[overflow-wrap:anywhere]' : 'min-w-0'}>
+          <div key={row.key} className={row.role === 'user' && !row.watcherCompletion ? 'ml-auto w-fit min-w-0 max-w-[90%] [&_.chat-markdown]:[overflow-wrap:anywhere]' : 'min-w-0'}>
           {row.summarised ? <SummarisedMessage id={`agent-preview:${row.streamId}:${row.key}`} className='w-full'
             customTheme={theme} customThemeEnabled={enabled} isDarkMode={isDarkMode} /> :
           row.watcherCompletion ? <WatcherCompletionNotice id={`agent-preview:${row.streamId}:${row.key}`} className='w-full'

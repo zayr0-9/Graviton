@@ -80,6 +80,14 @@ describe('Explain anchor', () => {
     expect(resolveExplainAnchorId('u1', rows, path)).toBe('a2')
   })
 
+  it('does not use a post-summary Claude checkpoint for a selection before the summary', () => {
+    const summary = { id: 'summary', role: 'assistant', meta: {
+      kind: 'compaction_summary', state: 'committed', claude: { sessionId: 's', checkpoint: false },
+    } }
+    expect(resolveExplainAnchorId('a1', [...rows, summary], ['u1', 'a1', 'summary', 'a2'])).toBeNull()
+    expect(resolveExplainAnchorId('a1', [...rows, summary], ['u1', 'a1', 'a2', 'summary'])).toBe('a2')
+  })
+
   it('refuses a turn without a completed checkpoint or off the selected path', () => {
     expect(resolveExplainAnchorId('a3', rows, path)).toBeNull()
     expect(resolveExplainAnchorId('a1', rows, ['u1'])).toBeNull()

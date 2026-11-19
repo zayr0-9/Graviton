@@ -1,4 +1,5 @@
 import { isClaudeCheckpoint, isClaudeTranscriptMessage } from '../../../../../shared/claudeProvider'
+import { isCommittedCompaction } from '../../../../../shared/compaction'
 
 export type LiveExplainSurface = 'tail' | 'virtual'
 
@@ -28,7 +29,8 @@ export function resolveExplainAnchorId(
   if (start < 0) return null
   for (const pathId of path.slice(start + 1)) {
     const row = byId.get(String(pathId))
-    if (!row || row.role === 'user' || !isClaudeTranscriptMessage(row)) return null
+    // A checkpoint after compaction no longer has the selected row's original context.
+    if (!row || row.role === 'user' || isCommittedCompaction(row) || !isClaudeTranscriptMessage(row)) return null
     if (isClaudeCheckpoint(row)) return row.id
   }
   return null

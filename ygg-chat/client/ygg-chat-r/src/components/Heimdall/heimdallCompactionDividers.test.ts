@@ -66,11 +66,15 @@ describe('hidden compaction boundaries', () => {
       .toEqual([{ parentId: 'before', childIds: ['after'] }])
   })
 
-  it('keeps unrelated siblings unmarked and fans out only below the hidden summary', () => {
-    const { roots, boundaries } = filter(node('before', node('ordinary'), node('summary', node('a'), node('b'))), { summary })
-    expect(roots[0].children.map(child => child.id)).toEqual(['ordinary', 'a', 'b'])
+  it('marks branches through a hidden summary but not an explicit fork before it', () => {
+    const tree = node('before', node('new-context', node('uncompacted')),
+      node('summary', node('restored-context', node('a')), node('b')))
+    const context = { role: 'user', meta: { kind: 'context_injection' } }
+    const { roots, boundaries } = filter(tree, { summary, 'new-context': context, 'restored-context': context })
+    expect(roots[0].children.map(child => child.id)).toEqual(['uncompacted', 'a', 'b'])
     expect(boundaries).toEqual([{ parentId: 'before', childIds: ['a', 'b'] }])
-    expect(geometry(roots[0], boundaries).dividers).toHaveLength(2)
+    const { dividers, positions } = geometry(roots[0], boundaries)
+    expect(dividers.map(divider => (divider.x1 + divider.x2) / 2)).toEqual([positions.a.x, positions.b.x])
   })
 
   it('preserves a leading boundary without a visible parent', () => {

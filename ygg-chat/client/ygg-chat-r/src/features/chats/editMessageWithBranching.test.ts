@@ -334,6 +334,46 @@ it('forwards explicit Explain child intent through sendMessage without reparenti
   }), expect.anything())
 })
 
+it.each([true, false])('rebases a stale parent only for ordinary continuation (isBranch=%s)', async isBranch => {
+  const before = { ...message('before'), role: 'assistant' as const }
+  const instruction = { ...message('instruction', before.id), meta: { kind: 'compaction_instruction' } }
+  const summary = { ...message('summary', instruction.id), role: 'assistant' as const,
+    meta: { kind: 'compaction_summary', state: 'committed' } }
+  const restored = { ...message('restored', summary.id), meta: { kind: 'context_injection' } }
+  const h = setup([before, instruction, summary, restored], [])
+  const result = await h.dispatch(sendMessage({ conversationId: 'c1', input: { content: 'continue' }, parent: before.id,
+    isBranch, repeatNum: 1, think: false, streamId: 'summary-fork' }))
+
+  expect(result.meta.requestStatus).toBe('fulfilled')
+  const { operation, request } = vi.mocked(runServerChatLoop).mock.calls[0][0]
+  expect(operation).toBe('send')
+  expect(request.parentId).toBe(isBranch ? before.id : summary.id)
+  if (isBranch) expect(request.isBranch).toBe(true)
+  else expect(request).not.toHaveProperty('isBranch')
+})
+
+it('uses the pre-summary provider for Explain selection after a Claude handoff', async () => {
+  const source = { ...message('source'), meta: { modelSelection: { provider: 'OpenAI (ChatGPT)', model: 'gpt-test' } } }
+  const selected = { ...message('selected', source.id), role: 'assistant' as const }
+  const summary = { ...message('summary', selected.id), role: 'assistant' as const,
+    meta: { kind: 'compaction_summary', state: 'committed' } }
+  const handoff = { ...message('handoff', summary.id), meta: { executionHandoff: { summaryMessageId: summary.id },
+    modelSelection: { provider: 'Claude Code', model: 'claude-sonnet-5-5' } } }
+  const h = setup([source, selected, summary, handoff], [])
+  h.state.chat = { ...h.state.chat,
+    conversation: { ...h.state.chat.conversation, currentLineageId: 'post-summary' },
+    providerState: { ...h.state.chat.providerState, currentProvider: 'Claude Code',
+      providers: [{ name: 'Claude Code' }, { name: 'OpenAI (ChatGPT)' }] as any },
+    branchModelDrafts: { [branchModelKey('c1', 'lineage:post-summary')]: { provider: 'Claude Code', model: 'claude-sonnet-5-5' } },
+  }
+  await h.dispatch(sendMessage({ conversationId: 'c1', input: { content: 'Explain selected text' }, parent: selected.id,
+    isBranch: true, repeatNum: 1, think: false, streamId: 'explain-before-handoff' }))
+
+  expect(vi.mocked(runServerChatLoop).mock.calls[0][0].request).toMatchObject({
+    parentId: selected.id, lineageId: 'post-summary', isBranch: true, provider: 'openai(chatgpt)', modelName: 'gpt-test',
+  })
+})
+
 describe('first-prompt provider edit isolation', () => {
   it.each([
     ['claudecode', 'claude-sonnet-5-5', 'OpenRouter', 'other-model', 'openrouter'],

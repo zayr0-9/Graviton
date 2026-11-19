@@ -1475,6 +1475,37 @@ describeIfSqlite('ChatOrchestrator continuation semantics', () => {
     expect(providerRouter.calls).toHaveLength(0)
   })
 
+  it('forks Explain selection before a summary and replays only through the selected message', async () => {
+    const modelName = 'gpt-5.1-codex-mini'
+    const row = (parentId: string | null, role: 'user' | 'assistant', content: string, meta?: Record<string, unknown>) =>
+      messageRepo.createMessage({ conversationId: 'c1', parentId, role, content, modelName, meta })
+    const root = row(null, 'user', 'Original prompt')
+    const selected = row(root.id, 'assistant', 'Selected passage')
+    const later = row(selected.id, 'assistant', 'Later pre-summary response')
+    const instruction = row(later.id, 'user', 'Summarise', { kind: 'compaction_instruction' })
+    const summary = row(instruction.id, 'assistant', 'Compacted context', { kind: 'compaction_summary', state: 'committed' })
+    const head = row(summary.id, 'user', 'Post-summary continuation')
+    const lineages = new LineageRepo({ db, statements })
+    const source = lineages.reconcile({ conversationId: 'c1', messageId: head.id })!
+    const events: any[] = []
+    const prompt = 'Explain this.\n\nSelected text:\n```\nSelected passage\n```'
+
+    await orchestrator.runMessage({ operation: 'send', conversationId: 'c1', provider: 'openaichatgpt', modelName,
+      isBranch: true, parentId: selected.id, lineageId: source.id, content: prompt }, event => events.push(event))
+
+    const request = events.find(event => event.type === 'user_message_persisted').message
+    expect(request).toMatchObject({ parent_id: selected.id, content: prompt })
+    expect(request.lineage_id).not.toBe(source.id)
+    expect(lineages.get(request.lineage_id)?.forked_from_message_id).toBe(selected.id)
+    expect(lineages.get(source.id)?.head_message_id).toBe(head.id)
+    const ids = providerRouter.calls[0].history.map((message: any) => message.id)
+    expect(ids.slice(0, 3)).toEqual([root.id, selected.id, request.id])
+    expect(ids).not.toContain(later.id)
+    expect(ids).not.toContain(instruction.id)
+    expect(ids).not.toContain(summary.id)
+    expect(ids).not.toContain(head.id)
+  })
+
   it('replays only the latest compaction summary and subsequent branch messages', async () => {
     const rootUser = messageRepo.createMessage({
       conversationId: 'c1',

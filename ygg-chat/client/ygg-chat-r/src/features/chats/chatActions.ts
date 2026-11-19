@@ -1007,17 +1007,25 @@ export const sendMessage = createAsyncThunk<
         currentMessages
       )
       const latestCompactionMessage = currentPathMessages.find(isAutoCompactionSummaryMessage) ?? null
-      if (latestCompactionMessage) {
+      // Only ordinary continuation may fall forward to the summary. An explicit child
+      // (such as Branch before summary) must keep its chosen historical parent.
+      if (latestCompactionMessage && !(isBranch && parent != null)) {
         const allowedParentIds = new Set(currentPathMessages.map(msg => String(msg.id)))
         const parentIsInPostCompactionPath = parent != null && allowedParentIds.has(String(parent))
         if (!parentIsInPostCompactionPath) {
           parent = latestCompactionMessage.id
         }
       }
-      // Read selected model from React Query cache
-      // Use original provider case for cache lookup (React Query keys are case-sensitive)
-      const branchSelection = resolveBranchModelSelection(modelSelectionState, providedBranchPath ?? modelSelectionState.conversation.currentPath, modelSelectionState.conversation.currentConversationId, providedLineageId === undefined ? modelSelectionState.conversation.currentLineageId : providedLineageId)
-      const fastMode = resolveBranchFastMode(modelSelectionState, providedBranchPath ?? modelSelectionState.conversation.currentPath, conversationId, providedLineageId === undefined ? modelSelectionState.conversation.currentLineageId : providedLineageId)
+      // A provider handoff after a summary does not apply to a fork cut before it.
+      const selectedPath = providedBranchPath ?? modelSelectionState.conversation.currentPath
+      const explicitParentIndex = isBranch && parent != null ? selectedPath.findIndex(id => String(id) === String(parent)) : -1
+      const summaryIndex = latestCompactionMessage ? selectedPath.findIndex(id => String(id) === String(latestCompactionMessage.id)) : -1
+      const forksBeforeSummary = explicitParentIndex >= 0 && summaryIndex > explicitParentIndex
+      const settingsPath = forksBeforeSummary ? selectedPath.slice(0, explicitParentIndex + 1) : selectedPath
+      const settingsLineageId = forksBeforeSummary ? null : (providedLineageId === undefined ? modelSelectionState.conversation.currentLineageId : providedLineageId)
+      // Use original provider case for cache lookup (React Query keys are case-sensitive).
+      const branchSelection = resolveBranchModelSelection(modelSelectionState, settingsPath, modelSelectionState.conversation.currentConversationId, settingsLineageId)
+      const fastMode = resolveBranchFastMode(modelSelectionState, settingsPath, conversationId, settingsLineageId)
       const provider = branchSelection?.provider ?? modelSelectionState.providerState.currentProvider
       const modelsData = extra.queryClient?.getQueryData<{
         models: Model[]
@@ -1066,7 +1074,6 @@ export const sendMessage = createAsyncThunk<
         const chatgptServerAuth = null as { accessToken?: string; accountId?: string } | null
         // Crossing the Claude boundary at a summary tip imports only the committed summary
         // into a fresh execution, never the old provider's raw history or launch-context tail.
-        const selectedPath = providedBranchPath ?? modelSelectionState.conversation.currentPath
         const summaryHandoff = !manualCompaction && !isBranch
           ? resolveComposerSummaryHandoff(modelSelectionState, provider, selectedPath) : null
         const operation = summaryHandoff ? 'branch' : 'send'
@@ -1102,7 +1109,7 @@ export const sendMessage = createAsyncThunk<
           claudeAutoMode: isBranch ? resolveAnchoredClaudeAutoMode(modelSelectionState, parent, conversationId)
             : resolveBranchClaudeAutoMode(modelSelectionState, providedBranchPath ?? modelSelectionState.conversation.currentPath, conversationId),
           claudeUltracode: modelSelectionState.claudeUltracode,
-          claudePlanMode: resolveBranchPlanMode(modelSelectionState, providedBranchPath ?? modelSelectionState.conversation.currentPath, conversationId),
+          claudePlanMode: resolveBranchPlanMode(modelSelectionState, settingsPath, conversationId),
           hooksEnabled: isElectronMode,
           localApiBase: getCachedLocalApiBase(),
           contextDirectories: loadContextDirectorySettings(),

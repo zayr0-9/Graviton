@@ -290,7 +290,11 @@ export function resolveOpenAIContinuationCompaction(params: {
   const projectedTokens = finiteNonNegative(params.projectedTokens)
   const contextLength = finiteNonNegative(params.contextLength)
   const thresholdPercent = normalizeCompactionThreshold(params.thresholdPercent)
-  const effectiveTokens = Math.max(reportedTokens, projectedTokens)
+  // For OpenAI, use the same provider count as the context meter when it is available.
+  // A serialized replay estimate can be much larger than the actual context.
+  const effectiveTokens = isOpenAIProvider(params.providerName)
+    ? (params.reportedUsage?.provider === 'openai' && reportedTokens > 0 ? reportedTokens : projectedTokens)
+    : Math.max(reportedTokens, projectedTokens)
 
   return {
     shouldCompact:

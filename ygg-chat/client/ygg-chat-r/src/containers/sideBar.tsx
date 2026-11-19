@@ -11,8 +11,10 @@ import {
   Clock3,
   Monitor,
   Moon,
+  MoreHorizontal,
   PanelLeftClose,
   PanelLeftOpen,
+  Plus,
   Settings,
   Sun,
   X,
@@ -35,11 +37,12 @@ import {
 import { deleteProject } from '../features/projects'
 import { type ConversationTab } from '../helpers/sidebarPreferences'
 import { getSearchResultHref } from '../helpers/searchResultNavigation'
+import { readThemePreference, setThemePreference } from '../helpers/themePreference'
 import EditProject from './EditProject'
 // import { searchActions, selectSearchLoading, selectSearchQuery, selectSearchResults } from '../features/search'
 import { useAppDispatch } from '../hooks/redux'
 import { useHoverIntent } from '../hooks/useHoverIntent'
-import { useIsMobile } from '../hooks/useMediaQuery'
+import { useIsMobile, useIsTouchPrimary } from '../hooks/useMediaQuery'
 import { isNativeShell } from '../platform/clientCapabilities'
 import { useAuth } from '../hooks/useAuth'
 import { useIntersectionObserver } from '../hooks/useIntersectionObserver'
@@ -348,6 +351,7 @@ interface ProjectAccordionItemProps {
   project: SidebarProject
   isExpanded: boolean
   isCollapsed: boolean
+  isTouchPrimary: boolean
   activeConversationId: ConversationId | null
   favoriteConversationIds: Set<ConversationId>
   hoveredPreviewConversationId?: ConversationId | null
@@ -420,9 +424,11 @@ const ProjectConversationsPanel: React.FC<ProjectConversationsPanelProps> = memo
       return sortSidebarConversations(projectConversations, conversationSortOptions)
     }, [conversationSortOptions, projectConversations])
 
+    const [scrollContainer, setScrollContainer] = useState<HTMLDivElement | null>(null)
     const { ref: loadMoreRef, isIntersecting } = useIntersectionObserver<HTMLDivElement>({
-      rootMargin: '120px',
-      enabled: shouldLoadConversations && Boolean(hasNextPage) && !isFetchingNextPage,
+      root: scrollContainer,
+      rootMargin: '0px 0px 120px 0px',
+      enabled: shouldLoadConversations && scrollContainer !== null && Boolean(hasNextPage) && !isFetchingNextPage,
     })
 
     useEffect(() => {
@@ -449,7 +455,7 @@ const ProjectConversationsPanel: React.FC<ProjectConversationsPanelProps> = memo
     }
 
     return (
-      <div className='pb-2 pr-2 pl-8'>
+      <div ref={setScrollContainer} className='max-h-[min(20rem,40dvh)] overflow-y-auto thin-scrollbar pb-2 pr-2 pl-8'>
         {projectConversationsLoading && (
           <div className='text-xs text-neutral-500 dark:text-neutral-400 py-1'>Loading chats...</div>
         )}
@@ -582,6 +588,7 @@ const ProjectAccordionItem: React.FC<ProjectAccordionItemProps> = memo(
     project,
     isExpanded,
     isCollapsed,
+    isTouchPrimary,
     activeConversationId,
     favoriteConversationIds,
     hoveredPreviewConversationId = null,
@@ -603,6 +610,9 @@ const ProjectAccordionItem: React.FC<ProjectAccordionItemProps> = memo(
       project.latest_conversation_updated_at || project.updated_at || project.created_at || null
     const projectLastActivityDateLabel = formatDate(projectLastActivityDate)
     const [isConversationPanelReady, setIsConversationPanelReady] = useState(() => isExpanded)
+    const [showTouchActions, setShowTouchActions] = useState(false)
+    const touchActionsId = React.useId()
+    const touchActionsButtonRef = useRef<HTMLButtonElement>(null)
 
     useEffect(() => {
       if (!isExpanded) {
@@ -650,11 +660,11 @@ const ProjectAccordionItem: React.FC<ProjectAccordionItemProps> = memo(
           </div>
         ) : (
           <div className='relative overflow-visible rounded-lg transition-colors duration-150'>
-            <div className='group/projectHeader relative min-w-0 rounded-lg px-2 py-2 hover:bg-stone-100/30 dark:hover:bg-yBlack-900/10'>
+            <div className={`group/projectHeader relative min-w-0 rounded-lg px-2 py-2 hover:bg-stone-100/30 dark:hover:bg-yBlack-900/10 ${isTouchPrimary ? 'flex items-center gap-1' : ''}`}>
               <button
                 type='button'
                 onClick={() => onToggle(project.id)}
-                className='flex w-full min-w-0 items-start gap-2 text-left'
+                className='flex w-full min-w-0 flex-1 items-start gap-2 text-left'
                 aria-expanded={isExpanded}
               >
                 <motion.i
@@ -676,42 +686,106 @@ const ProjectAccordionItem: React.FC<ProjectAccordionItemProps> = memo(
                   )}
                 </div>
               </button>
-              <div className={`${SIDEBAR_ROW_ACTIONS_OVERLAY_BASE_CLASS} group-hover/projectHeader:pointer-events-auto group-hover/projectHeader:opacity-100`}>
-                <Button
-                  variant='outline2'
-                  size='smaller'
-                  rounded='full'
-                  className={SIDEBAR_ROW_ACTION_BUTTON_CLASS}
-                  onClick={() => onCreateConversation(project)}
-                  title='New chat in project'
-                  aria-label={`Create new chat in ${project.name}`}
-                >
-                  <i className='bx bx-plus text-lg' aria-hidden='true'></i>
-                </Button>
-                <Button
-                  variant='outline2'
-                  size='smaller'
-                  rounded='full'
-                  className={SIDEBAR_ROW_ACTION_BUTTON_CLASS}
-                  onClick={() => onEditProject(project)}
-                  title='Edit project'
-                  aria-label={`Edit project ${project.name}`}
-                >
-                  <i className='bx bx-edit text-lg' aria-hidden='true'></i>
-                </Button>
-                <Button
-                  variant='outline2'
-                  size='smaller'
-                  rounded='full'
-                  className={`${SIDEBAR_ROW_ACTION_BUTTON_CLASS} text-red-500 dark:text-red-400`}
-                  onClick={() => onDeleteProject(project)}
-                  title='Delete project'
-                  aria-label={`Delete project ${project.name}`}
-                >
-                  <i className='bx bx-trash text-lg' aria-hidden='true'></i>
-                </Button>
-              </div>
+              {isTouchPrimary ? (
+                <div className='flex shrink-0 items-center gap-1'>
+                  <button
+                    type='button'
+                    className='flex size-11 items-center justify-center rounded-full hover:bg-black/5 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500 dark:hover:bg-white/10 dark:focus-visible:ring-orange-400'
+                    onClick={() => onCreateConversation(project)}
+                    aria-label={`Create new chat in ${project.name}`}
+                  >
+                    <Plus size={18} aria-hidden='true' />
+                  </button>
+                  <button
+                    ref={touchActionsButtonRef}
+                    type='button'
+                    className='flex size-11 items-center justify-center rounded-full hover:bg-black/5 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500 dark:hover:bg-white/10 dark:focus-visible:ring-orange-400'
+                    onClick={() => setShowTouchActions(open => !open)}
+                    onKeyDown={event => {
+                      if (event.key !== 'Escape' || !showTouchActions) return
+                      event.stopPropagation()
+                      setShowTouchActions(false)
+                    }}
+                    aria-label={`More actions for ${project.name}`}
+                    aria-expanded={showTouchActions}
+                    aria-controls={touchActionsId}
+                  >
+                    <MoreHorizontal size={18} aria-hidden='true' />
+                  </button>
+                </div>
+              ) : (
+                <div className={`${SIDEBAR_ROW_ACTIONS_OVERLAY_BASE_CLASS} group-hover/projectHeader:pointer-events-auto group-hover/projectHeader:opacity-100 group-focus-within/projectHeader:pointer-events-auto group-focus-within/projectHeader:opacity-100`}>
+                  <Button
+                    variant='outline2'
+                    size='smaller'
+                    rounded='full'
+                    className={SIDEBAR_ROW_ACTION_BUTTON_CLASS}
+                    onClick={() => onCreateConversation(project)}
+                    title='New chat in project'
+                    aria-label={`Create new chat in ${project.name}`}
+                  >
+                    <i className='bx bx-plus text-lg' aria-hidden='true'></i>
+                  </Button>
+                  <Button
+                    variant='outline2'
+                    size='smaller'
+                    rounded='full'
+                    className={SIDEBAR_ROW_ACTION_BUTTON_CLASS}
+                    onClick={() => onEditProject(project)}
+                    title='Edit project'
+                    aria-label={`Edit project ${project.name}`}
+                  >
+                    <i className='bx bx-edit text-lg' aria-hidden='true'></i>
+                  </Button>
+                  <Button
+                    variant='outline2'
+                    size='smaller'
+                    rounded='full'
+                    className={`${SIDEBAR_ROW_ACTION_BUTTON_CLASS} text-red-500 dark:text-red-400`}
+                    onClick={() => onDeleteProject(project)}
+                    title='Delete project'
+                    aria-label={`Delete project ${project.name}`}
+                  >
+                    <i className='bx bx-trash text-lg' aria-hidden='true'></i>
+                  </Button>
+                </div>
+              )}
             </div>
+
+            {isTouchPrimary && (
+              <div id={touchActionsId} hidden={!showTouchActions}>
+                <div
+                  className='mx-2 mb-1 flex gap-1 rounded-lg bg-black/5 p-1 dark:bg-white/10'
+                  onKeyDown={event => {
+                    if (event.key !== 'Escape') return
+                    event.stopPropagation()
+                    setShowTouchActions(false)
+                    touchActionsButtonRef.current?.focus()
+                  }}
+                >
+                  <button
+                    type='button'
+                    className='min-h-11 flex-1 rounded-md px-2 text-xs hover:bg-black/5 dark:hover:bg-white/10'
+                    onClick={() => {
+                      setShowTouchActions(false)
+                      onEditProject(project)
+                    }}
+                  >
+                    Edit project
+                  </button>
+                  <button
+                    type='button'
+                    className='min-h-11 flex-1 rounded-md px-2 text-xs text-red-600 hover:bg-black/5 dark:text-red-400 dark:hover:bg-white/10'
+                    onClick={() => {
+                      setShowTouchActions(false)
+                      onDeleteProject(project)
+                    }}
+                  >
+                    Delete project
+                  </button>
+                </div>
+              </div>
+            )}
 
             <AnimatePresence initial={false}>
               {isExpanded && (
@@ -776,6 +850,7 @@ const SideBar: React.FC<SideBarProps> = ({
   const { theme: customTheme, enabled: customThemeEnabled } = useCustomChatTheme()
   const isDarkMode = useHtmlDarkMode()
   const isElectronMode = isNativeShell
+  const isTouchPrimary = useIsTouchPrimary()
 
   const [conversationTab, setConversationTab] = useState<ConversationTab>('recent')
   const [showEditProjectModal, setShowEditProjectModal] = useState(false)
@@ -905,35 +980,14 @@ const SideBar: React.FC<SideBarProps> = ({
   const conversationSortButtonRef = useRef<HTMLButtonElement | null>(null)
   const { data: recentConversations = [] } = useRecentConversations(limit)
 
-  // Theme state
-  const [themeMode, setThemeMode] = useState<'Light' | 'Dark' | 'System'>(() => {
-    if (typeof window === 'undefined') return 'Light'
-    const saved = localStorage.getItem('theme')
-    return saved === 'dark' ? 'Dark' : saved === 'light' ? 'Light' : saved === 'system' ? 'System' : 'System'
-  })
-
-  // Apply theme immediately when user toggles preference
-  useEffect(() => {
-    if (typeof window === 'undefined') return
-    const media = window.matchMedia('(prefers-color-scheme: dark)')
-    const isDark = themeMode === 'Dark' || (themeMode === 'System' && media.matches)
-    document.documentElement.classList.toggle('dark', isDark)
-
-    // Notify Electron to update title bar colors
-    if (window.electronAPI?.theme?.update) {
-      window.electronAPI.theme.update(isDark)
-    }
-  }, [themeMode])
-
-  // Persist theme preference
-  useEffect(() => {
-    if (typeof window === 'undefined') return
-    localStorage.setItem('theme', themeMode === 'Dark' ? 'dark' : themeMode === 'Light' ? 'light' : 'system')
-  }, [themeMode])
+  const [themePreference, setSelectedThemePreference] = useState(readThemePreference)
+  const themeMode = themePreference === 'system' ? 'System' : themePreference === 'dark' ? 'Dark' : 'Light'
 
   const cycleTheme = useCallback(() => {
-    setThemeMode(prev => (prev === 'Light' ? 'Dark' : prev === 'Dark' ? 'System' : 'Light'))
-  }, [])
+    const next = themePreference === 'light' ? 'dark' : themePreference === 'dark' ? 'system' : 'light'
+    setThemePreference(next)
+    setSelectedThemePreference(next)
+  }, [themePreference])
 
   const clearHoverPreviewCloseTimeout = useCallback(() => {
     if (hoverPreviewCloseTimeoutRef.current !== null) {
@@ -1720,6 +1774,7 @@ const SideBar: React.FC<SideBarProps> = ({
                     project={project}
                     isExpanded={expandedProjectIdSet.has(String(project.id))}
                     isCollapsed={renderCollapsed}
+                    isTouchPrimary={isTouchPrimary}
                     activeConversationId={activeConversationId}
                     favoriteConversationIds={favoriteConversationIds}
                     hoveredPreviewConversationId={hoveredConversationId}

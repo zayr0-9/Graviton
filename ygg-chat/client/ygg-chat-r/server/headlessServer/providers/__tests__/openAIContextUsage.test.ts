@@ -24,16 +24,30 @@ describe('OpenAI context usage', () => {
     expect(atThreshold.shouldCompact).toBe(true)
   })
 
-  it('uses the greater of reported usage and the projected post-tool replay', () => {
+  it('does not let a replay estimate override OpenAI usage below the threshold', () => {
     const decision = resolveOpenAIContinuationCompaction({
       providerName: 'openai',
-      reportedUsage: normalizeOpenAIContextUsage({ total_tokens: 200_000 }),
-      projectedTokens: 225_000,
-      contextLength: 258_000,
+      reportedUsage: normalizeOpenAIContextUsage({ total_tokens: 299_637 }),
+      projectedTokens: 560_000,
+      contextLength: 658_000,
     })
 
-    expect(decision.effectiveTokens).toBe(225_000)
-    expect(decision.shouldCompact).toBe(true)
+    expect(decision).toMatchObject({ reportedTokens: 299_637, projectedTokens: 560_000,
+      effectiveTokens: 299_637, shouldCompact: false })
+  })
+
+  it('compacts on reported OpenAI usage at the threshold unless disabled', () => {
+    const params = {
+      providerName: 'openaichatgpt',
+      reportedUsage: normalizeOpenAIContextUsage({ total_tokens: 559_300 }),
+      projectedTokens: 200_000,
+      contextLength: 658_000,
+    }
+
+    expect(resolveOpenAIContinuationCompaction(params)).toMatchObject({
+      effectiveTokens: 559_300, shouldCompact: true,
+    })
+    expect(resolveOpenAIContinuationCompaction({ ...params, enabled: false }).shouldCompact).toBe(false)
   })
 
   it('activates mid-run compaction for other providers', () => {
