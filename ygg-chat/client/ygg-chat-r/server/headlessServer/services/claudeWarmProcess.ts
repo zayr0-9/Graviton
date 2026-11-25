@@ -52,6 +52,7 @@ export async function claudeLaunchKey(input: {
   plansDirectory: string; executable: string; hookShape: string; disableNativeHooks?: boolean
   /** The process serves Graviton's tools (its MCP server is fixed at launch; the list is not). */
   gravitonTools?: boolean
+  transcriptRevision?: boolean
 }): Promise<string> {
   const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')
   const files = [
@@ -66,7 +67,8 @@ export async function claudeLaunchKey(input: {
   return JSON.stringify({
     cwd: input.cwd, additionalDirectories: [...(input.additionalDirectories ?? [])].sort(), adaptiveThinking: input.adaptiveThinking,
     mcp: input.mcp, plansDirectory: input.plansDirectory, hookShape: input.hookShape,
-    disableNativeHooks: input.disableNativeHooks === true, gravitonTools: input.gravitonTools === true, epoch: configEpoch,
+    disableNativeHooks: input.disableNativeHooks === true, gravitonTools: input.gravitonTools === true,
+    transcriptRevision: input.transcriptRevision === true, epoch: configEpoch,
     executable: `${executable}@${await fingerprint(executable)}`, settings: await Promise.all(files.map(fingerprint)),
   })
 }

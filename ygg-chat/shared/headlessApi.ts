@@ -383,6 +383,7 @@ export type HeadlessStreamEvent =
   // The server pauses the loop and asks the renderer to approve a tool call.
   | {
       type: 'permission_required'
+      transcriptRevision?: import('./transcriptRevision.js').TranscriptRevisionPreview
       streamId?: string | null
       toolCallId: string
       toolName: string

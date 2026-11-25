@@ -137,3 +137,9 @@ Accepted commands from earlier epochs become interrupted/uncertain, never automa
 | 13 | `heimdall_collapse_groups` | Adds `heimdall_collapse_groups` (`id`, `conversation_id` → conversations ON DELETE CASCADE, JSON `member_ids`, `position`, `created_at`) and a `(conversation_id, position)` index. `CREATE ... IF NOT EXISTS` only. | Heimdall collapse nodes (visual tree management) persist with the conversation, across reloads, devices and the browser shared UI. Messages are never changed. | 2026-11-14 |
 
 Member ids of messages deleted later are filtered out on read and write; rows are not rewritten. The table is not observed by the `client_changes` outbox, so other open clients see changes on their next refetch.
+
+## Transcript revisions (v14)
+
+| Version | Name | Change | Why | Added |
+| --- | --- | --- | --- | --- |
+| 14 | `transcript_revisions` | Adds a revision stack keyed by lineage and target message, cascaded on deletion, with a lineage/target/ID index. | Display approved, undoable transcript patches without changing shared ancestors or provider replay. | 2026-11-25 |

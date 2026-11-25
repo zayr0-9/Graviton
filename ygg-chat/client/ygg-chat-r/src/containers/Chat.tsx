@@ -165,6 +165,8 @@ import { QueuedMessages } from '../components/ChatMessage/QueuedMessages'
 import { OperationModeNotice } from '../components/ChatMessage/OperationModeNotice'
 import { claudeModeNoticesByMessageId } from '../features/chats/claudeModeNotices'
 import { parsePlanCommand } from '../features/chats/planCommand'
+import { useTranscriptRevisions } from '../hooks/useTranscriptRevisions'
+import { parseTranscriptRevisionRequest } from '../../../../shared/transcriptRevision'
 import { FullAccessNotice } from '../components/ChatMessage/FullAccessNotice'
 import { isFullAccessNotification, isRunSettingsNotification } from '../../../../shared/accessNotifications'
 import { SummaryBranchMessage } from '../components/ChatMessage/SummaryBranchMessage'
@@ -395,6 +397,7 @@ const NO_BACKGROUND_TASKS: NonNullable<StreamState['backgroundTasks']> = []
 const COMPOSER_SLASH_COMMANDS = [
   'status-openai',
   'compact',
+  'revise',
   'bench on',
   'bench off',
   'bench status',
@@ -1339,7 +1342,7 @@ function Chat() {
   const canStopCompaction = isCurrentBranchCompacting
   const toolCallPermissionRequest = useAppSelector(state =>
     streamState.id
-      ? (state.chat.toolPermissionRequestsByStream[streamState.id] ?? null)
+      ? (state.chat.transcriptRevisionRequestsByStream?.[streamState.id] ?? state.chat.toolPermissionRequestsByStream[streamState.id] ?? null)
       : null
   )
   const operationModeUpgradeRequest = useAppSelector(state =>
@@ -1373,6 +1376,9 @@ function Chat() {
     return state.chat.operationModeChanges?.[operationModeChangeKey(currentConversationId, streamState.id)]
   })
   const modeLineageId = useAppSelector(state => state.chat.conversation.currentLineageId)
+  const transcriptLineageId = useAppSelector(state => modeLineageId ??
+    state.chat.conversation.messages.find(message => message.id === selectedPath.at(-1))?.lineage_id ?? null)
+  const transcriptRevisions = useTranscriptRevisions(conversationIdFromUrl, transcriptLineageId)
   const [queueSubmitting, setQueueSubmitting] = useState(false)
   const queueRetryRef = useRef<{ streamId: string; content: string; requestId: string } | null>(null)
   const queueSubmittingRef = useRef(false)
@@ -5309,6 +5315,12 @@ function Chat() {
       }
 
       if (canQueueLocal && currentConversationId && streamState.id) {
+        if (parseTranscriptRevisionRequest(localInputValue)) {
+          recordLocalChatError(new Error('Wait for the current reply to finish before sending /revise.'), {
+            phase: 'open', conversationId: currentConversationId, streamId: streamState.id,
+          })
+          return
+        }
         if (queueSubmittingRef.current) return
         queueSubmittingRef.current = true
         setQueueSubmitting(true)
@@ -5407,7 +5419,7 @@ function Chat() {
                   conversationId: currentConversationId,
                   input: inputToSend,
                   parent: parentForSend,
-                  repeatNum: value,
+                  repeatNum: parseTranscriptRevisionRequest(localInputValue) ? 1 : value,
                   think: think,
                   imageConfig: isImageGenerationModel ? imageConfig : undefined,
                   reasoningConfig: think ? reasoningConfig : undefined,
@@ -5416,7 +5428,7 @@ function Chat() {
                   cwd: ccCwd || undefined,
                   operationMode,
                   selectionRevision: selection.revision,
-                  lineageId: modeLineageId,
+                  lineageId: parseTranscriptRevisionRequest(localInputValue) ? transcriptLineageId : modeLineageId,
                   branchPath: selectedPath,
                   streamId,
                 })
@@ -5462,6 +5474,7 @@ function Chat() {
       selection.revision,
       selection.fallbackRevision,
       modeLineageId,
+      transcriptLineageId,
       streamState.active,
       streamState.id,
       currentConversationId,
@@ -6943,6 +6956,8 @@ function Chat() {
                                           role={groupedMessage.role}
                                           content={groupedMessage.content}
                                           contentBlocks={contentBlocks?.filter(block => block.type !== 'context_injection')}
+                                          transcriptRevision={transcriptRevisions.byMessage.get(String(groupedMessage.id))}
+                                          onUndoTranscriptRevision={transcriptRevisions.undo}
                                           timestamp={groupedMessage.created_at}
                                           width='w-full'
                                           modelName={groupedMessage.model_name}
@@ -7091,6 +7106,8 @@ function Chat() {
                               role={msg.role}
                               content={msg.content}
                               contentBlocks={displayContentBlocks}
+                              transcriptRevision={transcriptRevisions.byMessage.get(String(msg.id))}
+                              onUndoTranscriptRevision={transcriptRevisions.undo}
                               hookRuns={isProcessBridgeSourceMessage ? undefined : msg.hook_runs}
                               timestamp={msg.created_at}
                               width='w-full'
@@ -7263,11 +7280,12 @@ function Chat() {
               {!operationModeUpgradeRequest && toolCallPermissionRequest && (
                 <ToolPermissionDialog
                   toolCall={toolCallPermissionRequest.toolCall}
+                  transcriptRevision={toolCallPermissionRequest.transcriptRevision}
                   onGrant={() =>
-                    dispatch(respondToToolPermission({ allowed: true, streamId: toolCallPermissionRequest.streamId }))
+                    dispatch(respondToToolPermission({ allowed: true, streamId: toolCallPermissionRequest.streamId, toolCallId: toolCallPermissionRequest.toolCallId }))
                   }
                   onDeny={() =>
-                    dispatch(respondToToolPermission({ allowed: false, streamId: toolCallPermissionRequest.streamId }))
+                    dispatch(respondToToolPermission({ allowed: false, streamId: toolCallPermissionRequest.streamId, toolCallId: toolCallPermissionRequest.toolCallId }))
                   }
                   onAllowAll={() => dispatch(respondToToolPermissionAndEnableAll(toolCallPermissionRequest.streamId))}
                   onAllowAuto={isClaudeSession ? () =>

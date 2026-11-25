@@ -506,6 +506,7 @@ export interface InitializationState {
 
 export interface ToolCallPermissionRequest {
   toolCall: ToolCall
+  transcriptRevision?: import('../../../../../shared/transcriptRevision').TranscriptRevisionPreview
   // Set when the request originates from the server-owned loop (Phase 2): the
   // resolver thunk POSTs the decision to /api/resume keyed by these, instead of
   // resolving the in-process client-loop promise.
@@ -547,6 +548,7 @@ export interface ChatState {
    * resume correlation.
    */
   toolPermissionRequestsByStream: Record<string, ToolCallPermissionRequest>
+  transcriptRevisionRequestsByStream?: Record<string, ToolCallPermissionRequest>
   operationModeUpgradeRequestsByStream: Record<string, OperationModeUpgradeRequest>
   planClarificationRequestsByStream: Record<string, PlanClarificationRequest>
   toolAutoApprove: boolean

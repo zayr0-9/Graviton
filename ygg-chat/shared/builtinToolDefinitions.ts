@@ -82,6 +82,28 @@ export const BUILTIN_TOOL_DEFINITIONS: SharedToolDefinition[] = [
     },
   },
   {
+    name: 'revise_transcript',
+    enabled: true,
+    description: 'Available only on a user-submitted /revise request. List or read completed assistant replies on this turn’s lineage (including before compaction), or propose one visible-text patch. Use list to resolve older replies and read to get exact text. The user must approve the exact diff. It changes only how the selected lineage displays the reply; never reprint the whole answer or claim provider history was rewritten. Call directly, not inside multi_call or repl.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['list', 'read', 'propose'] },
+        messageId: { type: 'string', description: 'Target reply ID for read or propose.' },
+        block: { type: 'integer', minimum: 0, description: 'The text block to read (default 0).' },
+        offset: { type: 'integer', minimum: 0, description: 'Pagination offset returned by list or read.' },
+        edits: { type: 'array', minItems: 1, maxItems: 8, items: {
+          type: 'object', properties: {
+            block: { type: 'integer', minimum: 0 },
+            before: { type: 'string', description: 'Exact text that occurs just once in this block.' },
+            after: { type: 'string', description: 'Replacement text. Empty removes the matching text.' },
+          }, required: ['block', 'before', 'after'],
+        } },
+      },
+      required: ['action'],
+    },
+  },
+  {
     name: 'watcher',
     enabled: true,
     description: 'Register branch-scoped asynchronous watches. start returns immediately. Completion submits an automated user message to the same branch at a safe boundary, continuing a live run or starting a successor after normal completion; also pushes a visible notification. Stopped/failed/unavailable branches report delivery failure. No shell conditions. Watches are memory-only; status/list do not wait.',

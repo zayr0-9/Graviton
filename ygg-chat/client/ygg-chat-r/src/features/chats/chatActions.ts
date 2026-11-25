@@ -2992,24 +2992,29 @@ export const respondToToolPermission = createAsyncThunk<
   void,
   // auto: Claude runs only — approve this call and switch the run to Claude's auto classifier.
   // The server records it on the run's rows, so the branch's next send stays in auto mode.
-  { allowed: boolean; auto?: boolean; streamId?: string },
+  { allowed: boolean; auto?: boolean; streamId?: string; toolCallId?: string },
   { state: RootState; extra: ThunkExtraArgument }
 >(
   'chat/respondToToolPermission',
-  async ({ allowed, auto, streamId }, { dispatch, getState }) => {
+  async ({ allowed, auto, streamId, toolCallId }, { dispatch, getState }) => {
     const chat = getState().chat
-    const req = streamId ? (chat.toolPermissionRequestsByStream[streamId] ?? null) : chat.toolCallPermissionRequest
+    const revision = streamId ? chat.transcriptRevisionRequestsByStream?.[streamId] : undefined
+    const req = toolCallId && revision?.toolCallId === toolCallId ? revision
+      : streamId ? (chat.toolPermissionRequestsByStream[streamId] ?? null) : chat.toolCallPermissionRequest
+    if (toolCallId && req?.toolCallId !== toolCallId) return
     if (req?.streamId && req?.toolCallId) {
       // Server-owned loop: resolve the paused decision over /resume.
       const outcome = await postDecisionResume({
         streamId: req.streamId,
         toolCallId: req.toolCallId,
-        decision: !allowed ? 'deny' : auto ? 'allow_auto' : 'allow_once',
+        decision: req.transcriptRevision
+          ? allowed ? 'approve_transcript_revision' : 'decline_transcript_revision'
+          : !allowed ? 'deny' : auto ? 'allow_auto' : 'allow_once',
       })
       // Records the failure first; keeps the dialog open when another click could work.
       if (!settleDecisionResume(dispatch, getState(), req.streamId, outcome).closeDialog) return
     }
-    if (req?.streamId) dispatch(chatSliceActions.toolPermissionRespondedForStream(req.streamId))
+    if (req?.streamId && req.toolCallId) dispatch(chatSliceActions.decisionSettled({ streamId: req.streamId, toolCallId: req.toolCallId }))
     else dispatch(chatSliceActions.toolPermissionResponded())
   }
 )
@@ -3078,7 +3083,7 @@ export const respondToToolPermissionAndEnableAll = createAsyncThunk<
 >('chat/respondToToolPermissionAndEnableAll', async (streamId, { dispatch, getState }) => {
   const chat = getState().chat
   const req = streamId ? (chat.toolPermissionRequestsByStream[streamId] ?? null) : chat.toolCallPermissionRequest
-  if (!req?.streamId || !req?.toolCallId) return
+  if (!req?.streamId || !req?.toolCallId || req.transcriptRevision) return
 
   // Capture the answering run, not the selected branch after the HTTP await.
   const owner = chat.streaming.byId[req.streamId]

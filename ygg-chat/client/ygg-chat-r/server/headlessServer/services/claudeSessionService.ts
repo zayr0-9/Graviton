@@ -75,7 +75,8 @@ export interface ClaudeGravitonToolsDeps {
    * questions, nested multi_call/repl calls) around its tool executor, as in its own loop.
    */
   executor: (run: { streamId: string; emit: (event: HeadlessStreamEvent) => void; signal: AbortSignal
-    hookSession?: ChatHookSession; modeControl: OperationModeControl }) => ToolExecutor
+    hookSession?: ChatHookSession; modeControl: OperationModeControl
+    reviseTranscript?: import('./transcriptRevisionTool.js').TranscriptRevisionTool }) => ToolExecutor
 }
 /** A Graviton tool under its plain name, as Graviton's own hooks and rows name it. */
 const hookToolName = (name: string) => gravitonToolName(name) ?? name
@@ -554,6 +555,7 @@ export class ClaudeSessionService {
     hookSession?: ChatHookSession | null
     /** The prompt is a Claude skill or custom command `nativeCommand()` resolved; Claude expands it. */
     nativeCommand?: boolean
+    reviseTranscript?: import('./transcriptRevisionTool.js').TranscriptRevisionTool
     /** Messages the user queues while this run is live. */
     queuedInput?: ClaudeQueuedInput
     /** The run's live Chat/Agent mode, shared with Graviton's mode route; a switch applies to the next tool call. */
@@ -588,9 +590,10 @@ export class ClaudeSessionService {
     const permissionMode = request.claudePlanMode === true ? 'plan' : request.claudePermissionMode === 'auto' ? 'auto' : 'default'
     const liveSettings: ClaudeWarmSettings = { model: request.modelName, effort: selectedEffort ?? null, ultracode: request.claudeUltracode === true }
     const gravitonTools = this.deps.gravitonTools ?? null
+    const availableGravitonTools = () => this.gravitonAvailable().filter(tool => tool.name !== 'revise_transcript' || input.reviseTranscript)
     const launchKey = this.warm.enabled ? await claudeLaunchKey({ cwd, additionalDirectories: input.additionalDirectories, adaptiveThinking, mcp,
       plansDirectory: CLAUDE_PLANS_DIRECTORY, executable, hookShape: input.hookSession ? 'graviton-hooks' : 'native-only',
-      disableNativeHooks, gravitonTools: Boolean(gravitonTools) }) : ''
+      disableNativeHooks, gravitonTools: Boolean(gravitonTools), transcriptRevision: Boolean(input.reviseTranscript) }) : ''
     // The branch's parked CLI, taken synchronously after the last await so nothing else closes or
     // claims it. It is reused only for a send at the exact head it parked at; anything else closes it.
     let warm = this.warm.take(lineageId)
@@ -880,6 +883,7 @@ export class ClaudeSessionService {
     const gravitonDenial = (name: string, args: unknown): string | null => {
       const tool = gravitonToolName(name)
       if (!tool) return null
+      if (tool === 'revise_transcript' && !input.reviseTranscript) return 'Start a new user turn with /revise followed by your request.'
       if (!gravitonTools || !this.gravitonAvailable().some(entry => entry.name === tool)) {
         return `The Graviton tool "${tool}" is turned off in Graviton's Settings → Tools, or not available on this host.`
       }
@@ -994,7 +998,7 @@ export class ClaudeSessionService {
     // tools read (switch_mode, context_status, subagents, watcher). The result Graviton persists
     // (what its tool cards read) replaces Claude's text copy on the row.
     const gravitonExecutor = gravitonTools?.executor({ streamId: request.streamId!, emit, signal: abortController.signal,
-      hookSession: hookSession ?? undefined, modeControl: control }) ?? null
+      hookSession: hookSession ?? undefined, modeControl: control, reviseTranscript: input.reviseTranscript }) ?? null
     const gravitonResults = new Map<string, { content: string; isError: boolean }>()
     // User messages Claude has read this run; new input lets switch_mode ask again after a decline.
     let deliveredInputs = 0
@@ -1350,7 +1354,7 @@ export class ClaudeSessionService {
         if (!proc.activate(bindings)) throw new Error('The Claude process ended before this turn started. Send again.')
       } else {
         proc = new ClaudeWarmProcess(params => sdk.query(params), options, bindings, lineageId, launchKey, sessionId ?? null, liveSettings,
-          gravitonTools ? { tools: () => this.gravitonAvailable() } : null)
+          gravitonTools ? { tools: availableGravitonTools } : null)
         if (proc.graviton) {
           const started = proc
           this.gravitonProcesses.add(started)

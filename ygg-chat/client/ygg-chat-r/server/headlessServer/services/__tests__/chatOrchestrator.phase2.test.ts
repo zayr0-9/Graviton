@@ -11,6 +11,9 @@ import { MessageRepo } from '../../persistence/messageRepo.js'
 import { LineageRepo } from '../../persistence/lineageRepo.js'
 import { normalizeHostExecutionPreferences } from '../../../../../../shared/hostExecutionPreferences.js'
 import { DecisionBroker } from '../decisionBroker.js'
+import { CLIENT_CHANGE_SCHEMA } from '../../../clientChangeSchema.js'
+import { TRANSCRIPT_REVISION_SCHEMA, TranscriptRevisionRepo } from '../../persistence/transcriptRevisionRepo.js'
+import { BUILTIN_TOOL_DEFINITIONS } from '../../../../../../shared/builtinToolDefinitions.js'
 import { RunAdmissionService } from '../runAdmissionService.js'
 import { RunSessionRegistry } from '../runSessionRegistry.js'
 import { OperationReceiptRepo, OPERATION_RECEIPT_SCHEMA } from '../../persistence/operationReceiptRepo.js'
@@ -303,6 +306,43 @@ describe('source lineage membership validation', () => {
       db.close()
     }
     if (testDirectory) rmSync(testDirectory, { recursive: true, force: true })
+  })
+
+  it('exposes the transcript tool only on a fresh /revise turn and keeps provider history unchanged', async () => {
+    db.exec(CLIENT_CHANGE_SCHEMA)
+    db.exec(TRANSCRIPT_REVISION_SCHEMA)
+    const broker = new DecisionBroker()
+    const baseExecutor = vi.fn()
+    const tool = BUILTIN_TOOL_DEFINITIONS.find(candidate => candidate.name === 'revise_transcript')!
+    orchestrator = new ChatOrchestrator({ db, statements, providerRouter: providerRouter as any, decisionBroker: broker,
+      toolExecutor: baseExecutor, defaultToolsProvider: () => [tool] })
+    const request = { operation: 'send' as const, conversationId: 'c1', provider: 'openaichatgpt',
+      modelName: 'gpt-5.1-codex-mini', toolAutoApprove: true, operationMode: 'plan' as const }
+    const events: any[] = []
+    providerRouter.enqueue({ content: 'Keep the old wording.' })
+    await orchestrator.runMessage({ ...request, content: 'Write a sentence' }, event => events.push(event))
+    const previous = events.find(event => event.type === 'complete')
+    const previousText = previous.message.content
+    const continuation = { ...request, parentId: previous.message.id, lineageId: previous.lineageId }
+    expect(() => orchestrator.validateExecutionSelection({ ...continuation, lineageId: undefined, content: '/revise change old to new' }))
+      .toThrow('existing branch')
+    expect(providerRouter.calls[0].tools).toEqual([])
+    providerRouter.enqueue({ content: '', toolCalls: [{ id: 'patch', name: 'revise_transcript', arguments: {
+      action: 'propose', messageId: previous.message.id, edits: [{ block: 0, before: 'old wording', after: 'new wording' }],
+    } }] })
+    providerRouter.enqueue({ content: 'Updated the wording.' })
+    await orchestrator.runMessage({ ...continuation, content: '/revise change old to new', streamId: 'revision-stream' }, event => {
+      events.push(event)
+      if (event.type === 'permission_required' && event.transcriptRevision) {
+        expect(broker.resolve('revision-stream', 'patch', 'approve_transcript_revision')).toBe(true)
+      }
+    })
+    expect(events.find(event => event.transcriptRevision)?.transcriptRevision.edits).toEqual([{ block: 0, before: 'old wording', after: 'new wording' }])
+    expect(baseExecutor).not.toHaveBeenCalled()
+    expect(providerRouter.calls[1].tools.map((item: any) => item.name)).toContain('revise_transcript')
+    expect(providerRouter.calls[2].history.find((item: any) => item.id === previous.message.id).content).toBe(previousText)
+    expect(statements.getMessageById.get(previous.message.id).content).toBe(previousText)
+    expect(new TranscriptRevisionRepo(db).list(previous.lineageId)[0].changes[0].revised).toBe('Keep the new wording.')
   })
 
   it('forks an explicit branch send from the lineage head instead of appending in place', async () => {

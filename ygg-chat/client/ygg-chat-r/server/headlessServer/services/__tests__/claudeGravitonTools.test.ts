@@ -249,6 +249,16 @@ describe('Graviton tools in a Claude run', () => {
       .resolves.toMatchObject({ mode: 'chat', changed: true })
   })
 
+  it('exposes the transcript tool only to a run with a revision request', async () => {
+    const normal = fixture()
+    await normal.service.run(normal.input)
+    expect(normal.cli.listed.result.tools.map((tool: any) => tool.name)).not.toContain('revise_transcript')
+    const revising = fixture()
+    revising.input.reviseTranscript = vi.fn()
+    await revising.service.run(revising.input)
+    expect(revising.cli.listed.result.tools.map((tool: any) => tool.name)).toContain('revise_transcript')
+  })
+
   it('keeps Graviton tools out of a run whose service has none wired', async () => {
     const f = fixture()
     const sdk = { query: vi.fn(() => Object.assign((async function* () { yield { type: 'result', subtype: 'success', is_error: false, session_id: 's' } })(), { close: vi.fn() })) }

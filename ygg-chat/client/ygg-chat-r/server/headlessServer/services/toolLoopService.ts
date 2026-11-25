@@ -869,7 +869,7 @@ export class ToolLoopService {
         modelName: params.input.modelName,
         contentBlocks,
         thinkingBlock: partial.reasoning || null,
-        meta: params.assistantMeta,
+        meta: { ...params.assistantMeta, transcriptPartial: true },
       })
       // The live renderer adopts this row instead of throwing its stream buffer away,
       // and the orchestrator's "last persisted assistant id" tracker (which reads this

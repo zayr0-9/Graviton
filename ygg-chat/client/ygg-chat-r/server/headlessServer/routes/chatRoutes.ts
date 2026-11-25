@@ -639,7 +639,7 @@ export function registerChatRoutes(app: Express, deps: RegisterChatRoutesDeps): 
     }
     let decision: Decision
     if (typeof body.decision === 'string') {
-      const allowedDecisions = new Set(['allow_once', 'allow_always', 'allow_auto', 'deny', 'switch_to_execute'])
+      const allowedDecisions = new Set(['allow_once', 'allow_always', 'allow_auto', 'deny', 'switch_to_execute', 'approve_transcript_revision', 'decline_transcript_revision'])
       if (!allowedDecisions.has(body.decision)) {
         sendJsonError(res, 400, 'Invalid decision value', 'decision_not_delivered')
         return

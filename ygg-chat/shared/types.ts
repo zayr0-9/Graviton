@@ -58,6 +58,7 @@ export interface BaseMessage {
   content: string
   content_plain_text: string
   parent_id?: MessageId | null
+  lineage_id?: string | null
   children_ids: MessageId[]
   created_at: string // ISO timestamp, consistent naming
   updated_at?: string

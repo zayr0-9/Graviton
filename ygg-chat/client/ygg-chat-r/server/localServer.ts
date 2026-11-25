@@ -4,6 +4,7 @@
 
 import { CLAUDE_SESSION_SCHEMA } from './headlessServer/persistence/claudeSessionRepo.js'
 import { HEIMDALL_COLLAPSE_SCHEMA } from './headlessServer/persistence/heimdallCollapseRepo.js'
+import { TRANSCRIPT_REVISION_SCHEMA } from './headlessServer/persistence/transcriptRevisionRepo.js'
 import { opaqueMutationFence } from './nativeClientFence.js'
 import { allowsClientUpgrade } from './clientOriginPolicy.js'
 import { DECISION_RECEIPT_SCHEMA, installDecisionReceiptSchema } from './headlessServer/persistence/decisionReceiptRepo.js'
@@ -531,6 +532,11 @@ const SCHEMA_MIGRATIONS: SchemaMigration[] = [
     // Visual-only Heimdall collapse groups per conversation (CREATE ... IF NOT EXISTS).
     up: database => database.exec(HEIMDALL_COLLAPSE_SCHEMA),
   },
+  {
+    version: 14,
+    name: 'transcript_revisions',
+    up: database => database.exec(TRANSCRIPT_REVISION_SCHEMA),
+  },
 ]
 
 /**
@@ -906,6 +912,7 @@ function initializeLocalDatabase(dbPath: string) {
   db.exec(DECISION_RECEIPT_SCHEMA)
   db.exec(CLAUDE_SESSION_SCHEMA)
   db.exec(HEIMDALL_COLLAPSE_SCHEMA)
+  db.exec(TRANSCRIPT_REVISION_SCHEMA)
   runSchemaMigrations(db)
 
   db.exec(`

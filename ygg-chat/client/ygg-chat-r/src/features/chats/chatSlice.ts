@@ -1901,6 +1901,11 @@ export const chatSlice = createSlice({
     },
 
     toolPermissionRequested: (state, action: PayloadAction<ToolCallPermissionRequest>) => {
+      if (action.payload.transcriptRevision && action.payload.streamId) {
+        state.transcriptRevisionRequestsByStream ??= {}
+        state.transcriptRevisionRequestsByStream[action.payload.streamId] = action.payload
+        return
+      }
       state.toolCallPermissionRequest = action.payload
       if (action.payload.streamId) state.toolPermissionRequestsByStream[action.payload.streamId] = action.payload
     },
@@ -1944,6 +1949,7 @@ export const chatSlice = createSlice({
 
     decisionSettled: (state, action: PayloadAction<{ streamId: string; toolCallId: string }>) => {
       const { streamId, toolCallId } = action.payload
+      if (state.transcriptRevisionRequestsByStream?.[streamId]?.toolCallId === toolCallId) delete state.transcriptRevisionRequestsByStream[streamId]
       if (state.toolPermissionRequestsByStream[streamId]?.toolCallId === toolCallId) delete state.toolPermissionRequestsByStream[streamId]
       if (state.operationModeUpgradeRequestsByStream[streamId]?.toolCallId === toolCallId) delete state.operationModeUpgradeRequestsByStream[streamId]
       if (state.planClarificationRequestsByStream[streamId]?.toolCallId === toolCallId) delete state.planClarificationRequestsByStream[streamId]
@@ -1958,6 +1964,7 @@ export const chatSlice = createSlice({
         if (change.streamId === streamId) delete state.operationModeChanges[key]
       }
       delete state.toolPermissionRequestsByStream[streamId]
+      if (state.transcriptRevisionRequestsByStream) delete state.transcriptRevisionRequestsByStream[streamId]
       delete state.operationModeUpgradeRequestsByStream[streamId]
       delete state.planClarificationRequestsByStream[streamId]
       if (state.toolCallPermissionRequest?.streamId === streamId) state.toolCallPermissionRequest = null
@@ -2285,6 +2292,7 @@ export const chatSlice = createSlice({
         })),
       }
       next.toolPermissionRequestsByStream = state.toolPermissionRequestsByStream
+      next.transcriptRevisionRequestsByStream = state.transcriptRevisionRequestsByStream
       next.operationModeUpgradeRequestsByStream = state.operationModeUpgradeRequestsByStream
       next.planClarificationRequestsByStream = state.planClarificationRequestsByStream
       next.messageQueues = state.messageQueues

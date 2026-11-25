@@ -7,6 +7,7 @@ import type { MessageId } from '../../../../../shared/types'
 import type { RootState } from '@/store/store'
 import 'katex/dist/katex.min.css'
 import { isClaudeTranscriptMessage } from '../../../../../shared/claudeProvider'
+import { projectTranscriptRevision, type TranscriptRevision } from '../../../../../shared/transcriptRevision'
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createSelector } from '@reduxjs/toolkit'
 import { createPortal } from 'react-dom'
@@ -116,6 +117,8 @@ export interface ChatMessageProps {
    */
   content: string
   contentBlocks?: ContentBlock[]
+  transcriptRevision?: TranscriptRevision
+  onUndoTranscriptRevision?: (messageId: string, revisionId: number) => Promise<void>
   streamEvents?: StreamEvent[]
   hookRuns?: HookRunRecord[]
   timestamp?: string | Date
@@ -2143,6 +2146,34 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
 
 ChatMessageBody.displayName = 'ChatMessageBody'
 
+function RevisedChatMessage({ props }: { props: ChatMessageProps }) {
+  const revision = props.transcriptRevision!
+  const projected = useMemo(() => projectTranscriptRevision(props.content, props.contentBlocks ?? [], revision), [props.content, props.contentBlocks, revision])
+  const [showOriginal, setShowOriginal] = useState(false)
+  const [undoing, setUndoing] = useState(false)
+  const [undoError, setUndoError] = useState(false)
+  const undo = async () => {
+    if (!props.onUndoTranscriptRevision || undoing) return
+    setUndoing(true)
+    setUndoError(false)
+    try { await props.onUndoTranscriptRevision(revision.messageId, revision.id) }
+    catch { setUndoError(true) }
+    finally { setUndoing(false) }
+  }
+  const view = projected && !showOriginal ? projected : null
+  return <>
+    <ChatMessageBody {...props} content={view?.content ?? props.content} contentBlocks={view?.blocks ?? props.contentBlocks} onEdit={undefined} />
+    <div className={`${MESSAGE_BLOCK_INSET_CLASS} flex flex-wrap items-center gap-x-2 py-1 text-xs text-neutral-700 dark:text-neutral-300`}
+      style={{ color: props.customThemeEnabled && props.customTheme ? getThemeModeColor(props.customTheme.colors.toolPermissionDialogTitleText, props.isDarkMode ?? false) : undefined }}>
+      {projected ? <button type='button' aria-pressed={showOriginal} onClick={() => setShowOriginal(value => !value)}
+        className={`underline underline-offset-2 ${FOCUS_RING_CLASS}`}>{showOriginal ? 'Show revision' : 'Edited · Show original'}</button> : <span>Revision no longer matches the original</span>}
+      {props.onUndoTranscriptRevision && <button type='button' disabled={undoing} onClick={() => void undo()}
+        className={`underline underline-offset-2 disabled:opacity-60 ${FOCUS_RING_CLASS}`}>Undo revision</button>}
+      {undoError && <span role='alert'>Could not undo this revision.</span>}
+    </div>
+  </>
+}
+
 // Keep automated notice payloads out of rich bubbles, including shared transcript callers.
 // The stored message remains untouched; only its presentation changes.
 const ChatMessage: React.FC<ChatMessageProps> = React.memo(props => {
@@ -2170,7 +2201,9 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(props => {
       {compactionPlaceholder}
     </CompactMessageNotice>
   }
-  return <ChatMessageBody {...props} />
+  return props.role === 'assistant' && props.transcriptRevision
+    ? <RevisedChatMessage key={props.transcriptRevision.id} props={props} />
+    : <ChatMessageBody {...props} />
 })
 
 ChatMessage.displayName = 'ChatMessage'

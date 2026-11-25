@@ -29,6 +29,7 @@ import { registerSubagentRoutes } from './routes/subagentRoutes.js'
 import { registerTestHarnessRoutes } from './routes/testHarnessRoutes.js'
 import { registerGatewayRoutes } from './routes/gatewayRoutes.js'
 import { registerLineageRoutes } from './routes/lineageRoutes.js'
+import { registerTranscriptRevisionRoutes } from './routes/transcriptRevisionRoutes.js'
 import { registerClaudeHookRoutes } from './routes/claudeHookRoutes.js'
 import { registerClaudeMcpRoutes } from './routes/claudeMcpRoutes.js'
 import { ClaudeMcpControlService } from './services/claudeMcpControl.js'
@@ -81,6 +82,7 @@ const HEADLESS_RUNTIME_BUILTIN_TOOL_NAMES = new Set([
   'fetch_notes',
   'fetch_chats',
   'context_status',
+  'revise_transcript',
   'switch_mode',
   'read_file',
   'read_file_continuation',
@@ -141,7 +143,7 @@ const resolveDefaultInferenceTools = (): InferenceToolDefinition[] => {
 
 // Delegation tools are always excluded (no nested subagents or external reviewers).
 // switch_mode too: a child inherits its parent's mode and has no live mode control.
-const SUBAGENT_EXCLUDED_TOOL_NAMES = new Set(['subagent', 'subagent_manager', 'claude_bridge', 'switch_mode'])
+const SUBAGENT_EXCLUDED_TOOL_NAMES = new Set(['subagent', 'subagent_manager', 'claude_bridge', 'switch_mode', 'revise_transcript'])
 
 // These orchestration tools are always exposed to a child, including when a
 // parent supplies an explicit tool whitelist.
@@ -348,6 +350,7 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
   registerCapabilityRoutes(app, { getDefaultTools: resolveDefaultInferenceTools })
   registerEphemeralGenerateRoutes(app, { tokenStore })
   registerLineageRoutes(app, deps)
+  registerTranscriptRevisionRoutes(app, deps)
   const claudeMcpControl = new ClaudeMcpControlService({ preferences: () => readHostExecutionPreferences().values.claudeMcp })
   activeClaudeMcpControls.add(claudeMcpControl)
   registerClaudeMcpRoutes(app, { control: claudeMcpControl })

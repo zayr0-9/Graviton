@@ -14,7 +14,7 @@ const MAX_OUTPUT = 20_000
 const MAX_CODE = 32_000
 const NAME = /^[A-Za-z_$][A-Za-z0-9_$]{0,63}$/
 // Recursive or transcript/UI tools cannot be captured, even through a batch.
-const DIRECT_ONLY = new Set(['repl', 'skill_manager', 'html_renderer', 'view_image', 'switch_mode'])
+const DIRECT_ONLY = new Set(['repl', 'skill_manager', 'html_renderer', 'view_image', 'switch_mode', 'revise_transcript'])
 
 type Session = {
   runtime: QuickJSRuntime
