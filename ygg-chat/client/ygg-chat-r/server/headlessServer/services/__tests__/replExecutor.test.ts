@@ -292,6 +292,159 @@ describe('replExecutor', () => {
 })
 
 
+describe('async REPL scripts', () => {
+  const script = (code: string, options = {}) => ({ action: 'exec', async: true, code, ...options })
+
+  it('uses filtered tool data to choose a later read, storing only the return value', async () => {
+    const { run, leaf } = setup(async call => {
+      if (call.name === 'glob') return { success: true, matches: ['notes.txt', 'package.json'] }
+      return { success: true, content: 'name: example\nprivate payload' }
+    })
+    const result = await run(script(`
+      const result = await tools.call('glob', { pattern: '*' });
+      const path = result.matches.find(name => name.endsWith('.json'));
+      const page = await tools.call('read_file', { path });
+      return page.content.split('\\n')[0];
+    `, { assign: 'selected' }), { operationMode: 'plan', allowedToolNames: new Set(['glob', 'read_file']) })
+    expect(result).toMatchObject({ status: 'stored', variable: 'selected' })
+    expect(JSON.stringify(result)).not.toMatch(/name: example|private payload/)
+    expect(leaf.mock.calls.map(([call]) => call)).toEqual([
+      { id: 'cell-1:script:1', name: 'glob', arguments: { pattern: '*' } },
+      { id: 'cell-1:script:2', name: 'read_file', arguments: { path: 'package.json' } },
+    ])
+    expect(await run({ action: 'show', variable: 'selected' })).toMatchObject({ content: 'name: example' })
+  })
+
+  it('isolates guest globals, suppresses split-channel data, and discards unassigned returns', async () => {
+    const { run } = setup(async () => ({ persistedContent: 'allowed', modelContent: 'private' }))
+    await run({ action: 'exec', code: 'var retained = 42; Promise.resolve().then(() => { retained = 0; });' })
+    const result = await run(script(`globalThis.retained = 'local'; return await tools.call('read_file');`))
+    expect(result).toMatchObject({ status: 'executed' })
+    expect(JSON.stringify(result)).not.toMatch(/allowed|private/)
+    await run(script(`return [typeof retained, await tools.call('read_file')];`, { assign: 'sample' }))
+    expect((await run({ action: 'show', variable: 'sample' })).content).toBe('["undefined","allowed"]')
+    expect((await run({ action: 'show', variable: 'retained' })).content).toBe('42')
+  })
+
+  it('fails closed on unavailable tools, missing policy, and restricted tool names', async () => {
+    const { run, leaf } = setup()
+    await expect(run(script(`await tools.call('read_file');`), { allowedToolNames: new Set() })).rejects.toThrow('not available')
+    await expect(run(script(`await tools.call('read_file');`), { nestedExecutor: undefined })).rejects.toThrow('policy-aware')
+    for (const tool of ['edit_file', 'bash', 'browse_web', 'multi_call', 'repl', 'subagent_manager']) {
+      await expect(run(script(`try { await tools.call('${tool}'); } catch {}`), {
+        allowedToolNames: new Set([tool]),
+      })).rejects.toThrow('can only call')
+    }
+    expect(leaf).not.toHaveBeenCalled()
+  })
+
+  it('keeps separate approvals for each inner call', async () => {
+    const { dispatch, context, leaf } = setup()
+    const broker = new DecisionBroker()
+    broker.initSession('stream', { autoApproveAll: false })
+    const events: any[] = []
+    const execute = createChatPausingExecutor({ base: dispatch, broker, streamId: 'stream', emit: e => events.push(e) })
+    const pending = execute({ id: 'outer', name: 'repl', arguments: script(`
+      await tools.call('read_file', { path: 'one' });
+      await tools.call('read_file', { path: 'two' });
+    `) }, { ...context, streamId: 'stream', nestedExecutor: undefined })
+    const result = expect(pending).rejects.toThrow()
+    for (const [id, decision, executed] of [
+      ['outer', 'allow_once', 0], ['outer:script:1', 'allow_once', 0], ['outer:script:2', 'deny', 1],
+    ] as const) {
+      await vi.waitFor(() => expect(events.some(event => event.type === 'permission_required' && event.toolCallId === id)).toBe(true))
+      expect(leaf).toHaveBeenCalledTimes(executed)
+      broker.resolve('stream', id, decision)
+    }
+    await result
+    expect(leaf).toHaveBeenCalledOnce()
+  })
+
+  it('does not hold the branch queue and retains a conflicting overwrite separately', async () => {
+    let finish!: (value: unknown) => void
+    const { run, leaf } = setup(async () => new Promise(resolve => { finish = resolve }))
+    await run({ action: 'exec', code: 'var destination = "old";' })
+    const pending = run(script(`return await tools.call('read_file');`, { assign: 'destination', overwrite: true }))
+    try {
+      await vi.waitFor(() => expect(leaf).toHaveBeenCalledOnce())
+      await run({ action: 'exec', code: 'destination = "sibling";' }, { replOwnerId: 'child' })
+      await expect(run({ action: 'reset' })).rejects.toThrow('in flight')
+    } finally { finish?.('new') }
+    const result = await pending
+    expect(result).toMatchObject({ status: 'conflict', variable: 'destination' })
+    expect((await run({ action: 'show', variable: 'destination' })).content).toBe('sibling')
+    expect((await run({ action: 'show', variable: result.resultVariable })).content).toBe('new')
+  })
+
+  it('stops waiting on cancellation and never dispatches or stores late follow-up results', async () => {
+    let finish!: (value: unknown) => void
+    const { run, leaf } = setup(async () => new Promise(resolve => { finish = resolve }))
+    const controller = new AbortController()
+    const pending = run(script(`await tools.call('read_file'); return await tools.call('read_file');`, { assign: 'destination' }), { signal: controller.signal })
+    const rejection = expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+    await vi.waitFor(() => expect(leaf).toHaveBeenCalledOnce())
+    controller.abort()
+    await rejection
+    finish('late')
+    expect((await run({ action: 'list' })).variables).toEqual([])
+    expect(leaf).toHaveBeenCalledOnce()
+    await run({ action: 'reset' })
+  })
+
+  it('bounds calls, promise jobs and CPU, without dispatching concurrent or unawaited calls', async () => {
+    const { run, leaf } = setup()
+    await expect(run(script(`tools.call('read_file');`))).rejects.toThrow('unawaited')
+    await expect(run(script(`await Promise.all([tools.call('read_file'), tools.call('read_file')]);`))).rejects.toThrow('await each')
+    await expect(run(script(`await new Promise(() => {});`))).rejects.toThrow('no pending tool call')
+    await expect(run(script(`await tools.call('read_file', { path: 'x'.repeat(70_000) });`))).rejects.toThrow()
+    await expect(run(script(`for (;;) await Promise.resolve();`, { timeoutMs: 250 }))).rejects.toThrow('promise job budget')
+    await expect(run(script(`while (true) {}`, { timeoutMs: 10 }))).rejects.toThrow('CPU budget')
+    expect(leaf).not.toHaveBeenCalled()
+    await expect(run(script(`for (let i = 0; i < 9; i++) await tools.call('read_file');`, { timeoutMs: 250 }))).rejects.toThrow('at most 8 tool calls')
+    expect(leaf).toHaveBeenCalledTimes(8)
+  })
+
+  it('bounds concurrent scripts across branches and releases slots after cancellation', async () => {
+    const { run, leaf } = setup(async (_call, context) => new Promise((_resolve, reject) => {
+      context.signal?.addEventListener('abort', () => reject(context.signal?.reason), { once: true })
+    }))
+    const code = script(`await tools.call('read_file');`)
+    const controllers = Array.from({ length: 4 }, () => new AbortController())
+    const pending = controllers.map((controller, index) => run(code, { lineageId: `script-${index}`, signal: controller.signal }).catch(error => error))
+    try {
+      await vi.waitFor(() => expect(leaf).toHaveBeenCalledTimes(4))
+      await expect(run(code, { lineageId: 'overflow' })).rejects.toThrow('in-flight script limit')
+      controllers[0].abort()
+      expect(await pending[0]).toMatchObject({ name: 'AbortError' })
+      expect(await run(script('return 1;', { assign: 'result' }), { lineageId: 'overflow' })).toMatchObject({ status: 'stored' })
+    } finally {
+      for (const controller of controllers) controller.abort()
+      await Promise.all(pending)
+    }
+  })
+
+  it('releases the destination after a thrown ripgrep dispatch and does not retry it', async () => {
+    const { run, leaf } = setup(async () => { throw new Error('search failed') })
+    await expect(run(script(`return await tools.call('ripgrep', { pattern: 'TODO' });`, { assign: 'result' }), {
+      allowedToolNames: new Set(['ripgrep']),
+    })).rejects.toThrow('search failed')
+    expect(leaf).toHaveBeenCalledOnce()
+    expect(leaf.mock.calls[0][0]).toMatchObject({ name: 'ripgrep', arguments: { pattern: 'TODO' } })
+    expect(await run(script('return 1;', { assign: 'result' }))).toMatchObject({ status: 'stored' })
+  })
+
+  it('validates destinations before dispatch and does not disclose guest-thrown tool data', async () => {
+    const { run, leaf } = setup()
+    await run({ action: 'exec', code: 'var present = 1;' })
+    await expect(run(script(`await tools.call('read_file');`, { assign: 'present' }))).rejects.toThrow('overwrite')
+    await expect(run(script(`await tools.call('read_file');`, { show: 'present' }))).rejects.toThrow('separate show')
+    expect(leaf).not.toHaveBeenCalled()
+    await expect(run(script(`throw (await tools.call('read_file')).content;`, { assign: 'discarded' }))).rejects.toThrow(/^REPL script failed;/)
+    expect((await run({ action: 'list' })).variables).toEqual([{ variable: 'present', type: 'number' }])
+  })
+})
+
+
 describe('capturing multi_call', () => {
   const batch = (args: Record<string, unknown>) => ({ action: 'invoke', tool: 'multi_call', assign: 'batch', args })
 

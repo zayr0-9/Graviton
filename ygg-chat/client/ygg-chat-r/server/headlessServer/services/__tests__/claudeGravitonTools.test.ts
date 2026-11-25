@@ -240,6 +240,27 @@ describe('Graviton tools in a Claude run', () => {
     } finally { sessions.clear() }
   })
 
+  it('exposes async REPL on the Claude bridge and captures only the selected return', async () => {
+    const sessions = new ReplSessions()
+    const f = fixture({ planMode: true, repl: { sessions, arguments: {
+      action: 'exec', async: true, code: `const page = await tools.call('read_file', { path: 'package.json' }); return page.themes.length;`, assign: 'themeCount',
+    } } })
+    try {
+      await f.service.run(f.input)
+      const schema = f.cli.listed.result.tools.find((tool: any) => tool.name === 'repl').inputSchema
+      expect(schema.properties.async.type).toBe('boolean')
+      expect(f.cli.called.result.isError).toBe(false)
+      expect(JSON.parse(f.cli.called.result.content[0].text)).toMatchObject({ status: 'stored', variable: 'themeCount' })
+      expect(f.cli.called.result.content[0].text).not.toContain('dusk')
+      expect(f.execute).toHaveBeenCalledOnce()
+      expect(f.execute.mock.calls[0][0]).toMatchObject({ id: 'toolu_1:script:1', name: 'read_file' })
+      const result = await sessions.run({ action: 'show', variable: 'themeCount' }, {
+        conversationId: 'c', messageId: 'row0', lineageId: 'l', rootPath: '/workspace',
+      }, async () => { throw new Error('Unexpected tool dispatch') })
+      expect(result.content).toBe('1')
+    } finally { sessions.clear() }
+  })
+
   it('gives run-scoped tools the run: switch_mode switches the run, context_status reads Claude\'s usage', async () => {
     const f = fixture()
     await f.service.run(f.input)

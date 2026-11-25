@@ -1,6 +1,7 @@
 ---
 paths:
   - "client/ygg-chat-r/server/headlessServer/services/replExecutor.ts"
+  - "client/ygg-chat-r/server/headlessServer/services/replScript.ts"
   - "client/ygg-chat-r/server/headlessServer/services/__tests__/replExecutor.test.ts"
 ---
 
@@ -28,7 +29,7 @@ Returns type, length or up to 30 property names, not the full value.
 {"action":"exec","code":"var manifest = JSON.parse(file.content); var names = Object.keys(manifest.dependencies);"}
 ```
 
-`exec` runs synchronous JavaScript inside QuickJS WebAssembly. Use **top-level `var`** for persistent, inspectable bindings. `let`/`const` are JavaScript lexical bindings and are not included in the variable inventory. Completion values are discarded. There is no console, Node, filesystem, network, import loader, or `tools.call` API inside code in this version. Invoke tools separately with `action: "invoke"`.
+`exec` runs synchronous JavaScript inside QuickJS WebAssembly. Use **top-level `var`** for persistent, inspectable bindings. `let`/`const` are JavaScript lexical bindings and are not included in the variable inventory. Completion values are discarded. There is no console, Node, filesystem, network, or import loader. Default `exec` cannot call tools; use `invoke` or opt in to async exec.
 
 ```json
 {"action":"show","variable":"names","maxOutputChars":4000}
@@ -43,6 +44,18 @@ To combine processing and disclosure in one call, pass an optional variable name
 Omit `show` to keep `exec` silent. `show` accepts a top-level variable identifier, not an expression or boolean. Execution and disclosure run in the same queued cell, so sibling operations cannot interleave. The combined response includes `success: true`, `status: "executed"`, `variable`, the usual show fields, and the workspace receipt. It uses the same `offset` and `maxOutputChars` limits as standalone `show`; continue truncated output with standalone `show` to avoid rerunning code. Invalid disclosure parameters are rejected before code runs. If code fails, disclosure is skipped. If disclosure fails after code succeeds, the error explicitly says execution completed and state changes remain; inspect/show the value without rerunning exec.
 
 Strings display directly; other values use JSON. Responses include `totalChars`, `truncated`, and `nextOffset`. Continue with `offset`. `list`, `drop` (requires `variable`), and `reset` manage state. Replacing an existing variable through `invoke` requires `overwrite: true`.
+
+## Async exec: dependent read-only tool calls
+
+```json
+{"action":"exec","async":true,"code":"const files = await tools.call('glob', {pattern:'*.json'}); if (!files.matches?.length) return null; const file = await tools.call('read_file', {path: files.matches[0], maxBytes: 4000}); return file.content;","assign":"sample"}
+```
+
+Async scripts run in a fresh QuickJS runtime. They cannot access existing branch variables and their local bindings do not persist. Set `assign` to save a plain JSON `return` value (up to 5 MiB); use `inspect` or `show` separately. Without `assign`, the result is discarded. `show` in the same call is not supported. Destination reservations, `overwrite:true`, and `resultVariable` for overwrite conflicts work as with `invoke`.
+
+`tools.call(name, args)` supports only `read_file`, `glob`, and `ripgrep`, subject to the caller's allowlist and the same nested dispatch as `invoke`. Calls have unique IDs for approvals and events. Await them sequentially: up to eight calls, with a 64 KiB plain JSON argument limit per call. Tool result objects are returned as-is within the normal bounded capture format; thrown dispatch errors stop the script. Raw data is not emitted as a transcript result. There is no shell, write, batch, subagent, or recursive REPL access in scripts.
+
+The JavaScript budget covers all execution steps, not tool or approval waits. At most four scripts run per dispatcher, including scripts waiting for approval; each has its own 32 MiB guest heap. The shared workspace is not locked while scripts await tools. As with `invoke`, nested reads can trigger lazy project instructions and authorized hook context; those are separate from the captured tool results. Stop cancels the script and prevents any late result from being written. No script survives a single exec call.
 
 ## Manual JSON export and import
 
@@ -95,11 +108,12 @@ The receipt describes the capture, not individual successes. Inspect `batch.resu
 
 Use `repl`, `skill_manager`, `html_renderer`, `view_image`, `switch_mode`, and `plan_md` display directly rather than capturing them, including inside a captured batch. For other split-channel outputs, single captures store only `persistedContent`/`displayContent` and report `metadataOnly: true`; batches keep the normal per-item result shape without ephemeral `modelContent`.
 
-No new subagent recursion is enabled. The existing parent-only subagent dispatcher remains the boundary. No arbitrary-code tool-call bridge, artifact viewer, notebook UI, restart checkpoints, or transaction rollback is implemented.
+No new subagent recursion is enabled. The existing parent-only subagent dispatcher remains the boundary. There is no general-purpose tool-call bridge, artifact viewer, notebook UI, restart checkpoint, or transaction rollback.
 
 ## Implementation
 
-- `client/ygg-chat-r/server/headlessServer/services/replExecutor.ts`: sessions, QuickJS, actions, nested dispatch.
+- `client/ygg-chat-r/server/headlessServer/services/replExecutor.ts`: persistent sessions, actions, nested dispatch.
+- `client/ygg-chat-r/server/headlessServer/services/replScript.ts`: isolated async execution and bounded tool bridge.
 - `client/ygg-chat-r/server/headlessServer/services/toolLoopService.ts`: caller tool allowlist and lazy instruction propagation.
 - `client/ygg-chat-r/server/headlessServer/services/subagentRunService.ts`: trusted branch propagation, child attribution and restricted tool set.
 - `client/ygg-chat-r/server/headlessServer/routes/subagentRoutes.ts`: direct HTTP children stay privately scoped.
