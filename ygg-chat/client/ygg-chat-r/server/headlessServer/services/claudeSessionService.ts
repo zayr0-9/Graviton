@@ -622,14 +622,24 @@ export class ClaudeSessionService {
         if (interrupted) throw new Error('Claude session was interrupted. Fork from a completed Claude message before continuing.')
         // A manual /compact ends at a summary, not an assistant response checkpoint.
       } else if (input.sourceMessageId) {
-        const checkpoint = this.deps.sessions.checkpoint(input.sourceMessageId)
+        // A run that failed before Claude answered leaves rows with no native counterpart at the
+        // head (its user message, Graviton's error row). Continue from the completed response
+        // above them, by fork, so one failed send never strands the branch.
+        let checkpoint = this.deps.sessions.checkpoint(input.sourceMessageId)
+        let stranded = false
+        for (let row = checkpoint ? null : this.deps.messages.get(input.sourceMessageId), depth = 0; row?.parent_id && depth < 16; depth += 1) {
+          if (claudeMessageMetadata(row.meta)?.claude?.sessionId) break
+          checkpoint = this.deps.sessions.checkpoint(row.parent_id)
+          if (checkpoint) { stranded = true; break }
+          row = this.deps.messages.get(row.parent_id)
+        }
         if (!checkpoint?.resumable) throw new Error('This node is not a completed Claude checkpoint. Choose a completed Claude response to fork or continue.')
         if (checkpoint.cwd !== cwd) throw claudeWorkspaceChangedError(checkpoint.cwd, cwd)
         // Verify the exact source is still available. Never silently start over.
         const transcript = await sdk.getSessionMessages(checkpoint.session_id, { dir: cwd })
         // getSessionMessages projects only the compacted live chain. Native forkSession
         // can still resolve historical UUIDs in the persisted source and rejects missing cuts.
-        if (input.fork || interrupted || !sessionId || sessionId !== checkpoint.session_id || transcript.at(-1)?.uuid !== checkpoint.message_uuid) {
+        if (input.fork || interrupted || stranded || !sessionId || sessionId !== checkpoint.session_id || transcript.at(-1)?.uuid !== checkpoint.message_uuid) {
           const fork = await sdk.forkSession(checkpoint.session_id, { dir: cwd, upToMessageId: checkpoint.message_uuid })
           sessionId = fork.sessionId
         }
@@ -1157,6 +1167,9 @@ export class ClaudeSessionService {
     // The last turn ended; the session closes once nothing is left to start another one.
     let idle = false
     let startTimer: ReturnType<typeof setTimeout> | undefined
+    // Armed when a `result` from before this run's prompt is skipped; the prompt must then start.
+    let preludeTimer: ReturnType<typeof setTimeout> | undefined
+    let preludeTimedOut = false
     // Non-ambient background tasks still running, child agents' included (the CLI's level signal).
     let liveTasks = 0
     let liveTaskList: HeadlessBackgroundTask[] = []
@@ -1390,6 +1403,10 @@ export class ClaudeSessionService {
       // A reused CLI's turn is this run's only once Claude starts this run's prompt; anything
       // before that is work the CLI started by itself.
       let promptStarted = !warm
+      // A resumed CLI can run a turn of its own before this run's prompt (its notice about
+      // background tasks the previous process left unfinished). That turn's `result` is not ours.
+      let ownPromptStarted = false
+      let lifecycleSeen = false
       while (true) {
         // A warm CLI is idle once the run's input is finished: it stays for the branch's next send.
         if (this.warm.enabled && inputClosed && !abortController.signal.aborted) break
@@ -1401,6 +1418,14 @@ export class ClaudeSessionService {
         if (next.done) break
         const event = next.value
         signal?.throwIfAborted()
+        if ((event as { type: string }).type === 'command_lifecycle') {
+          lifecycleSeen = true
+          const own = event as unknown as { command_uuid: string; state: string }
+          if (own.command_uuid === promptUuid && own.state === 'started') {
+            ownPromptStarted = true
+            clearTimeout(preludeTimer)
+          }
+        }
         if (!promptStarted) {
           const lifecycle = (event as { type: string }).type === 'command_lifecycle' ? event as unknown as { command_uuid: string; state: string } : null
           if (lifecycle?.command_uuid === promptUuid && lifecycle.state === 'started') promptStarted = true
@@ -1610,6 +1635,13 @@ export class ClaudeSessionService {
             compactionEvent('started')
           }
         } else if (event.type === 'result') {
+          // Before this run's prompt started and with nothing produced: the end of a turn the CLI
+          // started itself. The prompt is still queued behind it, so keep reading. Only for a CLI
+          // that reports command lifecycles; otherwise the result is taken as this run's.
+          if (lifecycleSeen && !ownPromptStarted && !finalMessage && !streamedText && !streamedReasoning && !deliveredInputs && !request.manualCompaction) {
+            preludeTimer ??= setTimeout(() => { preludeTimedOut = true; releaseInput() }, QUEUED_START_TIMEOUT_MS)
+            continue
+          }
           if (event.is_error || event.subtype !== 'success') throw new Error(`Claude run failed: ${'errors' in event ? event.errors.join('; ') : event.subtype}`)
           // A main compaction always ends at its boundary or a failed status within the turn.
           if (compactionActive) {
@@ -1634,6 +1666,7 @@ export class ClaudeSessionService {
       // However the loop ended, a stopped run is never a completed one: an earlier turn's
       // `result` must not let a mid-turn row become the resumable checkpoint.
       if (abortController.signal.aborted) throw abortController.signal.reason ?? new Error('Claude run stopped')
+      if (preludeTimedOut) throw new Error('Claude did not start this message. Send it again.')
       if (hookFailure) throw hookFailure
       if (pendingCompactions.length) throw new Error('Claude supplied a summary without a completed compaction boundary')
       if (request.manualCompaction) {
@@ -1688,6 +1721,7 @@ export class ClaudeSessionService {
       }
       throw error
     } finally {
+      clearTimeout(preludeTimer)
       unbindTasks?.()
       liveTaskList = []
       liveProgress.clear()

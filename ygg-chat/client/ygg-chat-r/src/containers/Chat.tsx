@@ -255,6 +255,12 @@ import {
   TOOL_OUTPUT_TRUNCATION_CHANGE_EVENT,
   TOOL_OUTPUT_TRUNCATION_ENABLED_KEY,
 } from '../helpers/toolOutputTruncation'
+import {
+  hasReasoningContent,
+  useHideReasoningBlocks,
+  withoutReasoningBlocks,
+  withoutReasoningEvents,
+} from '../helpers/hideReasoningSettings'
 import { useAppDispatch, useAppSelector } from '../hooks/redux'
 import { useAuth } from '../hooks/useAuth'
 import { useIdeContext } from '../hooks/useIdeContext'
@@ -1012,6 +1018,27 @@ const parseMessageDataForRender = (msg: Message): ParsedMessageData => {
   // when the row has no `tool_use` blocks.
   const hasToolUseBlocks = contentBlocks?.some(block => block?.type === 'tool_use') ?? false
   return { toolCalls: hasToolUseBlocks ? undefined : toolCalls, contentBlocks }
+}
+
+/**
+ * Whether an assistant row still draws anything once its reasoning is hidden. `parsed` is the
+ * original payload and `layout` the reasoning-free view of it. Mirrors ChatMessage: the `content`
+ * string is drawn only for a row that has no blocks at all.
+ */
+const drawsWithoutReasoning = (msg: Message, parsed: ParsedMessageData, layout: ParsedMessageData): boolean => {
+  if (msg.hook_runs?.length || layout.toolCalls?.length || (Array.isArray(msg.artifacts) && msg.artifacts.length > 0)) {
+    return true
+  }
+  if (!parsed.contentBlocks?.length) return typeof msg.content === 'string' && msg.content.trim().length > 0
+  return (layout.contentBlocks ?? []).some(block => {
+    if (block.type === 'text') return typeof block.content === 'string' && block.content.trim().length > 0
+    if (block.type === 'image') return Boolean(block.url)
+    const items = (block as unknown as { type?: string; items?: unknown }).type === 'responses_output_items'
+      ? (block as unknown as { items?: unknown }).items
+      : undefined
+    if (items !== undefined) return Array.isArray(items) && items.length > 0
+    return block.type === 'tool_use' || block.type === 'tool_result' || block.type === 'error' || block.type === 'context_injection'
+  })
 }
 
 
@@ -2305,10 +2332,8 @@ function Chat() {
   const runFooters = useMemo(() => deriveRunStatistics(conversationMessages, selectedPath, conversationRuns,
     currentConversationId == null ? null : String(currentConversationId), modeLineageId),
     [conversationMessages, selectedPath, conversationRuns, currentConversationId, modeLineageId])
-  const runFootersByAnchor = useMemo(() => placeRunFooters(runFooters, selectedPath, renderableMessages.map(m => String(m.id))),
-    [runFooters, selectedPath, renderableMessages])
-  const runBoundarySignature = [...runFootersByAnchor.keys()].join('|')
 
+  const hideReasoningBlocks = useHideReasoningBlocks()
   const [groupToolReasoningRuns, setGroupToolReasoningRuns] = useState<boolean>(() => {
     try {
       const stored = localStorage.getItem('chat:groupToolReasoningRuns')
@@ -2360,12 +2385,55 @@ function Chat() {
     return parsedById
   }, [renderableMessages, renderableMessagesSignature])
 
+  // Hidden reasoning is presentation only. Rows still hand ChatMessage the original blocks (an
+  // assistant edit round-trips its thinking), and ChatMessage skips the reasoning itself. Grouping
+  // and row-height estimates read this reasoning-free view so they match what is drawn.
+  const layoutMessageDataById = useMemo(() => {
+    if (!hideReasoningBlocks) return parsedMessageDataById
+    const layoutById = new Map<MessageId, ParsedMessageData>()
+    for (const [id, parsed] of parsedMessageDataById) {
+      const contentBlocks = withoutReasoningBlocks(parsed.contentBlocks)
+      layoutById.set(id, contentBlocks === parsed.contentBlocks ? parsed : { ...parsed, contentBlocks })
+    }
+    return layoutById
+  }, [hideReasoningBlocks, parsedMessageDataById])
+
+  // Assistant rows that held only reasoning draw nothing once it is hidden. Kept in the list they
+  // would add empty virtual rows and, no longer counting as agent work, split "Agent steps" groups.
+  const reasoningOnlyMessageIds = useMemo(() => {
+    const ids = new Set<string>()
+    if (!hideReasoningBlocks) return ids
+    for (const msg of renderableMessages) {
+      if (msg.role !== 'assistant' && msg.role !== 'ex_agent') continue
+      const parsed = parsedMessageDataById.get(msg.id) ?? EMPTY_PARSED_MESSAGE_DATA
+      const hadReasoning = hasReasoningContent(parsed.contentBlocks) ||
+        (typeof msg.thinking_block === 'string' && msg.thinking_block.trim().length > 0)
+      if (!hadReasoning) continue
+      const layout = layoutMessageDataById.get(msg.id) ?? EMPTY_PARSED_MESSAGE_DATA
+      if (!drawsWithoutReasoning(msg, parsed, layout)) ids.add(String(msg.id))
+    }
+    return ids
+  }, [hideReasoningBlocks, renderableMessages, parsedMessageDataById, layoutMessageDataById])
+
+  // The messages that get transcript rows. Equal to renderableMessages unless reasoning is hidden.
+  const rowMessages = useMemo(
+    () => reasoningOnlyMessageIds.size === 0
+      ? renderableMessages
+      : renderableMessages.filter(msg => !reasoningOnlyMessageIds.has(String(msg.id))),
+    [renderableMessages, reasoningOnlyMessageIds]
+  )
+
+  // Anchored to drawn rows: a footer whose run ends on a hidden row moves to the row before it.
+  const runFootersByAnchor = useMemo(() => placeRunFooters(runFooters, selectedPath, rowMessages.map(m => String(m.id))),
+    [runFooters, selectedPath, rowMessages])
+  const runBoundarySignature = [...runFootersByAnchor.keys()].join('|')
+
   const messageRenderRows = useMemo<MessageRenderRow[]>(() => {
     const deriveStart = typeof performance !== 'undefined' ? performance.now() : Date.now()
     const debugProcessGrouping =
       typeof window !== 'undefined' && window.localStorage.getItem('chat:debugProcessGrouping') === 'true'
 
-    const rowsCacheKey = `${groupToolReasoningRuns ? 'grouped' : 'plain'}|${renderableMessagesSignature}|${runBoundarySignature}`
+    const rowsCacheKey = `${groupToolReasoningRuns ? 'grouped' : 'plain'}|${hideReasoningBlocks ? 'no-reasoning' : 'reasoning'}|${renderableMessagesSignature}|${runBoundarySignature}`
     if (!debugProcessGrouping) {
       const cachedRows = messageRenderRowsCacheRef.current.get(rowsCacheKey)
       if (cachedRows) {
@@ -2421,7 +2489,7 @@ function Chat() {
     }
 
     const hasProcessSignal = (msg: Message, parsed: ParsedMessageData): boolean => {
-      const hasThinking = typeof msg.thinking_block === 'string' && msg.thinking_block.trim().length > 0
+      const hasThinking = !hideReasoningBlocks && typeof msg.thinking_block === 'string' && msg.thinking_block.trim().length > 0
       const hasToolCalls = Array.isArray(parsed.toolCalls) && parsed.toolCalls.length > 0
       const hasProcessBlocks = Array.isArray(parsed.contentBlocks)
         ? parsed.contentBlocks.some(block => isProcessContentBlock(block))
@@ -2441,7 +2509,7 @@ function Chat() {
 
     const countReasoningSignals = (msg: Message, parsed: ParsedMessageData): number => {
       if (!Array.isArray(parsed.contentBlocks) || parsed.contentBlocks.length === 0) {
-        return typeof msg.thinking_block === 'string' && msg.thinking_block.trim().length > 0 ? 1 : 0
+        return !hideReasoningBlocks && typeof msg.thinking_block === 'string' && msg.thinking_block.trim().length > 0 ? 1 : 0
       }
 
       const thinkingBlockCount = parsed.contentBlocks.filter(block => block.type === 'thinking').length
@@ -2456,7 +2524,7 @@ function Chat() {
 
       if (responsesOutputReasoningCount > 0) return responsesOutputReasoningCount
 
-      return typeof msg.thinking_block === 'string' && msg.thinking_block.trim().length > 0 ? 1 : 0
+      return !hideReasoningBlocks && typeof msg.thinking_block === 'string' && msg.thinking_block.trim().length > 0 ? 1 : 0
     }
 
     const isProcessOnlyAssistantStep = (msg: Message): boolean => {
@@ -2465,7 +2533,7 @@ function Chat() {
         return false
       }
 
-      const parsed = parsedMessageDataById.get(msg.id) ?? EMPTY_PARSED_MESSAGE_DATA
+      const parsed = layoutMessageDataById.get(msg.id) ?? EMPTY_PARSED_MESSAGE_DATA
       if (!hasProcessSignal(msg, parsed) && !msg.hook_runs?.length && !parsed.contentBlocks?.some(block => block.type === 'context_injection')) {
         return false
       }
@@ -2480,13 +2548,13 @@ function Chat() {
     // Intro prose that only hands off to tools (reasoning/text, then tool calls, no prose after).
     // The prose keeps its row; its process blocks open the following run so the turn reads as one group.
     const leadsIntoProcessRun = (messageIndex: number): boolean => {
-      const msg = renderableMessages[messageIndex]
+      const msg = rowMessages[messageIndex]
       if (!msg || (msg.role !== 'assistant' && msg.role !== 'ex_agent') || isCommittedCompaction(msg)) return false
       if (runFootersByAnchor.has(String(msg.id))) return false
-      const next = renderableMessages[messageIndex + 1]
+      const next = rowMessages[messageIndex + 1]
       if (!next || !isProcessOnlyAssistantStep(next)) return false
 
-      const parsed = parsedMessageDataById.get(msg.id) ?? EMPTY_PARSED_MESSAGE_DATA
+      const parsed = layoutMessageDataById.get(msg.id) ?? EMPTY_PARSED_MESSAGE_DATA
       const blocks = parsed.contentBlocks
       if (!blocks?.length || hasResponsesOutputItems(parsed) || hasExcludedGroupingTool(parsed)) return false
       const firstTool = blocks.findIndex(block => block.type === 'tool_use' || block.type === 'tool_result')
@@ -2497,7 +2565,7 @@ function Chat() {
     }
 
     if (!groupToolReasoningRuns) {
-      const plainRows = renderableMessages.map(msg => ({
+      const plainRows = rowMessages.map(msg => ({
         kind: 'message' as const,
         id: msg.id,
         message: msg,
@@ -2518,8 +2586,8 @@ function Chat() {
     const rows: MessageRenderRow[] = []
     let index = 0
 
-    while (index < renderableMessages.length) {
-      const msg = renderableMessages[index]
+    while (index < rowMessages.length) {
+      const msg = rowMessages[index]
       if (!msg) {
         index += 1
         continue
@@ -2537,8 +2605,8 @@ function Chat() {
 
       const runMessages: Message[] = []
       let cursor = index
-      while (cursor < renderableMessages.length) {
-        const candidate = renderableMessages[cursor]
+      while (cursor < rowMessages.length) {
+        const candidate = rowMessages[cursor]
         if (!candidate || !isProcessOnlyAssistantStep(candidate)) {
           break
         }
@@ -2550,23 +2618,23 @@ function Chat() {
       if (runMessages.length >= CROSS_MESSAGE_PROCESS_GROUP_MIN_MESSAGES) {
         const memberMessageIds = runMessages.map(message => message.id)
 
-        const leadingMessage = index > 0 && leadsIntoProcessRun(index - 1) ? renderableMessages[index - 1] : undefined
+        const leadingMessage = index > 0 && leadsIntoProcessRun(index - 1) ? rowMessages[index - 1] : undefined
         const leadingMessageId = leadingMessage?.id
 
         let toolCount = 0
         let reasoningCount = 0
         for (const message of leadingMessage ? [leadingMessage, ...runMessages] : runMessages) {
-          const parsed = parsedMessageDataById.get(message.id) ?? EMPTY_PARSED_MESSAGE_DATA
+          const parsed = layoutMessageDataById.get(message.id) ?? EMPTY_PARSED_MESSAGE_DATA
           toolCount += countToolSignals(parsed)
           reasoningCount += countReasoningSignals(message, parsed)
         }
 
         let bridgedMessageId: MessageId | undefined
-        const trailingCandidate = renderableMessages[cursor]
+        const trailingCandidate = rowMessages[cursor]
         // A message that opens the next run is not also bridged back into this one.
         if (!runFootersByAnchor.has(String(runMessages[runMessages.length - 1]?.id)) && !leadsIntoProcessRun(cursor) &&
             trailingCandidate && (trailingCandidate.role === 'assistant' || trailingCandidate.role === 'ex_agent')) {
-          const trailingParsed = parsedMessageDataById.get(trailingCandidate.id) ?? EMPTY_PARSED_MESSAGE_DATA
+          const trailingParsed = layoutMessageDataById.get(trailingCandidate.id) ?? EMPTY_PARSED_MESSAGE_DATA
           const trailingHasProcessSignal = hasProcessSignal(trailingCandidate, trailingParsed)
           const trailingHasSubstantialContent = hasSubstantialTextOrImage(trailingCandidate, trailingParsed)
           const trailingUsesOrderedResponsesItems = hasResponsesOutputItems(trailingParsed)
@@ -2639,7 +2707,7 @@ function Chat() {
     }
 
     return rows
-  }, [renderableMessages, renderableMessagesSignature, groupToolReasoningRuns, parsedMessageDataById, runBoundarySignature, runFootersByAnchor])
+  }, [rowMessages, renderableMessagesSignature, groupToolReasoningRuns, layoutMessageDataById, hideReasoningBlocks, runBoundarySignature, runFootersByAnchor])
 
   // Rows whose process blocks are drawn inside an adjacent group (leading intro or trailing answer).
   const bridgedProcessMessageIds = useMemo(() => new Set(messageRenderRows.flatMap(row =>
@@ -2704,9 +2772,21 @@ function Chat() {
   const findMessageRowIndex = useCallback(
     (targetId: MessageId | null | undefined): number => {
       if (targetId == null) return -1
-      return messageRowIndexByMessageId.get(String(targetId)) ?? -1
+      const rowIndex = messageRowIndexByMessageId.get(String(targetId))
+      if (rowIndex != null) return rowIndex
+      // A reasoning-only message has no row while reasoning is hidden: focus the row that
+      // continues its turn, or the one before it at the end of the branch.
+      if (!reasoningOnlyMessageIds.has(String(targetId))) return -1
+      const position = renderableMessages.findIndex(message => String(message.id) === String(targetId))
+      for (const step of [1, -1]) {
+        for (let index = position + step; index >= 0 && index < renderableMessages.length; index += step) {
+          const nearby = messageRowIndexByMessageId.get(String(renderableMessages[index].id))
+          if (nearby != null) return nearby
+        }
+      }
+      return -1
     },
-    [messageRowIndexByMessageId]
+    [messageRowIndexByMessageId, reasoningOnlyMessageIds, renderableMessages]
   )
 
   // Trailing scroll room is provided by the in-flow bottom sentinel (see the message list render),
@@ -2827,8 +2907,13 @@ function Chat() {
     : null
   const showThinkingIndicator = !backgroundTasksView?.idle
   const hasStreamingText = Boolean(streamState.buffer?.trim())
+  // With reasoning hidden, a run that has only thought so far has nothing to draw yet.
+  const liveStreamEvents = useMemo(
+    () => (hideReasoningBlocks ? withoutReasoningEvents(streamState.events) : streamState.events),
+    [hideReasoningBlocks, streamState.events]
+  )
   const hasProcessStreamingContent =
-    Boolean(streamState.thinkingBuffer) || streamState.toolCalls.length > 0 || streamState.events.length > 0
+    (!hideReasoningBlocks && Boolean(streamState.thinkingBuffer)) || streamState.toolCalls.length > 0 || liveStreamEvents.length > 0
   // R4: `streamState.error` deliberately does NOT keep the live row alive. The failure is drawn
   // by the message list and nowhere else — tier 1 when the server persisted a row carrying the
   // ErrorBlock, tier 2 (`chat_error`) when it could not. A stream that died before its first
@@ -2839,7 +2924,7 @@ function Chat() {
   // New server-owned generations have no live message ID until persistence.
   const isStreamingMessageAlreadyRendered = isStreamMessageAlreadyRendered(streamState, messageRowIndexByMessageId)
   const showStreamingMessage = !compactionActive && !isStreamingMessageAlreadyRendered && hasStreamingMessageContent
-  const liveAgentEvents = useMemo(() => splitLiveAgentEvents(streamState.events), [streamState.events])
+  const liveAgentEvents = useMemo(() => splitLiveAgentEvents(liveStreamEvents), [liveStreamEvents])
   const trailingAgentRow = messageRenderRows[messageRenderRows.length - 1]
   const liveAgentGroupId = canAttachLiveAgentGroup({
     enabled: groupToolReasoningRuns, active: streamLifecycleActive, compacting: compactionActive,
@@ -2869,7 +2954,7 @@ function Chat() {
   const liveExplainSourceReady = liveExplainSourceRef.current?.messageId != null && conversationMessages.some(
     message => String(message.id) === String(liveExplainSourceRef.current?.messageId)
   )
-  const visibleLiveEvents = liveAgentGroupId ? liveAgentEvents.outside : streamState.events
+  const visibleLiveEvents = liveAgentGroupId ? liveAgentEvents.outside : liveStreamEvents
   const showStandaloneStreamingMessage = showStreamingMessage && (!liveAgentGroupId || visibleLiveEvents.length > 0)
   const showLiveStreamingTail = showStandaloneStreamingMessage && hasStreamingText && liveExplainSurface !== 'virtual'
   // Any streamed prose (commentary or answer) uses a live tail OUTSIDE TanStack Virtual as an
@@ -3222,7 +3307,7 @@ function Chat() {
         // Summaries draw only an h-8 notice with py-1, regardless of payload size.
         if (isCommittedCompaction(message) || isWatcherCompletionMessage(message) || isImageAttachmentInfoMessage(message)) return smallChromeRowHeight(rootFontSize)
         if (isRunSettingsNotification(message)) return 32
-        const parsedBlocks = (parsedMessageDataById.get(message.id) ?? EMPTY_PARSED_MESSAGE_DATA).contentBlocks
+        const parsedBlocks = (layoutMessageDataById.get(message.id) ?? EMPTY_PARSED_MESSAGE_DATA).contentBlocks
         // Bridged rows draw only their prose; their process blocks belong to the adjacent group.
         const blocks = bridgedProcessMessageIds.has(String(message.id))
           ? parsedBlocks?.filter(block => !isProcessContentBlock(block) && block.type !== 'context_injection')
@@ -3262,7 +3347,7 @@ function Chat() {
         case 'message_row':
           return row.row.kind === 'process_group'
             ? processGroupRowHeight(rootFontSize) + row.row.messages.reduce((height, message) => {
-                const blocks = parsedMessageDataById.get(message.id)?.contentBlocks ?? []
+                const blocks = layoutMessageDataById.get(message.id)?.contentBlocks ?? []
                 const cards = blocks.filter((block, index) => block.type === 'context_injection' &&
                   (blocks[index - 1]?.type !== 'context_injection' || (blocks[index - 1] as any).tool_use_id !== block.tool_use_id)).length
                 return height + (cards + (message.hook_runs?.length ? 1 : 0)) * 2 * rootFontSize
@@ -3285,7 +3370,7 @@ function Chat() {
     },
     [
       virtualRows,
-      parsedMessageDataById,
+      layoutMessageDataById,
       messagesContainerWidth,
       rootFontSize,
       fontSizeOffset,
@@ -6872,12 +6957,13 @@ function Chat() {
                           const renderBridgedProcess = (sourceMessage: Message | undefined) => {
                             if (!sourceMessage) return null
                             const bridgedParsed =
-                              parsedMessageDataById.get(sourceMessage.id) ?? EMPTY_PARSED_MESSAGE_DATA
+                              layoutMessageDataById.get(sourceMessage.id) ?? EMPTY_PARSED_MESSAGE_DATA
                             const bridgedProcessBlocks = Array.isArray(bridgedParsed.contentBlocks)
                               ? bridgedParsed.contentBlocks.filter(block => isProcessContentBlock(block))
                               : []
 
                             const hasThinking =
+                              !hideReasoningBlocks &&
                               typeof sourceMessage.thinking_block === 'string' &&
                               sourceMessage.thinking_block.trim().length > 0
                             const hasToolCalls =

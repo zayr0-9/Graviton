@@ -1,5 +1,6 @@
 import { HOST_SKILLS_CHANGED } from '../../services/hostCatalogClient'
 import { useActivityStepLabels, saveActivityStepLabels } from '../../helpers/activityStepLabelsSettings'
+import { saveHideReasoningBlocks, useHideReasoningBlocks } from '../../helpers/hideReasoningSettings'
 import {
   MCP_APP_MAX_HEIGHT,
   MCP_APP_MIN_HEIGHT,
@@ -16,6 +17,7 @@ import {
   CheckCircle,
   ChevronDown,
   Download,
+  EyeOff,
   FileJson,
   FolderOpen,
   GitBranch,
@@ -424,6 +426,7 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
   })
 
   const showActivityStepLabels = useActivityStepLabels()
+  const hideReasoningBlocks = useHideReasoningBlocks()
   const mcpAppConstraintsEnabled = useMcpAppConstraintsEnabled()
 
   const [truncateToolOutput, setTruncateToolOutput] = useState<boolean>(loadToolOutputTruncationEnabled)
@@ -2038,6 +2041,68 @@ ${block}`
                           aria-pressed={groupToolReasoningRuns}
                         >
                           {groupToolReasoningRuns ? (
+                            <Check
+                              {...lucideIconProps}
+                              style={
+                                savedCustomThemesColors ? { color: savedCustomThemesColors.primaryButtonBg } : undefined
+                              }
+                            />
+                          ) : (
+                            <X {...lucideIconProps} />
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Hide Reasoning Blocks Section */}
+                  <div className='space-y-2'>
+                    <div
+                      className='overflow-hidden rounded-2xl bg-neutral-50/70 dark:bg-neutral-900/10'
+                      style={settingsSectionCardStyle}
+                    >
+                      <div className='flex items-start justify-between gap-3 px-3 py-3'>
+                        <div className='flex min-w-0 items-start gap-3'>
+                          <div
+                            className='mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-amber-100 text-amber-600 dark:bg-amber-500/15 dark:text-amber-300'
+                            style={settingsSectionIconStyle}
+                          >
+                            <EyeOff {...lucideIconProps} />
+                          </div>
+                          <div className='min-w-0 pr-3'>
+                            <p
+                              id='hide-reasoning-blocks-label'
+                              className='text-sm font-medium text-stone-700 dark:text-neutral-100'
+                              style={settingsSectionTitleStyle}
+                            >
+                              Hide reasoning blocks
+                            </p>
+                            <p
+                              className='mt-0.5 text-xs text-neutral-500 dark:text-neutral-100'
+                              style={settingsSectionBodyStyle}
+                            >
+                              Remove model reasoning from the chat transcript. Answers and tool calls stay visible, and
+                              reasoning is still saved.
+                            </p>
+                          </div>
+                        </div>
+                        <button
+                          type='button'
+                          onClick={() => saveHideReasoningBlocks(!hideReasoningBlocks)}
+                          className={iconButtonClass}
+                          style={
+                            savedCustomThemesColors
+                              ? {
+                                  backgroundColor: savedCustomThemesColors.buttonBg,
+                                  color: savedCustomThemesColors.buttonText,
+                                }
+                              : undefined
+                          }
+                          title={hideReasoningBlocks ? 'Show reasoning blocks' : 'Hide reasoning blocks'}
+                          aria-labelledby='hide-reasoning-blocks-label'
+                          aria-pressed={hideReasoningBlocks}
+                        >
+                          {hideReasoningBlocks ? (
                             <Check
                               {...lucideIconProps}
                               style={

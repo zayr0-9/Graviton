@@ -50,6 +50,7 @@ import {
   resolveRoleThemeKey,
 } from '../ThemeManager/themeConfig'
 import { useChatDisplayName } from '../../helpers/chatDisplayName'
+import { hasReasoningContent, useHideReasoningBlocks } from '../../helpers/hideReasoningSettings'
 import { ContextInjectionCard, type ContextInjectionCardEntry } from './ContextInjectionCard'
 import { HookActivityCard } from './HookActivityCard'
 import { AgentSteps } from './AgentSteps'
@@ -555,7 +556,11 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
       handleMobileMessageActivate()
     }, [noteTouchStart, handleMobileMessageActivate])
     const [selectedArtifactUrl, setSelectedArtifactUrl] = useState<string | null>(null)
-    const liveRenderItems = useMemo(() => streamRenderItems ?? buildStreamRenderItems(streamEvents ?? [], keepTextOutsideGroups), [streamRenderItems, streamEvents, keepTextOutsideGroups])
+    const hideReasoning = useHideReasoningBlocks()
+    const liveRenderItems = useMemo(() => {
+      const items = streamRenderItems ?? buildStreamRenderItems(streamEvents ?? [], keepTextOutsideGroups)
+      return hideReasoning ? items.filter(item => item.source !== 'reasoning') : items
+    }, [streamRenderItems, streamEvents, keepTextOutsideGroups, hideReasoning])
     const contentToolGroupsByIndex = useMemo(() => buildToolCallGroupsFromBlocks(contentBlocks), [contentBlocks])
     const htmlRegistry = useHtmlIframeRegistry()
     const explainThemeColor = (key:
@@ -1476,6 +1481,10 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
         }
 
         if (item.type === 'reasoning') {
+          if (hideReasoning) {
+            localIndex += 1
+            continue
+          }
           for (const reasoningText of extractReasoningTextsFromResponsesOutputItems([item])) {
             items.push(
               buildReasoningRenderItem(
@@ -1592,6 +1601,10 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
         }
 
         if (block.type === 'thinking') {
+          if (hideReasoning) {
+            idx += 1
+            continue
+          }
           let prevIdx = idx - 1
           while (prevIdx >= 0 && blocks[prevIdx]?.type === 'reasoning_details') prevIdx -= 1
           if (prevIdx >= 0 && blocks[prevIdx]?.type === 'thinking') {
@@ -1702,6 +1715,16 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
     const hasSelection = selectedText.length > 0
     const showActionsRow = !readOnly && hasContent && canBranchMessage && showInlineActions
     const contextHighlightClass = contextMenuOpen ? 'bg-black/[0.03] dark:bg-white/[0.03]' : ''
+
+    // A row that held only reasoning has nothing left to draw while reasoning is hidden. Chat.tsx
+    // already drops such rows; this covers the other transcripts (parallel pane, agent previews).
+    const hadReasoning = hasStreamEvents
+      ? streamEvents!.some(event => event.type === 'reasoning')
+      : hasReasoningContent(renderableBlocks)
+    if (hideReasoning && hadReasoning && !isUserRow && !editingState && !showActionsRow &&
+        renderItems.length === 0 && !(Array.isArray(artifacts) && artifacts.length > 0)) {
+      return null
+    }
 
     return (
       <div

@@ -432,3 +432,27 @@ describe('warm Claude sessions', () => {
     expect(f.sdk.query).toHaveBeenCalledTimes(2)
   })
 })
+
+describe('Claude resume after an unclean stop', () => {
+  // CLI 2.1.332 on resume: its notice about background tasks the dead process left unfinished
+  // runs as a turn of its own, with no model call, before the prompt this run sent. Its `result`
+  // ended the run ("Claude ended without a completed response") and killed the real turn.
+  it('does not take the result of a turn the CLI ran before this run prompt as the run result', async () => {
+    const f = warmFixture()
+    const make = f.sdk.query.getMockImplementation()!
+    f.sdk.query.mockImplementation((params: any) => {
+      const query = make(params)
+      f.clis.at(-1)!.beforeAck = n => n !== 1 ? [] : [
+        { type: 'system', subtype: 'init', session_id: 's', permissionMode: 'default', mcp_servers: [] },
+        { type: 'command_lifecycle', command_uuid: 'orphan-notice', state: 'started' },
+        { type: 'result', subtype: 'success', is_error: false, session_id: 's' },
+        { type: 'command_lifecycle', command_uuid: 'orphan-notice', state: 'completed' },
+      ]
+      return query
+    })
+    const final = await f.service.run(f.input())
+    expect(final.content).toBe('reply to first')
+    expect(f.state()).toMatchObject({ session_id: 's', state: 'ready' })
+    expect(f.records.get(final.id)).toMatchObject({ message_uuid: 'a1', resumable: 1 })
+  })
+})

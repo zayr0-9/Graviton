@@ -1934,3 +1934,30 @@ describe('Claude Code MCP servers (native, v1)', () => {
     expect(f.emit.mock.calls.some(([event]) => event.code === 'claude_mcp_unavailable')).toBe(false)
   })
 })
+
+describe('Claude send after a failed run', () => {
+  it('continues from the completed response above a failed send by forking there', async () => {
+    const f = fixture([assistant(), success])
+    const rows: Record<string, any> = {
+      error: { id: 'error', parent_id: 'user', role: 'assistant', meta: '{"runStatistics":{"kind":"terminal_error"}}' },
+      user: { id: 'user', parent_id: 'done', role: 'user', meta: '{}' },
+    }
+    ;(f.service as any).deps.messages.get = vi.fn((id: string) => rows[id] ?? null)
+    f.sessions.checkpoint.mockImplementation(((id: string) => id === 'done'
+      ? { session_id: 'source', message_uuid: 'checkpoint', cwd: '/workspace', resumable: 1 } : undefined) as any)
+    f.state.branch = { session_id: 'source', state: 'uncertain' }
+    f.input.sourceMessageId = 'error'
+    await f.service.run(f.input)
+    expect(f.sdk.forkSession).toHaveBeenCalledWith('source', { dir: '/workspace', upToMessageId: 'checkpoint' })
+  })
+
+  it('still refuses a mid-turn Claude row that is not a completed checkpoint', async () => {
+    const f = fixture([assistant(), success])
+    ;(f.service as any).deps.messages.get = vi.fn(() => ({ id: 'partial', parent_id: 'done', meta: '{"claude":{"sessionId":"source","checkpoint":false}}' }))
+    f.sessions.checkpoint.mockImplementation(((id: string) => id === 'done'
+      ? { session_id: 'source', message_uuid: 'checkpoint', cwd: '/workspace', resumable: 1 } : undefined) as any)
+    f.input.sourceMessageId = 'partial'
+    await expect(f.service.run(f.input)).rejects.toThrow('not a completed Claude checkpoint')
+    expect(f.sdk.forkSession).not.toHaveBeenCalled()
+  })
+})

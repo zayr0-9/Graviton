@@ -44,6 +44,13 @@ import { claudeBridge } from '../tools/claudeBridge.js'
 import { withToolAccess } from '../toolAccessContext.js'
 import { createWatchExecutor, watchService } from './services/watchService.js'
 import { createMultiCallDispatchExecutor } from './services/multiCallExecutor.js'
+import {
+  HEAVY_COMMAND_MIN_RUN_MS,
+  HeavyCommandGate,
+  heavyCommandGate,
+  isHeavyShellCommand,
+  resolveHeavyCommandWorkspace,
+} from './services/heavyCommandGate.js'
 import { createReplDispatchExecutor } from './services/replExecutor.js'
 import { createContextStatusExecutor } from './services/contextStatusTool.js'
 import { createOperationModeSwitchExecutor } from './services/operationModeSwitchTool.js'
@@ -190,7 +197,11 @@ const sleep = (ms: number): Promise<void> =>
     setTimeout(resolve, ms)
   })
 
-const createOrchestratorToolExecutor = (toolOrchestrator: OrchestratorLike): ToolExecutor => async (toolCall, context) => {
+export const createOrchestratorToolExecutor = (
+  toolOrchestrator: Pick<OrchestratorLike, 'submit' | 'getJob' | 'cancel'>,
+  gate: HeavyCommandGate = heavyCommandGate
+): ToolExecutor => async (toolCall, context) => {
+  const budgetStartedAt = Date.now()
   const requestedTimeout = context.timeoutMs
   const timeoutMs = typeof requestedTimeout === 'number' && Number.isFinite(requestedTimeout) && requestedTimeout > 0
     ? Math.max(1_000, Math.min(requestedTimeout, 600_000))
@@ -216,9 +227,36 @@ const createOrchestratorToolExecutor = (toolOrchestrator: OrchestratorLike): Too
     throw abortError
   }
 
+  // Builds, type checks and test runners in one workspace run one at a time
+  // (parallel multi_call batches and concurrent runs included). The wait
+  // spends the caller's tool budget, not the shell's own timeout.
+  const isShell = toolCall.name === 'bash' || toolCall.name === 'powershell'
+  const release = isShell && isHeavyShellCommand(parsedArguments.command)
+    ? await gate.acquire(
+        resolveHeavyCommandWorkspace(parsedArguments.command, parsedArguments.cwd, context.rootPath),
+        parsedArguments.command,
+        { signal, waitUntilMs: budgetStartedAt + timeoutMs - HEAVY_COMMAND_MIN_RUN_MS }
+      )
+    : undefined
+  try {
+    return await pollOrchestratorJob(toolOrchestrator, toolCall, context, parsedArguments, timeoutMs, budgetStartedAt)
+  } finally {
+    release?.()
+  }
+}
+
+async function pollOrchestratorJob(
+  toolOrchestrator: Pick<OrchestratorLike, 'submit' | 'getJob' | 'cancel'>,
+  toolCall: Parameters<ToolExecutor>[0],
+  context: Parameters<ToolExecutor>[1],
+  parsedArguments: Record<string, any>,
+  timeoutMs: number,
+  budgetStartedAt: number
+): Promise<unknown> {
+  const signal = context.signal
   const job = toolOrchestrator.submit(toolCall.name, parsedArguments, {
     timeoutMs,
-    deadlineMs: Date.now() + timeoutMs,
+    deadlineMs: budgetStartedAt + timeoutMs,
     rootPath: context.rootPath ?? null,
     fullAccess: context.fullAccess === true,
     additionalRoots: context.additionalRoots ?? [],
@@ -229,7 +267,7 @@ const createOrchestratorToolExecutor = (toolOrchestrator: OrchestratorLike): Too
     toolCallId: toolCall.id ?? null,
   })
 
-  const startedAt = Date.now()
+  const startedAt = budgetStartedAt
   while (true) {
     // Cancel the in-flight job promptly when the run is aborted.
     if (signal?.aborted) {
