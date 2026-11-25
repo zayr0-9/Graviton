@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Conversation } from '../features/conversations/conversationTypes'
 import { createEmptyStreamState } from '../features/chats/streamHelpers'
+import type { Message } from '../features/chats/chatTypes'
 import {
   buildAgentConversationLookup,
   buildAgentForkGroups,
@@ -199,6 +200,80 @@ describe('excludeViewedAgentFork', () => {
     const otherConversation = completed('other-conversation', { conversationId: 'conversation-b' })
     const history = [unconfirmed, otherConversation]
     const result = excludeViewedAgentFork([], history, null, getLineageForkKey('conversation-a', 'fork-a'))
+    expect(result.streamHistory).toBe(history)
+  })
+
+  const viewedTranscript = (path: string[], ...runs: Array<{ streamId: string; rows: Array<[string, 'user' | 'assistant']> }>) => ({
+    conversationId: 'conversation-a',
+    path,
+    previews: Object.fromEntries(runs.map(({ streamId, rows }) => [streamId, {
+      entries: rows.map(([id, role]) => {
+        const message: Message = {
+          id, role, conversation_id: 'conversation-a', children_ids: [], content: id, content_plain_text: id,
+          created_at: '', model_name: '', partial: false, pastedContext: [], artifacts: [],
+        }
+        return { key: id, message }
+      }),
+    }])),
+  })
+
+  it('hides a completed run already shown earlier on the selected path under a different lineage', () => {
+    const live = run('live', { lineageId: 'later-lineage' })
+    const earlier = completed('earlier', { lineageId: 'earlier-lineage' })
+    const result = excludeViewedAgentFork([live], [earlier], 'live', getLineageForkKey('conversation-a', 'later-lineage'),
+      viewedTranscript(['prompt', 'answer', 'later-prompt'], { streamId: 'earlier', rows: [['prompt', 'user'], ['answer', 'assistant']] }))
+    expect(result.activeStreams).toEqual([])
+    expect(result.streamHistory).toEqual([])
+  })
+
+  it('uses the selected path even when Chat has no explicit lineage or live stream', () => {
+    const earlier = completed('earlier')
+    const result = excludeViewedAgentFork([], [earlier], null, null,
+      viewedTranscript(['prompt', 'answer', 'later-prompt'], { streamId: 'earlier', rows: [['prompt', 'user'], ['answer', 'assistant']] }))
+    expect(result.streamHistory).toEqual([])
+  })
+
+  it('keeps unshown sibling output, shared prompts alone, and runs in another conversation', () => {
+    const sibling = completed('sibling', { lineageId: 'sibling-fork', finalMessageId: 'sibling-final' })
+    const missing = completed('missing', { lineageId: 'missing-fork', parentMessageId: 'prompt', anchorMessageId: 'answer' })
+    const other = completed('other', { conversationId: 'conversation-b' })
+    const unseen = completed('unseen', { lineageId: 'unseen-fork' })
+    const history = [sibling, missing, other, unseen]
+    const result = excludeViewedAgentFork([], history, null, null,
+      viewedTranscript(['prompt', 'answer'],
+        { streamId: 'sibling', rows: [['prompt', 'user'], ['answer', 'assistant']] },
+        { streamId: 'missing', rows: [['prompt', 'user']] },
+        { streamId: 'other', rows: [['prompt', 'user'], ['answer', 'assistant']] },
+        { streamId: 'unseen', rows: [['prompt', 'user'], ['sibling-output', 'assistant']] }))
+    expect(result.streamHistory).toBe(history)
+  })
+
+  it('keeps a run with captured output that has no persisted message on the path', () => {
+    const history = [completed('earlier')]
+    const viewed = viewedTranscript(['prompt', 'answer'],
+      { streamId: 'earlier', rows: [['prompt', 'user'], ['answer', 'assistant']] })
+    const previews = { earlier: { entries: [...viewed.previews.earlier.entries,
+      { key: 'tail', stream: { ...createEmptyStreamState('primary'), buffer: 'unpersisted output' } }] } }
+    expect(excludeViewedAgentFork([], history, null, null, { ...viewed, previews }).streamHistory).toBe(history)
+  })
+
+  it('keeps the whole finished card when another run on it is not on the path', () => {
+    const history = [completed('shown'), completed('not-shown')]
+    const result = excludeViewedAgentFork([], history, null, null,
+      viewedTranscript(['prompt', 'answer'],
+        { streamId: 'shown', rows: [['prompt', 'user'], ['answer', 'assistant']] },
+        { streamId: 'not-shown', rows: [['other-prompt', 'user'], ['other-answer', 'assistant']] }))
+    expect(result.streamHistory).toBe(history)
+  })
+
+  it('does not use path overlap to hide running forks or their completed history', () => {
+    const live = run('sibling-live')
+    const past = completed('past')
+    const history = [past]
+    const active = [live]
+    const result = excludeViewedAgentFork(active, history, null, null,
+      viewedTranscript(['prompt', 'answer'], { streamId: 'past', rows: [['prompt', 'user'], ['answer', 'assistant']] }))
+    expect(result.activeStreams).toBe(active)
     expect(result.streamHistory).toBe(history)
   })
 

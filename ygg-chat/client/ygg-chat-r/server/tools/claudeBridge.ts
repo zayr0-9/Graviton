@@ -445,6 +445,7 @@ export class ClaudeBridge {
             { model: 'opus', description: 'Complex reasoning and deeper reviews.', anthropicModelId: 'claude-opus-5-5' },
             { model: 'haiku', description: 'Fast, lightweight reviews.', anthropicModelId: 'claude-haiku-5-5' },
             { model: 'fable', description: 'Hard, long-running tasks; may bill additional usage credits without prompting in non-interactive mode.', anthropicModelId: 'claude-fable-5-1' },
+            { model: 'claude-fable-5-2', description: 'Select Fable 5.2 explicitly; may bill additional usage credits without prompting in non-interactive mode.', anthropicModelId: 'claude-fable-5-2' },
             { model: 'best', description: 'Fable where available, otherwise Opus; may bill additional usage credits.' },
             { model: 'sonnet[1m]', description: 'Sonnet with extended context where supported.' },
             { model: 'opus[1m]', description: 'Opus with extended context where supported.' },

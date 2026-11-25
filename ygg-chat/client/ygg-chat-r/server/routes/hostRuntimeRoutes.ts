@@ -30,6 +30,11 @@ export function registerHostRuntimeRoutes(app: Express): void {
   })
   app.get('/api/host/execution-preferences', (_req, res) => res.json(readHostExecutionPreferences()))
   app.patch('/api/host/execution-preferences', (req, res) => {
+    // Only the desktop main window can opt into automatic execution of repo hooks.
+    if (req.body?.patch && Object.hasOwn(req.body.patch, 'allowClaudeNativeHooks')) {
+      res.status(403).json({ error: 'Change Claude Code hook permissions in Graviton’s desktop Settings.' })
+      return
+    }
     try { res.json(saveHostExecutionPreferences(req.body)) }
     catch (error) { res.status(409).json({ error: error instanceof Error ? error.message : 'Settings update failed' }) }
   })

@@ -67,6 +67,7 @@ import { isWatcherCompletionMessage, WatcherCompletionNotice } from './WatcherCo
 import { isFullAccessNotification } from '../../../../../shared/accessNotifications'
 import { FullAccessNotice } from './FullAccessNotice'
 import { ToolCallGroupCard, type McpViewerPayload } from './ToolCallGroupCard'
+import { getToolCardThemeVars } from './toolCardPalette'
 import {
   buildToolCallGroupsFromBlocks,
   COLLAPSED_CONTENT_WORD_LIMIT,
@@ -1167,6 +1168,11 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
       () => getMarkdownThemeVars(customThemeEnabled ? customTheme : createDefaultCustomChatTheme(), isDarkMode),
       [customThemeEnabled, customTheme, isDarkMode]
     )
+    // Key/value palette for every tool card in this message, derived from the same theme.
+    const toolCardThemeVars = useMemo(
+      () => getToolCardThemeVars(customThemeEnabled ? customTheme : createDefaultCustomChatTheme(), isDarkMode),
+      [customThemeEnabled, customTheme, isDarkMode]
+    )
 
     // Style object for content areas that scale with fontSizeOffset. Disclosure labels use
     // em-based sizes so they inherit it too.
@@ -1307,6 +1313,7 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
           disableExpandTransition={isStreamingRender}
           onExpandTransitionEnd={handleExpandTransitionEnd}
           contentStyle={messageContentStyle}
+          themeVars={toolCardThemeVars}
           truncateToolOutput={truncateToolOutput}
           readOnly={readOnly}
           toolDefinitions={toolDefinitions}

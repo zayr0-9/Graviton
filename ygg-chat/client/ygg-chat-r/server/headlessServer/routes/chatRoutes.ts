@@ -1,3 +1,4 @@
+import { isReasoningLevel } from '../../../../../shared/reasoningLevel.js'
 import { randomUUID } from 'node:crypto'
 import { hostEpoch } from '../../hostEpoch.js'
 import type { RunAdmissionService } from '../services/runAdmissionService.js'
@@ -137,6 +138,7 @@ function buildHeadlessMessageRequest(req: Request, operation: HeadlessChatOperat
     isElectron: typeof body.isElectron === 'boolean' ? body.isElectron : undefined,
     imageConfig: body.imageConfig ?? body.image_config,
     reasoningConfig: body.reasoningConfig ?? body.reasoning_config,
+    reasoningLevel: isReasoningLevel(body.reasoningLevel) ? body.reasoningLevel : undefined,
     subagentReasoningEffort:
       body.subagentReasoningEffort === 'low' || body.subagentReasoningEffort === 'medium' || body.subagentReasoningEffort === 'high' || body.subagentReasoningEffort === 'xhigh'
         ? body.subagentReasoningEffort

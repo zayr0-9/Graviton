@@ -3,6 +3,8 @@ import { GravitonMcpServer, claudeGravitonToolName, enabledGravitonTools, gravit
 import { ClaudeSessionService } from '../claudeSessionService.js'
 import { DecisionBroker } from '../decisionBroker.js'
 import { createChatPausingExecutor } from '../chatOrchestrator.js'
+import { createMultiCallDispatchExecutor } from '../multiCallExecutor.js'
+import { createReplDispatchExecutor, ReplSessions } from '../replExecutor.js'
 import { BUILTIN_TOOL_DEFINITIONS } from '../../../../../../shared/builtinToolDefinitions.js'
 
 /** The CLI end of the SDK transport: requests by id, everything the server sent. */
@@ -146,13 +148,16 @@ describe('GravitonMcpServer', () => {
 })
 
 describe('Graviton tools in a Claude run', () => {
-  function fixture(options: { states?: Record<string, boolean>; operationMode?: 'plan' | 'execute'; autoApprove?: boolean; planMode?: boolean } = {}) {
+  function fixture(options: { states?: Record<string, boolean>; operationMode?: 'plan' | 'execute'; autoApprove?: boolean; planMode?: boolean;
+    repl?: { sessions: ReplSessions; arguments: Record<string, unknown> } } = {}) {
     const rows: any[] = []
     const state: any = {}
     const sessions = { branch: vi.fn(() => state.branch), checkpoint: vi.fn(() => state.checkpoint), reserve: vi.fn(),
       session: vi.fn((_lineage, session_id, status) => { state.branch = { session_id, state: status } }), record: vi.fn() }
     let states = options.states ?? {}
     const execute = vi.fn(async (_call: any, _context: any) => ({ success: true, persistedContent: { themes: ['dusk'] }, modelContent: 'Themes: dusk' }))
+    const base = options.repl ? createMultiCallDispatchExecutor(createReplDispatchExecutor(execute, options.repl.sessions)) : execute
+    const invocation = options.repl ? { name: 'repl', arguments: options.repl.arguments } : { name: 'theme_manager', arguments: { action: 'list' } }
     const cli: { listed?: any; called?: any; server?: any } = {}
     const sdk = {
       query: vi.fn(({ options: queryOptions }: any) => {
@@ -163,8 +168,8 @@ describe('Graviton tools in a Claude run', () => {
           cli.server = server
           cli.listed = await transport.request('tools/list')
           yield { type: 'assistant', uuid: 'a1', session_id: 's', parent_tool_use_id: null,
-            message: { id: 'm1', content: [{ type: 'tool_use', id: 'toolu_1', name: 'mcp__graviton__theme_manager', input: { action: 'list' } }] } }
-          cli.called = await transport.request('tools/call', { name: 'theme_manager', arguments: { action: 'list' }, _meta: { 'claudecode/toolUseId': 'toolu_1' } })
+            message: { id: 'm1', content: [{ type: 'tool_use', id: 'toolu_1', name: claudeGravitonToolName(invocation.name), input: invocation.arguments }] } }
+          cli.called = await transport.request('tools/call', { ...invocation, _meta: { 'claudecode/toolUseId': 'toolu_1' } })
           yield { type: 'user', uuid: 'r1', session_id: 's', parent_tool_use_id: null,
             message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: cli.called.result.content, is_error: cli.called.result.isError }] } }
           yield { type: 'assistant', uuid: 'a2', session_id: 's', parent_tool_use_id: null, message: { id: 'm2', content: [{ type: 'text', text: 'You have dusk.' }] } }
@@ -182,7 +187,7 @@ describe('Graviton tools in a Claude run', () => {
     const service = new ClaudeSessionService({ sessions: sessions as any, broker, executable: async () => '/mock/claude', sdk: async () => sdk as any, hookRuns: null,
       messages: { get: vi.fn(() => null), updateClaudeProjection: vi.fn((id: string, content: string, content_blocks: any, meta: any) => ({ id, content, content_blocks, meta })) } as any,
       gravitonTools: { available: () => enabledGravitonTools(definitions, states),
-        executor: run => createChatPausingExecutor({ base: execute, broker, ...run }) } })
+        executor: run => createChatPausingExecutor({ base, broker, ...run }) } })
     const input: any = { request: { conversationId: 'c', provider: 'Claude Code', modelName: 'claude-sonnet-5-5', content: 'which themes?', streamId: 'stream',
       operationMode: options.operationMode ?? 'execute', ...(options.planMode ? { claudePlanMode: true } : {}), subagentDefaults: { defaultProvider: 'openaichatgpt' } },
       lineageId: 'l', userMessage: { id: 'u' }, parentId: 'u', sourceMessageId: null, fork: false, cwd: '/workspace', sink, emit }
@@ -207,6 +212,32 @@ describe('Graviton tools in a Claude run', () => {
     expect(blocks.find((block: any) => block.type === 'tool_use')).toMatchObject({ id: 'toolu_1', name: 'theme_manager' })
     expect(blocks.find((block: any) => block.type === 'tool_result')).toMatchObject({ tool_use_id: 'toolu_1', content: '{"themes":["dusk"]}', is_error: false })
     expect(f.emit).toHaveBeenCalledWith(expect.objectContaining({ type: 'tool_execution', status: 'started', toolName: 'theme_manager' }))
+  })
+
+  it('captures a batch through Claude’s Graviton tool bridge without bypassing native plan mode', async () => {
+    const sessions = new ReplSessions()
+    const f = fixture({ planMode: true, repl: { sessions, arguments: {
+      action: 'invoke', tool: 'multi_call', assign: 'batch', args: { stopOnError: false, calls: [
+        { tool: 'create_file', args: { path: 'blocked.txt' } },
+        { tool: 'read_file', args: { path: 'package.json' } },
+      ] },
+    } } })
+    try {
+      await f.service.run(f.input)
+      expect(f.cli.called.result.isError).toBe(false)
+      const receipt = JSON.parse(f.cli.called.result.content[0].text)
+      expect(receipt).toMatchObject({ status: 'stored', variable: 'batch' })
+      expect(f.cli.called.result.content[0].text).not.toContain('dusk')
+      const data = await sessions.run({ action: 'show', variable: 'batch' }, {
+        conversationId: 'c', messageId: 'row0', lineageId: 'l', rootPath: '/workspace',
+      }, async () => { throw new Error('Unexpected tool dispatch') })
+      expect(JSON.parse(data.content).results).toMatchObject([
+        { tool: 'create_file', ok: false, error: expect.stringContaining('not available while plan mode is on') },
+        { tool: 'read_file', ok: true, data: { persistedContent: { themes: ['dusk'] } } },
+      ])
+      expect(f.execute).toHaveBeenCalledOnce()
+      expect(f.execute.mock.calls[0][0].name).toBe('read_file')
+    } finally { sessions.clear() }
   })
 
   it('gives run-scoped tools the run: switch_mode switches the run, context_status reads Claude\'s usage', async () => {

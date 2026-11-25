@@ -451,7 +451,7 @@ describe('Claude compaction projection', () => {
       expect(final).toEqual(f.rows[0])
       expect(f.sessions.record).not.toHaveBeenCalled()
     }
-    expect(f.sdk.query.mock.calls[0][0].options.settings).toEqual({ plansDirectory: path.join('.ygg', 'plans') })
+    expect(f.sdk.query.mock.calls[0][0].options.settings).toEqual({ plansDirectory: path.join('.ygg', 'plans'), disableAllHooks: true })
   })
   it('records a mode switch made during manual /compact on the summary', async () => {
     const f = fixture()
@@ -1052,12 +1052,14 @@ describe('Claude Code skills and hooks', () => {
   const system = (subtype: string, fields: any) => ({ type: 'system', subtype, session_id: 's', uuid: `${subtype}-${fields.hook_id}`, ...fields })
   const user = (content: any, extra: any = {}) => ({ type: 'user', uuid: `user-${Math.random()}`, session_id: 's', parent_tool_use_id: null, message: { role: 'user', content }, ...extra })
 
-  it('loads Claude Code settings, skills and hooks instead of isolating the session', async () => {
+  it('blocks unmanaged native hooks before launch without isolating Claude settings or removing host callbacks', async () => {
     const f = fixture([assistant(), success])
     await f.service.run(f.input)
     const options = f.sdk.query.mock.calls[0][0].options
     expect(options).toMatchObject({ settingSources: ['user', 'project', 'local'], includeHookEvents: true, strictMcpConfig: true, mcpServers: {} })
-    expect(options.settings).not.toHaveProperty('disableAllHooks')
+    expect(options.settings).toHaveProperty('disableAllHooks', true)
+    expect(options.hooks).toHaveProperty('PreToolUse')
+    expect(options.hooks).toHaveProperty('PostCompact')
   })
 
   it('records native hooks as hook runs on the row that owns them', async () => {
@@ -1636,7 +1638,7 @@ describe('Ultracode and background tasks', () => {
       const f = fixture([assistant(), success])
       if (ultracode) f.input.request.claudeUltracode = true
       await f.service.run(f.input)
-      expect(f.sdk.query.mock.calls[0][0].options.settings).toEqual({ plansDirectory: path.join('.ygg', 'plans'), ...(ultracode ? { ultracode: true } : {}) })
+      expect(f.sdk.query.mock.calls[0][0].options.settings).toEqual({ plansDirectory: path.join('.ygg', 'plans'), disableAllHooks: true, ...(ultracode ? { ultracode: true } : {}) })
     }
   })
 

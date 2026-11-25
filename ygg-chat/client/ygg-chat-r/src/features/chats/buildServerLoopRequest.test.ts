@@ -31,6 +31,15 @@ describe('buildServerLoopRequest', () => {
     expect(buildServerLoopRequest(op, params).body).not.toHaveProperty('serviceTier')
   })
 
+  it.each(['send', 'branch', 'edit'] as const)('forwards a valid branch reasoning level for %s and omits anything else', op => {
+    const params = { ...base, messageId: 'm1' }
+    for (const level of ['off', 'low', 'medium', 'high', 'xhigh'] as const) {
+      expect(buildServerLoopRequest(op, { ...params, reasoningLevel: level }).body.reasoningLevel).toBe(level)
+    }
+    expect(buildServerLoopRequest(op, params).body).not.toHaveProperty('reasoningLevel')
+    expect(buildServerLoopRequest(op, { ...params, reasoningLevel: 'max' as any }).body).not.toHaveProperty('reasoningLevel')
+  })
+
   it.each(['send', 'branch', 'edit'] as const)('forwards the deferred notice only with full access for %s', op => {
     const params = { ...base, messageId: 'm1', fullAccessNotificationId: 'toggle-1' }
     expect(buildServerLoopRequest(op, params).body.fullAccessNotificationId).toBeUndefined()

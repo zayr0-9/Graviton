@@ -1,7 +1,7 @@
 import React from 'react'
 import type { ClaudeBackgroundTask } from '../../../../../shared/claudeProvider'
 import { formatTaskDuration, formatTaskTokens } from '../../features/chats/backgroundTasks'
-import { MONO_DETAIL_CLASS, MONO_KEY_CLASS } from './chatMessageShared'
+import { MONO_DETAIL_CLASS, MONO_KEY_CLASS, TOOL_FIELD_KEY_CLASS, TOOL_FIELD_PUNCTUATION_CLASS, TOOL_FIELD_TEXT_CLASS } from './chatMessageShared'
 import { Badge, SurfaceCard, type BadgeTone, type DisclosureTone } from './messagePrimitives'
 
 const STATUS: Record<ClaudeBackgroundTask['status'], { label: string; tone: BadgeTone; disclosure: DisclosureTone }> = {
@@ -50,7 +50,12 @@ export const BackgroundTaskView: React.FC<{ task: ClaudeBackgroundTask }> = ({ t
       {running && task.activity && task.activity !== task.progress && (
         <div className={`${MONO_DETAIL_CLASS} truncate`} title={task.activity}>{task.activity}</div>
       )}
-      {running && task.lastTool && <div className={`${MONO_DETAIL_CLASS} ${MONO_KEY_CLASS}`}>Last tool: {task.lastTool}</div>}
+      {running && task.lastTool && (
+        <div className={MONO_DETAIL_CLASS}>
+          <span className={TOOL_FIELD_KEY_CLASS}>Last tool</span>
+          <span className={TOOL_FIELD_PUNCTUATION_CLASS}>:</span> <span className={TOOL_FIELD_TEXT_CLASS}>{task.lastTool}</span>
+        </div>
+      )}
       {!running && task.summary && <div className={MONO_DETAIL_CLASS}>{task.summary}</div>}
       {usage && usage.totalTokens > 0 && (
         <div className={`${MONO_DETAIL_CLASS} ${MONO_KEY_CLASS}`}>

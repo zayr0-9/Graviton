@@ -85,6 +85,7 @@ interface ChatOrchestratorDeps {
   claudeSessions?: ClaudeSessionService
   /** Host setting for Claude Code's own MCP servers; absent (tests, subagents) keeps Claude's MCP off. */
   claudeNativeMcp?: () => HostClaudeMcpPreferences
+  allowClaudeNativeHooks?: () => boolean
   /** Keep a Claude branch's CLI open between runs; absent (tests, subagents) starts a CLI per run. */
   claudeWarm?: ClaudeWarmConfig | null
   /**
@@ -409,6 +410,7 @@ export function createChatPausingExecutor(deps: {
       if (pre.permissionDecision === 'deny') {
         throw new Error(pre.permissionDecisionReason || 'Tool blocked by hook')
       }
+      if (pre.updatedInput) context.assertReplCaptureAllowed?.(effectiveToolCall)
       const effArgs = parseToolArgs(effectiveToolCall.arguments)
       modeControl?.assertCanDispatch(effectiveToolCall)
 
@@ -942,7 +944,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     const gravitonToolStates = deps.claudeGravitonToolStates
     const gravitonExecutor = deps.toolExecutor
     this.claudeSessions = deps.claudeSessions ?? new ClaudeSessionService({ sessions: this.claudeSessionRepo, messages: this.messageRepo, broker: deps.decisionBroker,
-      nativeMcp: deps.claudeNativeMcp, warm: deps.claudeWarm,
+      nativeMcp: deps.claudeNativeMcp, allowNativeHooks: deps.allowClaudeNativeHooks, warm: deps.claudeWarm,
       gravitonTools: gravitonToolStates && gravitonExecutor ? {
         available: () => enabledGravitonTools(this.defaultToolsProvider(), gravitonToolStates()),
         // Graviton's own per-call wrapper, so a Claude run's Graviton calls ask, run hooks and
@@ -1192,6 +1194,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
         modelSelection: { provider: request.provider, model: request.modelName },
         ...(this.summaryHandoff(request) ? { executionHandoff: { summaryMessageId: this.summaryHandoff(request)!.id } } : {}),
         fastMode: request.serviceTier === 'priority',
+        ...(request.reasoningLevel ? { reasoningLevel: request.reasoningLevel } : {}),
         toolAutoApprove: request.toolAutoApprove !== false,
         // Claude runs never persist mode-notification rows (they would displace the
         // resumable checkpoint), so the turn's mode is recorded on its user row.
@@ -1789,6 +1792,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       onModelResponse: (id: string) => { runResponseIds.add(id) },
       modelSelection: { provider: request.provider, model: request.modelName },
       fastMode: request.serviceTier === 'priority',
+      reasoningLevel: request.reasoningLevel,
       toolAutoApprove: () => this.decisionBroker?.isAutoApproveAll(trackedStreamId!) ?? request.toolAutoApprove !== false,
     }
     // ONE sink instance for the run: the loop's turns and any terminal error row share

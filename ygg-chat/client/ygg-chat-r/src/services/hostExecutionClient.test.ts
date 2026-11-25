@@ -26,3 +26,14 @@ it('retains unrelated domains while saving a hook choice', async () => {
   await client.saveHostExecutionPreference({ hookGeneration: { ...host.snapshot.values.hookGeneration, claudeModel: 'haiku' } }, 2)
   expect(Object.keys(host.save.mock.calls[0][0].patch)).toEqual(['hookGeneration'])
 })
+
+it('saves native hook opt-in using the revision the desktop switch was rendered with', async () => {
+  const client = await import('./hostExecutionClient')
+  host.snapshot = { ...host.snapshot, revisions: { allowClaudeNativeHooks: 2 } }
+  await client.refreshHostExecutionPreferences()
+  const base = client.getHostExecutionRevision('allowClaudeNativeHooks')!
+  host.snapshot = { ...host.snapshot, revision: 11, revisions: { allowClaudeNativeHooks: 3 } }
+  await client.refreshHostExecutionPreferences()
+  await client.saveHostExecutionPreference({ allowClaudeNativeHooks: true }, base)
+  expect(host.save).toHaveBeenCalledWith(expect.objectContaining({ expectedRevisions: { allowClaudeNativeHooks: 2 }, patch: { allowClaudeNativeHooks: true } }))
+})

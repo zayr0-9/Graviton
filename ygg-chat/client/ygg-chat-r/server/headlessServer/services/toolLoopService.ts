@@ -74,6 +74,10 @@ export interface ToolExecutionContext {
   signal?: AbortSignal
   /** Policy-aware executor used by composite tools for each nested call. */
   nestedExecutor?: ToolExecutor
+  /** Prevents a batch from re-entering multi_call indirectly through REPL. */
+  insideMultiCall?: boolean
+  /** REPL's capture policy for calls inside a captured batch, including hook rewrites. */
+  assertReplCaptureAllowed?: (call: ProviderToolCall) => void
   /** Host-owned tool allowlist; child REPL writer/private-fallback identity. */
   allowedToolNames?: ReadonlySet<string>
   replOwnerId?: string

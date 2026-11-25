@@ -1104,6 +1104,20 @@ describe('source lineage membership validation', () => {
     }
   })
 
+  it.each(['off', 'high'] as const)('persists reasoning level %s on user and assistant rows', async reasoningLevel => {
+    const events: any[] = []
+    await orchestrator.runMessage({
+      operation: 'send', conversationId: 'c1', content: 'hello', provider: 'openaichatgpt',
+      modelName: 'test', streamId: `reasoning-${reasoningLevel}`, reasoningLevel,
+    }, event => events.push(event))
+    const user = events.find(event => event.type === 'user_message_persisted').message
+    const assistant = events.find(event => event.type === 'complete').message
+    for (const row of [user, assistant]) {
+      const meta = typeof row.meta === 'string' ? JSON.parse(row.meta) : row.meta
+      expect(meta.reasoningLevel).toBe(reasoningLevel)
+    }
+  })
+
   it('accepts FIFO follow-ups during manual compaction and delivers only after summary commit', async () => {
     orchestrator = new ChatOrchestrator({ db, statements, providerRouter: providerRouter as any,
       toolExecutor: async () => 'Read result' })

@@ -58,6 +58,8 @@ export interface HeadlessMessageRequest {
   isElectron?: boolean
   imageConfig?: any
   reasoningConfig?: any
+  /** Renderer branch-selected reasoning level, persisted as meta.reasoningLevel. */
+  reasoningLevel?: import('./reasoningLevel.js').ReasoningLevel
   serviceTier?: 'priority'
   promptCacheRetention?: 'in_memory' | '24h'
   tools?: Array<{ name: string; description?: string; inputSchema?: Record<string, any> }>

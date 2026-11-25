@@ -70,8 +70,10 @@ export async function executeMultiCall(
   context: ToolExecutionContext,
   executeNested: ToolExecutor
 ): Promise<{ results: MultiCallResult[]; parallel: boolean; stopOnError: boolean }> {
+  if (context.insideMultiCall) throw new Error('multi_call cannot invoke nested tool: multi_call')
   const args = parseArguments(toolCall)
   const calls = normalizeCalls(toolCall)
+  const nestedContext = { ...context, insideMultiCall: true }
   const parallel = args.parallel === true
   const stopOnError = args.stopOnError !== false
   const concurrency = Math.max(1, Math.min(Number.isInteger(args.maxConcurrency) ? args.maxConcurrency : MAX_CONCURRENCY, MAX_CONCURRENCY))
@@ -90,7 +92,8 @@ export async function executeMultiCall(
 
     try {
       assertToolAllowedForOperationMode(nestedToolCall, context.operationMode ?? 'execute')
-      const data = await executeNested(nestedToolCall, context)
+      context.assertReplCaptureAllowed?.(nestedToolCall)
+      const data = await executeNested(nestedToolCall, nestedContext)
       results[index] = { tool: call.tool, ok: true, data: modelSafeData(data) }
     } catch (error) {
       if (context.signal?.aborted || (error instanceof Error && error.name === 'AbortError')) throw error

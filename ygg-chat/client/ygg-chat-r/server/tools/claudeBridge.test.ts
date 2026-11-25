@@ -59,7 +59,20 @@ describe('claude_bridge', () => {
     expect(result).toMatchObject({ success: true, source: 'documented_catalog', accountAvailabilityVerified: false })
     expect(result.models.map((entry: any) => entry.model)).toEqual(expect.arrayContaining(['default', 'haiku', 'sonnet', 'opus', 'fable']))
     expect(result.models.find((entry: any) => entry.model === 'fable').description).toContain('usage credits')
+    expect(result.models).toContainEqual(expect.objectContaining({
+      model: 'claude-fable-5-2',
+      anthropicModelId: 'claude-fable-5-2',
+      description: expect.stringContaining('usage credits'),
+    }))
     expect(launch).not.toHaveBeenCalled()
+  })
+
+  it('passes an explicit Fable 5.2 selection through to the CLI', async () => {
+    const model = 'claude-fable-5-2'
+    const result = await bridge.execute({ action: 'start', model, message: 'Review' }, context)
+    expect(result).toMatchObject({ success: true, model, job: { requestedModel: model } })
+    expect(launch.mock.calls[0][1]).toEqual(expect.arrayContaining(['--model', model]))
+    children[0].reply(result.sessionId)
   })
 
   it('persists model choices, switches between turns with the same history, and reports CLI model usage', async () => {

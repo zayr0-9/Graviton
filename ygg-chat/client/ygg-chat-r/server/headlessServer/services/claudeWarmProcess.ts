@@ -49,7 +49,7 @@ export function bumpClaudeConfigEpoch(): void { configEpoch++ }
  */
 export async function claudeLaunchKey(input: {
   cwd: string; additionalDirectories?: string[]; adaptiveThinking: boolean; mcp: unknown
-  plansDirectory: string; executable: string; hookShape: string
+  plansDirectory: string; executable: string; hookShape: string; disableNativeHooks?: boolean
   /** The process serves Graviton's tools (its MCP server is fixed at launch; the list is not). */
   gravitonTools?: boolean
 }): Promise<string> {
@@ -65,7 +65,8 @@ export async function claudeLaunchKey(input: {
   const executable = await realpath(input.executable).catch(() => input.executable)
   return JSON.stringify({
     cwd: input.cwd, additionalDirectories: [...(input.additionalDirectories ?? [])].sort(), adaptiveThinking: input.adaptiveThinking,
-    mcp: input.mcp, plansDirectory: input.plansDirectory, hookShape: input.hookShape, gravitonTools: input.gravitonTools === true, epoch: configEpoch,
+    mcp: input.mcp, plansDirectory: input.plansDirectory, hookShape: input.hookShape,
+    disableNativeHooks: input.disableNativeHooks === true, gravitonTools: input.gravitonTools === true, epoch: configEpoch,
     executable: `${executable}@${await fingerprint(executable)}`, settings: await Promise.all(files.map(fingerprint)),
   })
 }

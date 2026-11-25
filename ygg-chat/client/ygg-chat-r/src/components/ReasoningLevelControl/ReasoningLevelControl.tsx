@@ -5,7 +5,8 @@ import { getAssetPath } from '../../utils/assetPath'
 import { contentSpringTransition, reducedMotionTransition, shellSpringTransition } from '../motion'
 import { getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from '../ThemeManager/themeConfig'
 
-export type ReasoningLevel = 'off' | 'low' | 'medium' | 'high' | 'xhigh'
+import type { ReasoningLevel } from '../../../../../shared/reasoningLevel'
+export type { ReasoningLevel }
 
 type ReasoningLevelControlProps = {
   supported: boolean

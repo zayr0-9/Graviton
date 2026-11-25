@@ -376,6 +376,8 @@ export class ClaudeSessionService {
     hookRuns?: HookRunTracker | null
     /** Host setting for Claude Code's own MCP servers, read at each run start; absent keeps MCP off. */
     nativeMcp?: () => HostClaudeMcpPreferences | null | undefined
+    /** Trusted host opt-in; absent or unreadable blocks unmanaged hooks. */
+    allowNativeHooks?: () => boolean
     /** Keep a branch's CLI open between runs (warm sessions); absent or null starts a CLI per run. */
     warm?: ClaudeWarmConfig | null
     /** Graviton's own tools, served to Claude as the `graviton` MCP server; absent keeps them out. */
@@ -416,6 +418,11 @@ export class ClaudeSessionService {
 
   /** MCP servers the last fresh init of a native-MCP run reported (CLI #78820 detection). */
   private lastNativeMcpServerCount = 0
+
+  private nativeHooksDisabled(): boolean {
+    try { return this.deps.allowNativeHooks?.() !== true }
+    catch { return true }
+  }
 
   private nativeMcpPreferences(): HostClaudeMcpPreferences | null {
     try { return this.deps.nativeMcp?.() ?? null }
@@ -568,6 +575,7 @@ export class ClaudeSessionService {
     // process takes live (model, permission mode, effort, ultracode).
     const nativeMcp = this.nativeMcpPreferences()
     const mcp = claudeMcpLaunchOptions(nativeMcp)
+    const disableNativeHooks = this.nativeHooksDisabled()
     // Thinking is never disabled: several Claude models reject it, so the composer offers no
     // Off and a stale think:false falls back to the selected effort or the native default.
     // Omitted settings keep the native default for older/non-composer callers.
@@ -581,7 +589,8 @@ export class ClaudeSessionService {
     const liveSettings: ClaudeWarmSettings = { model: request.modelName, effort: selectedEffort ?? null, ultracode: request.claudeUltracode === true }
     const gravitonTools = this.deps.gravitonTools ?? null
     const launchKey = this.warm.enabled ? await claudeLaunchKey({ cwd, additionalDirectories: input.additionalDirectories, adaptiveThinking, mcp,
-      plansDirectory: CLAUDE_PLANS_DIRECTORY, executable, hookShape: input.hookSession ? 'graviton-hooks' : 'native-only', gravitonTools: Boolean(gravitonTools) }) : ''
+      plansDirectory: CLAUDE_PLANS_DIRECTORY, executable, hookShape: input.hookSession ? 'graviton-hooks' : 'native-only',
+      disableNativeHooks, gravitonTools: Boolean(gravitonTools) }) : ''
     // The branch's parked CLI, taken synchronously after the last await so nothing else closes or
     // claims it. It is reused only for a send at the exact head it parked at; anything else closes it.
     let warm = this.warm.take(lineageId)
@@ -1048,6 +1057,11 @@ export class ClaudeSessionService {
           subagentDefaults: request.subagentDefaults, subagentReasoningEffort: request.subagentReasoningEffort,
           subagentSystemPrompt: request.subagentModePrompt ?? null, contextDirectories: request.contextDirectories ?? null,
           allowedToolNames: new Set(this.gravitonAvailable().map(tool => tool.name)),
+          nestedExecutor: async (nestedCall, context) => {
+            const denial = gravitonDenial(claudeGravitonToolName(nestedCall.name), nestedCall.arguments)
+            if (denial) throw new Error(denial)
+            return gravitonExecutor(nestedCall, context)
+          },
           getContextStatus, switchOperationMode,
         })
         persisted = toToolResultContent(result)
@@ -1067,8 +1081,8 @@ export class ClaudeSessionService {
       cwd, model: request.modelName, ...(sessionId ? { resume: sessionId } : {}),
       ...(input.additionalDirectories?.length ? { additionalDirectories: input.additionalDirectories } : {}),
       abortController, includePartialMessages: true, permissionMode,
-      // Claude's own settings load (skills, hooks, plugins, CLAUDE.md) as in the CLI. MCP is off
-      // unless Settings turns on Claude's own servers; hidden servers lose their tools by deny rule.
+      // Keep Claude's settings layers (skills, plugins, CLAUDE.md and permission rules) while
+      // blocking unmanaged native hooks unless explicitly allowed. Claude MCP remains opt-in.
       canUseTool, permissionPrompts: 'host', settingSources: CLAUDE_SETTING_SOURCES,
       strictMcpConfig: mcp.strictMcpConfig, ...(mcp.mcpServers ? { mcpServers: mcp.mcpServers } : {}),
       ...(mcp.disallowedTools ? { disallowedTools: mcp.disallowedTools } : {}),
@@ -1082,7 +1096,8 @@ export class ClaudeSessionService {
         : { extraArgs: { 'thinking-display': 'summarized' } }),
       systemPrompt: { type: 'preset', preset: 'claude_code' },
       // Ultracode is session-scoped flag settings, so every run (each resume) restates it.
-      settings: { plansDirectory: CLAUDE_PLANS_DIRECTORY, ...(request.claudeUltracode ? { ultracode: true } : {}), ...mcp.settings },
+      settings: { plansDirectory: CLAUDE_PLANS_DIRECTORY, ...(request.claudeUltracode ? { ultracode: true } : {}), ...mcp.settings,
+        ...(disableNativeHooks ? { disableAllHooks: true } : {}) },
     }
     // Use the host's installed CLI rather than resolving a bundled native executable relative to an esbuild bundle.
     options.pathToClaudeCodeExecutable = executable
@@ -1329,6 +1344,7 @@ export class ClaudeSessionService {
     let unbindTasks: (() => void) | undefined
     try {
       signal?.throwIfAborted()
+      if (disableNativeHooks !== this.nativeHooksDisabled()) throw new Error('Claude Code hook settings changed before this turn started. Send again.')
       const bindings = { canUseTool, hooks, ...(gravitonTools ? { gravitonTool } : {}) }
       if (proc) {
         if (!proc.activate(bindings)) throw new Error('The Claude process ended before this turn started. Send again.')
@@ -1687,7 +1703,7 @@ export class ClaudeSessionService {
       if (proc) {
         // Kept only when it is idle at a completed response with nothing it could still start.
         const keep = parkable && !uncleanInput && !offered.size && !offeredModes.size && !rawTaskCount && !abortController.signal.aborted
-          && Boolean(activeSession) && Boolean(finalMessage)
+          && Boolean(activeSession) && Boolean(finalMessage) && disableNativeHooks === this.nativeHooksDisabled()
         if (keep) this.warm.park(proc, String(finalMessage.id), activeSession!, liveSettings)
         else if (this.warm.enabled) void this.warm.retire(proc)
         else proc.kill()

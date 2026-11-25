@@ -2,6 +2,7 @@ import { newQuickJSWASMModuleFromVariant, type QuickJSContext, type QuickJSRunti
 import variant from '@jitl/quickjs-singlefile-cjs-release-sync'
 import { assertToolAllowedWithoutAutoApprove, requiresAgentMode } from '../../../../../shared/operationModeToolPolicy.js'
 import { REPL_GUIDE } from '../../../../../shared/replGuide.js'
+import type { ProviderToolCall } from '../providers/providerTypes.js'
 import type { ToolExecutionContext, ToolExecutor } from './toolLoopService.js'
 
 const MAX_SESSIONS = 16
@@ -12,8 +13,8 @@ const MEMORY_BYTES = 32 * 1024 * 1024
 const MAX_OUTPUT = 20_000
 const MAX_CODE = 32_000
 const NAME = /^[A-Za-z_$][A-Za-z0-9_$]{0,63}$/
-// These tools have transcript/UI semantics, not just a return value. Never hide them.
-const DIRECT_ONLY = new Set(['repl', 'multi_call', 'skill_manager', 'html_renderer', 'view_image', 'switch_mode'])
+// Recursive or transcript/UI tools cannot be captured, even through a batch.
+const DIRECT_ONLY = new Set(['repl', 'skill_manager', 'html_renderer', 'view_image', 'switch_mode'])
 
 type Session = {
   runtime: QuickJSRuntime
@@ -508,11 +509,18 @@ export function createReplDispatchExecutor(leaf: ToolExecutor, sessions = new Re
     return sessions.run(argsObject(call.arguments), context, async (tool, args) => {
       if (typeof tool !== 'string' || !tool.trim()) throw new Error('tool is required')
       tool = tool.trim()
-      if (DIRECT_ONLY.has(tool) || (tool === 'plan_md' && args.action === 'display')) throw new Error(`Use ${tool} directly; recursive or context/UI tools cannot be captured`)
+      const assertReplCaptureAllowed = (nested: ProviderToolCall) => {
+        const name = nested.name
+        if (DIRECT_ONLY.has(name) || (name === 'plan_md' && argsObject(nested.arguments).action === 'display')) {
+          throw new Error(`Use ${name} directly; recursive or context/UI tools cannot be captured`)
+        }
+        if (!context.allowedToolNames?.has(name)) throw new Error(`Tool is not available to this caller: ${name}`)
+        if (requiresAgentMode(nested, context.operationMode ?? 'execute')) throw new Error(`Tool "${name}" is not available in Chat Mode`)
+      }
       if (!context.nestedExecutor) throw new Error('REPL requires a policy-aware nested executor')
-      if (!context.allowedToolNames?.has(tool)) throw new Error(`Tool is not available to this caller: ${tool}`)
-      if (requiresAgentMode({ name: tool, arguments: args }, context.operationMode ?? 'execute')) throw new Error(`Tool "${tool}" is not available in Chat Mode`)
-      return context.nestedExecutor({ id: `${call.id}:invoke`, name: tool, arguments: args }, context)
+      const nested = { id: `${call.id}:invoke`, name: tool, arguments: args }
+      assertReplCaptureAllowed(nested)
+      return context.nestedExecutor(nested, tool === 'multi_call' ? { ...context, assertReplCaptureAllowed } : context)
     })
   }
 }

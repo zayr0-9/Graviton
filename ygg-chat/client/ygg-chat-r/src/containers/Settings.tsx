@@ -2781,7 +2781,7 @@ const Settings: React.FC = () => {
 
         <SettingsSection
           title='Chat Reasoning Defaults'
-          description='These defaults are loaded every time Chat opens, then applied when the selected model supports reasoning/thinking.'
+          description='Used for new chats and any branch without its own level. Each branch remembers the level you pick in the composer, like its model and provider.'
           features={['Default thinking', 'Reasoning effort']}
         >
           <div className='flex flex-col gap-4'>

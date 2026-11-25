@@ -16,6 +16,8 @@
 .run-statistics-details {
   display: none;
   position: absolute;
+  /* The popup must not extend the summary's hover target. */
+  pointer-events: none;
   bottom: 100%;
   right: 0;
   z-index: 10;
@@ -32,7 +34,13 @@
   background: var(--color-neutral-900, #171717);
 }
 
-.run-statistics-reveal:is(:hover, :focus-visible, [data-expanded='true']) .run-statistics-details {
+@media (hover: hover) {
+  .run-statistics-reveal:hover .run-statistics-details {
+    display: block;
+  }
+}
+
+.run-statistics-reveal:is(:focus-visible, [data-expanded='true']) .run-statistics-details {
   display: block;
 }
 

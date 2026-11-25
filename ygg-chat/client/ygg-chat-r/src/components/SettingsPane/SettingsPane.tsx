@@ -78,6 +78,7 @@ import { SystemNotificationSettings } from './SystemNotificationSettings'
 import { useSettingsSectionThemeColors } from './settingsSectionTheme'
 import { ToolsSettings } from './ToolsSettings'
 import { HookGenerationSettings } from './HookGenerationSettings'
+import { ClaudeHookSettings } from './ClaudeHookSettings'
 import { ClaudeMcpSettings } from './ClaudeMcpSettings'
 import { KeyboardShortcutsModal } from './KeyboardShortcutsModal'
 
@@ -2788,6 +2789,7 @@ ${block}`
                 >
                   <div className='min-h-0 overflow-hidden'>
                     <div className='space-y-4 px-3 pb-3 pt-1'>
+                    {open && hooksExpanded && <ClaudeHookSettings conversationId={conversationId} projectId={selectedProject?.id} />}
                     {hooksExpanded && <HookGenerationSettings />}
                     <div className='flex items-center justify-between gap-3'>
                       <p className='text-sm text-neutral-600 dark:text-neutral-400'>

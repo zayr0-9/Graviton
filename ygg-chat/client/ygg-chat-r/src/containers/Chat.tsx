@@ -7,6 +7,7 @@ import { ModelSwitchDialog } from '../components/ModelSelectControl/ModelSwitchD
 import { isClaudeProvider, isClaudeTranscriptMessage } from '../../../../shared/claudeProvider'
 import { isCleanStartBranchEdit, isProviderHandoffEdit, resolveComposerModelSelection, resolveComposerClaudeLock, resolveSummaryContinuation } from '../features/chats/branchModelSelection'
 import { resolveBranchFastMode } from '../features/chats/branchFastMode'
+import { resolveBranchReasoning } from '../features/chats/branchReasoning'
 import { resolveBranchPlanMode } from '../features/chats/branchPlanMode'
 import { resolveBranchClaudeAutoMode } from '../features/chats/branchClaudeAutoMode'
 import { resolveComposerToolApproval } from '../features/chats/branchToolApproval'
@@ -1091,10 +1092,12 @@ function Chat() {
 
   const [chatReasoningSettings, setChatReasoningSettings] = useState(() => loadChatReasoningSettings())
 
-  // Reasoning configuration (effort level for extended thinking models)
-  const [reasoningConfig, setReasoningConfig] = useState<ReasoningConfig>(() => ({
-    effort: chatReasoningSettings.defaultReasoningEffort,
-  }))
+  // Reasoning level follows the selected branch like its model and provider: an edit-session
+  // choice, else the branch's draft or recorded level, else the Settings default.
+  const branchReasoningLevel = useAppSelector(state =>
+    (state.chat.composition.editingBranch ? state.chat.composition.branchEditModes?.reasoningLevel : undefined)
+      ?? resolveBranchReasoning(state.chat, chatReasoningSettings)
+  )
   const fastServiceTierEnabled = useAppSelector(state =>
     (state.chat.composition.editingBranch ? state.chat.composition.branchEditModes?.fastMode : undefined)
       ?? resolveBranchFastMode(state.chat)
@@ -3521,6 +3524,11 @@ function Chat() {
   const selectModelMutation = useSelectModel()
   const selectedModel = useSelectedModel(providers.currentProvider, branchModelSelection?.model)
   const models = modelsData?.models || []
+  // A model without thinking never receives it, but the branch keeps its level for the next model that has it.
+  const think = Boolean(selectedModel?.thinking) && branchReasoningLevel !== 'off'
+  const reasoningConfig = useMemo<ReasoningConfig>(() => ({
+    effort: branchReasoningLevel === 'off' ? chatReasoningSettings.defaultReasoningEffort : branchReasoningLevel,
+  }), [branchReasoningLevel, chatReasoningSettings.defaultReasoningEffort])
 
   // Helper to check if selected model can use image generation controls.
   // OpenAI ChatGPT uses the hosted Responses image_generation tool, so image controls can be shown
@@ -3894,7 +3902,6 @@ function Chat() {
   const [activeChatPane, setActiveChatPane] = useState<'primary' | 'parallel'>('primary')
   const [settingsOpen, setSettingsOpen] = useState(false)
   useCommandBlocker(settingsOpen)
-  const [think, setThink] = useState<boolean>(chatReasoningSettings.defaultThinkingEnabled)
   const [heimdallVisible, setHeimdallVisible] = useState<boolean>(() => {
     try {
       const stored = typeof window !== 'undefined' ? window.localStorage.getItem('chat:heimdallVisible') : null
@@ -4941,29 +4948,6 @@ function Chat() {
       window.removeEventListener(CHAT_REASONING_SETTINGS_CHANGE_EVENT, handleReasoningSettingsChange as EventListener)
   }, [])
 
-  // Apply default thinking/effort only when model capability is known.
-  // This prevents races where selectedModel is not yet loaded on first render.
-  useEffect(() => {
-    if (!selectedModel) return
-
-    if (!selectedModel.thinking) {
-      setThink(false)
-      return
-    }
-
-    setThink(chatReasoningSettings.defaultThinkingEnabled)
-    setReasoningConfig(prev =>
-      prev.effort === chatReasoningSettings.defaultReasoningEffort
-        ? prev
-        : { ...prev, effort: chatReasoningSettings.defaultReasoningEffort }
-    )
-  }, [
-    selectedModel?.name,
-    selectedModel?.thinking,
-    chatReasoningSettings.defaultThinkingEnabled,
-    chatReasoningSettings.defaultReasoningEffort,
-  ])
-
   // Set the default provider when none (or a no-longer-listed one) is selected.
   useEffect(() => {
     const allowedProviders = providers.providers.map(p => p.name)
@@ -5232,6 +5216,7 @@ function Chat() {
           retrigger: true,
           imageConfig: isImageGenerationModel ? imageConfig : undefined,
           reasoningConfig: think ? reasoningConfig : undefined,
+          reasoningLevel: branchReasoningLevel,
           serviceTier: openAIServiceTier,
           cwd: ccCwd || undefined,
           operationMode,
@@ -5280,6 +5265,7 @@ function Chat() {
       openAIServiceTier,
       operationMode,
       reasoningConfig,
+      branchReasoningLevel,
       recordLocalChatError,
       think,
       withPendingCwdAnnouncement,
@@ -5425,6 +5411,7 @@ function Chat() {
                   think: think,
                   imageConfig: isImageGenerationModel ? imageConfig : undefined,
                   reasoningConfig: think ? reasoningConfig : undefined,
+                  reasoningLevel: branchReasoningLevel,
                   serviceTier: openAIServiceTier,
                   cwd: ccCwd || undefined,
                   operationMode,
@@ -5505,6 +5492,7 @@ function Chat() {
       isImageGenerationModel,
       imageConfig,
       reasoningConfig,
+      branchReasoningLevel,
       openAIServiceTier,
       operationMode,
       withPendingCwdAnnouncement,
@@ -5720,6 +5708,8 @@ function Chat() {
           newContent: contentWithCwdAnnouncement,
           modelOverride: selectedModel?.name,
           think: think,
+          reasoningConfig: think ? reasoningConfig : undefined,
+          reasoningLevel: branchReasoningLevel,
           serviceTier: openAIServiceTier,
           cwd: ccCwd || undefined,
           operationMode,
@@ -5758,6 +5748,8 @@ function Chat() {
       currentConversationId,
       selectedModel?.name,
       think,
+      reasoningConfig,
+      branchReasoningLevel,
       openAIServiceTier,
       operationMode,
       ccCwd,
@@ -5867,6 +5859,7 @@ function Chat() {
           think: think,
           imageConfig: isImageGenerationModel ? imageConfig : undefined,
           reasoningConfig: think ? reasoningConfig : undefined,
+          reasoningLevel: branchReasoningLevel,
           serviceTier: openAIServiceTier,
           cwd: ccCwd || undefined,
           operationMode,
@@ -5916,6 +5909,7 @@ function Chat() {
       isImageGenerationModel,
       imageConfig,
       reasoningConfig,
+      branchReasoningLevel,
       openAIServiceTier,
       operationMode,
       withPendingCwdAnnouncement,
@@ -8062,14 +8056,7 @@ function Chat() {
                     supported={Boolean(selectedModel?.thinking)}
                     level={think || isClaudeSession ? reasoningConfig.effort : 'off'}
                     allowOff={!isClaudeSession}
-                    onLevelChange={level => {
-                      if (level === 'off') {
-                        setThink(false)
-                        return
-                      }
-                      setThink(true)
-                      setReasoningConfig(prev => ({ ...prev, effort: level }))
-                    }}
+                    onLevelChange={level => dispatch(chatSliceActions.branchReasoningSelected(level))}
                   />
                   </ComposerControlSlot>
                   {/* Attachment upload button */}

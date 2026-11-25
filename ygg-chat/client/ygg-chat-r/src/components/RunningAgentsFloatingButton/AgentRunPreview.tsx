@@ -1,16 +1,11 @@
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useAppSelector } from '../../hooks/redux'
-import { ChatMessage } from '../ChatMessage/ChatMessage'
-import { SummarisedMessage } from '../ChatMessage/SummarisedMessage'
-import { WatcherCompletionNotice } from '../ChatMessage/WatcherCompletionNotice'
+import { AgentTranscriptRows } from './AgentTranscriptRows'
 import { StreamingThinkingIndicator } from '../StreamingThinkingIndicator'
 import { BackgroundTasksIndicator } from '../StreamingThinkingIndicator/BackgroundTasksIndicator'
 import { buildAgentPreviewRows } from './agentPreviewContent'
 import { buildForkPreviewRows, createAgentPreviewRunsSelector } from './agentForkPreview'
-import { createDefaultCustomChatTheme, getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from '../ThemeManager/themeConfig'
 import { ConversationLinkRootProvider } from '../MarkdownLink/markdownLinkRoot'
-
-const DEFAULT_THEME = createDefaultCustomChatTheme()
 
 export interface AgentPreviewScrollState { top: number; following: boolean }
 
@@ -33,10 +28,6 @@ export const AgentRunPreview = memo(function AgentRunPreview({ streamId, grouped
   const scrollRef = useRef<HTMLDivElement>(null)
   const followRef = useRef(scrollState?.following ?? true)
   const [following, setFollowing] = useState(followRef.current)
-  const { theme, enabled } = useCustomChatTheme()
-  const isDarkMode = useHtmlDarkMode()
-  // Chat's user surface blends into pill cards, so user rows take the pill's own key (default tint without a custom theme).
-  const userSurfaceColor = getThemeModeColor((enabled ? theme : DEFAULT_THEME).colors.agentsGridUserMessageBg, isDarkMode)
 
   useLayoutEffect(() => {
     if (scrollRef.current && scrollState && !scrollState.following) scrollRef.current.scrollTop = scrollState.top
@@ -62,19 +53,8 @@ export const AgentRunPreview = memo(function AgentRunPreview({ streamId, grouped
           setFollowing(followRef.current)
           if (scrollState) { scrollState.top = element.scrollTop; scrollState.following = followRef.current }
         }}>
-        {rows.length === 0 ? !showActivity && <p className='p-3 text-sm text-neutral-500'>Waiting for run output…</p> : rows.map(row => (
-          <div key={row.key} className={row.role === 'user' && !row.watcherCompletion ? 'ml-auto w-fit min-w-0 max-w-[90%] [&_.chat-markdown]:[overflow-wrap:anywhere]' : 'min-w-0'}>
-          {row.summarised ? <SummarisedMessage id={`agent-preview:${row.streamId}:${row.key}`} className='w-full'
-            customTheme={theme} customThemeEnabled={enabled} isDarkMode={isDarkMode} /> :
-          row.watcherCompletion ? <WatcherCompletionNotice id={`agent-preview:${row.streamId}:${row.key}`} className='w-full'
-            content={row.content} customTheme={theme} customThemeEnabled={enabled} isDarkMode={isDarkMode} /> :
-          <ChatMessage id={`agent-preview:${row.streamId}:${row.key}`} role={row.role}
-            content={row.content} contentBlocks={row.blocks}
-            width='w-full' showInlineActions={false} readOnly keepTextOutsideGroups
-            groupToolReasoningRuns={grouped} customTheme={theme} customThemeEnabled={enabled} isDarkMode={isDarkMode}
-            userSurfaceColor={userSurfaceColor} />}
-          </div>
-        ))}
+        {rows.length === 0 ? !showActivity && <p className='p-3 text-sm text-neutral-500'>Waiting for run output…</p> :
+          <AgentTranscriptRows rows={rows} idPrefix='agent-preview' grouped={grouped} />}
         {showActivity && (
           <div className={`${rows.length > 0 ? 'pt-2' : 'pt-1'} px-0 sm:px-2`}>
             {showThinking && <StreamingThinkingIndicator compacting={compacting} />}

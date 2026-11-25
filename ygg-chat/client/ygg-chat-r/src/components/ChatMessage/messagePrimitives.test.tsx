@@ -1,8 +1,16 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { DISCLOSURE_LABEL_CLASS } from './chatMessageShared'
+import {
+  DISCLOSURE_LABEL_CLASS,
+  MONO_KEY_CLASS,
+  TOOL_FIELD_KEY_CLASS,
+  TOOL_FIELD_LITERAL_CLASS,
+  TOOL_FIELD_PUNCTUATION_CLASS,
+  TOOL_FIELD_STRING_CLASS,
+  TOOL_FIELD_TEXT_CLASS,
+} from './chatMessageShared'
 import { isPanelCollapseTransitionEnd, resolvePanelChildrenMounted } from './disclosurePanelState'
-import { DisclosurePanel, DisclosureRow } from './messagePrimitives'
+import { DisclosurePanel, DisclosureRow, FieldRows } from './messagePrimitives'
 
 const renderRow = (labelSize?: 'default' | 'group', expanded = false) => renderToStaticMarkup(
   <DisclosureRow
@@ -92,5 +100,50 @@ describe('isPanelCollapseTransitionEnd', () => {
   it('ignores bubbled child transitions and other properties', () => {
     expect(isPanelCollapseTransitionEnd({ target: child, currentTarget: container, propertyName: 'grid-template-rows' })).toBe(false)
     expect(isPanelCollapseTransitionEnd({ target: container, currentTarget: container, propertyName: 'opacity' })).toBe(false)
+  })
+})
+
+const textOf = (html: string) =>
+  html.replace(/<[^>]+>/g, '').replace(/&quot;/g, '"').replace(/&#x27;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
+
+describe('FieldRows palette', () => {
+  it('colours keys, punctuation and literal values apart from string values', () => {
+    const html = renderToStaticMarkup(<FieldRows record={{ path: 'a.ts', count: 3, done: true, missing: null }} />)
+    expect(html).toContain(
+      `<span class="${TOOL_FIELD_KEY_CLASS}">path</span><span class="${TOOL_FIELD_PUNCTUATION_CLASS}">:</span> <span class="${TOOL_FIELD_TEXT_CLASS}">a.ts</span>`
+    )
+    expect(html).toContain(`<span class="${TOOL_FIELD_LITERAL_CLASS}">3</span>`)
+    expect(html).toContain(`<span class="${TOOL_FIELD_LITERAL_CLASS}">true</span>`)
+    expect(html).toContain(`<span class="${TOOL_FIELD_LITERAL_CLASS}">null</span>`)
+    expect(textOf(html)).toBe('path: a.tscount: 3done: truemissing: null')
+  })
+
+  it('tokenises nested objects without changing their text', () => {
+    const call = { tool: 'read_file', args: { path: 'x.ts', lines: 10, follow: false } }
+    const html = renderToStaticMarkup(<FieldRows record={{ call }} />)
+    expect(html).toContain(`<span class="${TOOL_FIELD_KEY_CLASS}">&quot;tool&quot;</span>`)
+    expect(html).toContain(`<span class="${TOOL_FIELD_STRING_CLASS}">&quot;read_file&quot;</span>`)
+    expect(html).toContain(`<span class="${TOOL_FIELD_LITERAL_CLASS}">10</span>`)
+    expect(html).toContain(`<span class="${TOOL_FIELD_LITERAL_CLASS}">false</span>`)
+    expect(textOf(html)).toBe(`call: ${JSON.stringify(call)}`)
+  })
+
+  it('renders an oversized nested value as one plain span', () => {
+    const big = { items: Array.from({ length: 500 }, (_, i) => ({ i })) }
+    const html = renderToStaticMarkup(<FieldRows record={{ big }} />)
+    expect(html).not.toContain(TOOL_FIELD_LITERAL_CLASS)
+    expect(textOf(html)).toBe(`big: ${JSON.stringify(big)}`)
+  })
+
+  it('keeps the legacy muted key when the palette is off', () => {
+    const html = renderToStaticMarkup(<FieldRows record={{ error: 'boom' }} palette={false} />)
+    expect(html).toContain(`<span class="${MONO_KEY_CLASS}">error:</span> <span>boom</span>`)
+    expect(html).not.toContain('tool-field-')
+  })
+
+  it('uses the fallback entry when the record is null', () => {
+    const html = renderToStaticMarkup(<FieldRows record={null} fallback={{ key: 'content', value: 'plain' }} />)
+    expect(html).toContain(`<span class="${TOOL_FIELD_KEY_CLASS}">content</span>`)
+    expect(textOf(html)).toBe('content: plain')
   })
 })

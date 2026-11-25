@@ -324,6 +324,58 @@ describe('branch-scoped Fast mode requests', () => {
   })
 })
 
+describe('branch-scoped reasoning requests', () => {
+  it.each(['send', 'edit'] as const)('%s forwards the caller-chosen level and falls back to the branch level', async operation => {
+    for (const [requested, expected] of [['low', 'low'], [undefined, 'xhigh']] as const) {
+      vi.mocked(runServerChatLoop).mockClear()
+      const { dispatch } = setup([{ ...message('u1'), meta: { reasoningLevel: 'xhigh' } }], [])
+      const common = { conversationId: 'c1', think: true, reasoningConfig: { effort: 'low' as const },
+        reasoningLevel: requested, streamId: `reasoning-${operation}-${expected}` }
+      const result = await dispatch(operation === 'send'
+        ? sendMessage({ ...common, parent: 'u1', repeatNum: 1, input: { content: 'hello', modelOverride: 'test' } })
+        : editMessageWithBranching({ ...common, originalMessageId: 'u1', newContent: 'hello', modelOverride: 'test' }))
+      expect(result.meta.requestStatus).toBe('fulfilled')
+      const request = vi.mocked(runServerChatLoop).mock.calls[0][0].request
+      expect(request.reasoningLevel).toBe(expected)
+      // Edit-branch used to drop the effort entirely, running at the provider default.
+      expect(request).toMatchObject({ think: true, reasoningConfig: { effort: 'low' } })
+    }
+  })
+
+  it('edit omits the effort when thinking is off', async () => {
+    const { dispatch } = setup([message('u1')], [])
+    await dispatch(editMessageWithBranching({ conversationId: 'c1', originalMessageId: 'u1', newContent: 'hello',
+      modelOverride: 'test', think: false, reasoningConfig: { effort: 'high' }, reasoningLevel: 'off', streamId: 'edit-off' }))
+    const request = vi.mocked(runServerChatLoop).mock.calls[0][0].request
+    expect(request.think).toBe(false)
+    expect(request.reasoningConfig).toBeUndefined()
+    expect(request.reasoningLevel).toBe('off')
+  })
+
+  it('captures an isolated edit-session choice without changing the source branch drafts', async () => {
+    const { dispatch, state } = setup([{ ...message('u1'), meta: { reasoningLevel: 'xhigh' } }], [])
+    const sourceDrafts = state.chat.branchReasoningDrafts
+    dispatch(chatSliceActions.editingBranchSet(true))
+    dispatch(chatSliceActions.branchReasoningSelected('low'))
+    expect(state.chat.branchReasoningDrafts).toEqual(sourceDrafts)
+    const pending = dispatch(editMessageWithBranching({ conversationId: 'c1', originalMessageId: 'u1', newContent: 'hello',
+      modelOverride: 'test', think: true, streamId: 'edit-reasoning' }))
+    dispatch(chatSliceActions.editingBranchSet(false))
+    expect(state.chat.composition.branchEditModes).toBeUndefined()
+    expect((await pending).meta.requestStatus).toBe('fulfilled')
+    expect(vi.mocked(runServerChatLoop).mock.calls[0][0].request.reasoningLevel).toBe('low')
+    expect(state.chat.branchReasoningDrafts).toEqual(sourceDrafts)
+  })
+
+  it('persists a reducer choice under the stable lineage and keeps an explicit off', () => {
+    const { dispatch, state } = setup([message('u1')], [])
+    state.chat = { ...state.chat, conversation: { ...state.chat.conversation, currentLineageId: 'primary' } }
+    dispatch(chatSliceActions.branchReasoningSelected('high'))
+    dispatch(chatSliceActions.branchReasoningSelected('off'))
+    expect(state.chat.branchReasoningDrafts).toEqual({ '["c1","lineage:primary"]': 'off' })
+  })
+})
+
 it('forwards explicit Explain child intent through sendMessage without reparenting the selected message', async () => {
   const h = setup([message('old'), message('head', 'old')], [])
   await sendMessage({ conversationId: 'c1', input: { content: 'Explain selected text' }, parent: 'old',

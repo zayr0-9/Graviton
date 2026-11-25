@@ -1,0 +1,21 @@
+/* Tool card key/value palette. The `--tool-*` variables come from getToolCardThemeVars
+   (toolCardPalette.ts) on the card wrapper; without them each class inherits the row colour. */
+.tool-field-key {
+  color: var(--tool-key, currentColor);
+}
+
+.tool-field-text {
+  color: var(--tool-text, currentColor);
+}
+
+.tool-field-string {
+  color: var(--tool-string, currentColor);
+}
+
+.tool-field-literal {
+  color: var(--tool-literal, currentColor);
+}
+
+.tool-field-punctuation {
+  color: var(--tool-punctuation, currentColor);
+}

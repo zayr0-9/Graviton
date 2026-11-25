@@ -1,6 +1,8 @@
 import { createSlice, current, PayloadAction } from '@reduxjs/toolkit'
 import { composerApprovalHandoff, composerProvider, loadBranchToolApprovalDrafts, resolveComposerToolApproval, saveBranchToolApprovalDrafts } from './branchToolApproval'
 import { loadBranchFastModeDrafts, saveBranchFastModeDrafts } from './branchFastMode'
+import { loadBranchReasoningDrafts, saveBranchReasoningDrafts } from './branchReasoning'
+import type { ReasoningLevel } from '../../../../../shared/reasoningLevel'
 import { loadClaudePlanModeDrafts, saveClaudePlanModeDrafts, withClaudePlanModeDraft } from './branchPlanMode'
 import { loadClaudeAutoModeDrafts, saveClaudeAutoModeDrafts, withClaudeAutoModeDraft } from './branchClaudeAutoMode'
 import { branchModelKey, loadBranchModelDrafts, saveBranchModelDrafts, type BranchModelSelection } from './branchModelSelection'
@@ -286,6 +288,7 @@ const makeInitialState = (): ChatState => {
     operationModeDrafts: {},
     branchModelDrafts: loadBranchModelDrafts(),
     branchFastModeDrafts: loadBranchFastModeDrafts(),
+    branchReasoningDrafts: loadBranchReasoningDrafts(),
     branchToolApprovalDrafts: loadBranchToolApprovalDrafts(),
     messageQueues: {},
     // Tier-2 failures that have no persisted assistant message to live on. Deliberately
@@ -571,6 +574,19 @@ export const chatSlice = createSlice({
       const anchor = currentLineageId ? `lineage:${currentLineageId}` : currentPath.at(-1)
       state.branchFastModeDrafts[branchModelKey(currentConversationId, anchor)] = action.payload
       saveBranchFastModeDrafts(state.branchFastModeDrafts)
+    },
+    branchReasoningSelected: (state, action: PayloadAction<ReasoningLevel>) => {
+      if (state.composition.editingBranch) {
+        state.composition.branchEditModes ??= {}
+        state.composition.branchEditModes.reasoningLevel = action.payload
+        return
+      }
+      const { currentConversationId, currentPath, currentLineageId } = state.conversation
+      if (!currentConversationId) return
+      state.branchReasoningDrafts ??= {}
+      const anchor = currentLineageId ? `lineage:${currentLineageId}` : currentPath.at(-1)
+      state.branchReasoningDrafts[branchModelKey(currentConversationId, anchor)] = action.payload
+      saveBranchReasoningDrafts(state.branchReasoningDrafts)
     },
     //provider management
     providerSelected: (state, action: PayloadAction<string>) => {

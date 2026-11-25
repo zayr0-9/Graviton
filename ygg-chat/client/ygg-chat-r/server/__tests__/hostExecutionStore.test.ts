@@ -68,3 +68,15 @@ it('defaults old settings to Auto and persists hook policy with independent revi
     expect(() => saveHostExecutionPreferences({ ...saved, expectedRevision: saved.revision, patch: { hookGeneration: { ...saved.values.hookGeneration, ...invalid } as any } })).toThrow('hook')
   }
 })
+
+it('blocks native hooks by default, only accepts booleans, and persists opt-in and revocation', () => {
+  const initial = readHostExecutionPreferences()
+  const request = { ...initial, expectedRevision: initial.revision, expectedRevisions: initial.revisions }
+  expect(initial.values.allowClaudeNativeHooks).toBe(false)
+  expect(() => saveHostExecutionPreferences({ ...request, patch: { allowClaudeNativeHooks: 'true' as any } })).toThrow('Invalid')
+  const enabled = saveHostExecutionPreferences({ ...request, patch: { allowClaudeNativeHooks: true } })
+  expect(readHostExecutionPreferences().values.allowClaudeNativeHooks).toBe(true)
+  expect(() => saveHostExecutionPreferences({ ...request, patch: { allowClaudeNativeHooks: false } })).toThrow('changed')
+  saveHostExecutionPreferences({ ...request, expectedRevisions: enabled.revisions, patch: { allowClaudeNativeHooks: false } })
+  expect(readHostExecutionPreferences().values.allowClaudeNativeHooks).toBe(false)
+})

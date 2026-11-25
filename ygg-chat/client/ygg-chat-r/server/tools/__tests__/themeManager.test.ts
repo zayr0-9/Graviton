@@ -1,5 +1,6 @@
 import os from 'os'
 import path from 'path'
+import { fileURLToPath } from 'url'
 import { promises as fs } from 'fs'
 import { beforeEach, afterEach, describe, expect, it } from 'vitest'
 import { execute } from '../themeManager.js'
@@ -90,6 +91,41 @@ describe.sequential('theme_manager tool', () => {
     expect(result.totalCount).toBe(1)
     expect(result.themes?.[0]?.id).toBe('starter')
     expect(await fs.readFile(path.join(managedDir, 'starter.json'), 'utf8')).toContain('Starter Theme')
+  })
+
+  it('offers the bundled editor palettes on a fresh profile without replacing personal themes', async () => {
+    process.env.YGG_THEME_TEMPLATE_DIRECTORY = fileURLToPath(new URL('../../../.ygg/custom-themes', import.meta.url))
+    const presets = [
+      ['aura', 'Aura'],
+      ['catppuccin-mocha', 'Catppuccin Mocha'],
+      ['dracula', 'Dracula'],
+      ['gruvbox', 'Gruvbox'],
+      ['kanagawa', 'Kanagawa'],
+      ['nord', 'Nord'],
+      ['one-dark-pro', 'One Dark Pro'],
+      ['rose-pine', 'Rose Pine'],
+      ['solarized', 'Solarized'],
+      ['tokyo-night', 'Tokyo Night'],
+    ]
+
+    const list = await execute({ action: 'list' })
+    expect(list.success).toBe(true)
+    for (const [id, name] of presets) {
+      expect(list.themes).toContainEqual(expect.objectContaining({ id, name }))
+      const read = await execute({ action: 'read', name: id })
+      expect(read.theme?.name).toBe(name)
+      expect(read.theme?.colors.chatPanelBg).toEqual({
+        light: expect.stringMatching(/^#[0-9a-f]{6}$/i),
+        dark: expect.stringMatching(/^#[0-9a-f]{6}$/i),
+      })
+    }
+
+    const personalTheme = JSON.stringify({ name: 'My Gruvbox' })
+    const personalPath = path.join(managedDir, 'gruvbox.json')
+    await fs.writeFile(personalPath, personalTheme, 'utf8')
+    const read = await execute({ action: 'read', name: 'gruvbox' })
+    expect(read.theme?.name).toBe('My Gruvbox')
+    expect(await fs.readFile(personalPath, 'utf8')).toBe(personalTheme)
   })
 
   it('saves, lists, reads, and deletes managed theme files', async () => {

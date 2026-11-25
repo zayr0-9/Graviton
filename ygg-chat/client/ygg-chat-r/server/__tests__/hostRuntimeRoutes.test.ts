@@ -76,3 +76,17 @@ it.each([
   const data = await (await fetch(`${url}/api/host/runtime`)).json()
   expect(data.network).toEqual({ bindHost, port: Number(new URL(url).port), exposure, deviceAuthentication: false })
 })
+
+it('cannot change Claude Code hook permissions through HTTP, even with valid revisions', async () => {
+  const origin = await start()
+  const url = `${origin}/api/host/execution-preferences`
+  const snapshot = await (await fetch(url)).json()
+  for (const withFence of [false, true]) {
+    const response = await fetch(url, { method: 'PATCH',
+      headers: { 'content-type': 'application/json', ...(withFence ? { [nativeClientHeader]: getNativeClientFence() } : {}) },
+      body: JSON.stringify({ hostId: snapshot.hostId, epoch: snapshot.epoch, expectedRevision: snapshot.revision, patch: { allowClaudeNativeHooks: true } }) })
+    expect(response.status).toBe(403)
+    expect(await response.json()).toMatchObject({ error: expect.stringContaining('desktop Settings') })
+  }
+  expect(await (await fetch(url)).json()).toMatchObject({ values: { allowClaudeNativeHooks: false } })
+})

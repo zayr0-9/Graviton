@@ -961,6 +961,8 @@ const SideBar: React.FC<SideBarProps> = ({
   const [isExpandPortalOpen, setIsExpandPortalOpen] = useState(false)
   const [portalLeftOffset, setPortalLeftOffset] = useState(SIDEBAR_RAIL_WIDTH_PX + SIDEBAR_PORTAL_GAP_PX)
   const [expandPortalWidth, setExpandPortalWidth] = useState(SIDEBAR_PORTAL_MAX_WIDTH_PX)
+  // Top offset (px) for the panels; null keeps the desktop `top-3` inset.
+  const [portalTopOffset, setPortalTopOffset] = useState<number | null>(null)
   const [previewPortalLeftOffset, setPreviewPortalLeftOffset] = useState(
     SIDEBAR_RAIL_WIDTH_PX + SIDEBAR_PORTAL_GAP_PX + SIDEBAR_PORTAL_MAX_WIDTH_PX + SIDEBAR_PREVIEW_PORTAL_GAP_PX
   )
@@ -1024,11 +1026,30 @@ const SideBar: React.FC<SideBarProps> = ({
     setIsExpandPortalOpen(true)
   }, [])
 
+  // Phone-width browser clients show the rail as a full-width top bar; desktop uses a thin left rail.
+  const isMobile = useIsMobile()
+  const horizontalRail = !isNativeShell && isMobile
+
   useEffect(() => {
     if (!isExpandPortalOpen) return
 
     const updatePortalAnchor = () => {
       const railRect = sidebarRef.current?.getBoundingClientRect()
+
+      if (horizontalRail) {
+        // The top bar spans the viewport, so anchoring to its right edge would push the panel
+        // to the far right on wider phones and unfolded foldables. Open below the bar instead.
+        const viewportWidth = window.innerWidth
+        const panelWidth = Math.max(0, viewportWidth - 16)
+        setPortalLeftOffset(8)
+        setExpandPortalWidth(panelWidth)
+        setPortalTopOffset(Math.max(12, Math.round((railRect?.bottom ?? 0) + 8)))
+        setPreviewPortalLeftOffset(8)
+        setPreviewPortalWidth(panelWidth)
+        return
+      }
+
+      setPortalTopOffset(null)
       const baseLeft = railRect?.right ?? SIDEBAR_RAIL_WIDTH_PX
       const desiredLeft = baseLeft + SIDEBAR_PORTAL_GAP_PX
       const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : SIDEBAR_PORTAL_MAX_WIDTH_PX
@@ -1058,7 +1079,7 @@ const SideBar: React.FC<SideBarProps> = ({
     return () => {
       window.removeEventListener('resize', updatePortalAnchor)
     }
-  }, [isExpandPortalOpen])
+  }, [horizontalRail, isExpandPortalOpen])
 
   useEffect(() => {
     if (!isExpandPortalOpen || showConversationSortModal) return
@@ -1946,8 +1967,6 @@ const SideBar: React.FC<SideBarProps> = ({
   const hoveredPreviewConversationId = hoveredPreviewConversation?.id ?? null
   const shouldShowConversationPreviewPortal =
     showExpandedPortal && !!hoveredPreviewConversationId
-  const isMobile = useIsMobile()
-  const horizontalRail = !isNativeShell && isMobile
   const sidebarToggleAriaLabel = showExpandedPortal ? 'Close sidebar panel' : 'Open sidebar panel'
   const sidebarToggleIcon = showExpandedPortal ? (
     <PanelLeftClose className='h-5 w-5' strokeWidth={2.25} aria-hidden='true' />
@@ -2054,7 +2073,7 @@ const SideBar: React.FC<SideBarProps> = ({
               >
                 <motion.button
                   type='button'
-                  className='absolute inset-0 ml-12 rounded-2xl bg-neutral-900/10 dark:bg-neutral-950/45'
+                  className={`absolute inset-0 rounded-2xl bg-neutral-900/10 dark:bg-neutral-950/45 ${horizontalRail ? '' : 'ml-12'}`}
                   aria-label='Close sidebar panel'
                   onClick={() => closeExpandPortal()}
                   initial={{ opacity: 0 }}
@@ -2069,6 +2088,7 @@ const SideBar: React.FC<SideBarProps> = ({
                   aria-label='Sidebar panel'
                   className='absolute top-3 bottom-3 overflow-hidden rounded-xl border border-neutral-200/90 bg-white/55 shadow-2xl backdrop-blur-xl dark:border-neutral-700/80 dark:bg-yBlack-900/25'
                   style={{
+                    ...(portalTopOffset !== null ? { top: `${portalTopOffset}px` } : null),
                     left: `${portalLeftOffset}px`,
                     width: `${expandPortalWidth}px`,
                     transformOrigin: 'left center',
@@ -2108,6 +2128,7 @@ const SideBar: React.FC<SideBarProps> = ({
                       aria-label='Top level user messages preview'
                       className='absolute top-3 bottom-3 rounded-xl border border-neutral-200/90 bg-neutral-50 shadow-2xl backdrop-blur-sm dark:border-neutral-700/80 dark:bg-neutral-800'
                       style={{
+                        ...(portalTopOffset !== null ? { top: `${portalTopOffset}px` } : null),
                         left: `${previewPortalLeftOffset}px`,
                         width: `${previewPortalWidth}px`,
                         transformOrigin: 'left center',

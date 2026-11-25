@@ -72,6 +72,16 @@ export const SURFACE_CARD_PADDING_CLASS = 'px-3 py-2'
 export const MONO_DETAIL_CLASS =
   `min-w-0 max-w-full break-words font-mono ${TEXT_DETAIL_CLASS} leading-relaxed text-neutral-600 dark:text-neutral-400 [overflow-wrap:anywhere]`
 export const MONO_KEY_CLASS = 'text-neutral-400 dark:text-neutral-600'
+/**
+ * Tool card key/value palette (toolFields.css). Each class reads a `--tool-*` variable that
+ * `getToolCardThemeVars` (toolCardPalette.ts) sets on the card wrapper, falling back to the
+ * row colour when the variables are absent.
+ */
+export const TOOL_FIELD_KEY_CLASS = 'tool-field-key'
+export const TOOL_FIELD_TEXT_CLASS = 'tool-field-text'
+export const TOOL_FIELD_STRING_CLASS = 'tool-field-string'
+export const TOOL_FIELD_LITERAL_CLASS = 'tool-field-literal'
+export const TOOL_FIELD_PUNCTUATION_CLASS = 'tool-field-punctuation'
 
 /** Small pill action used inside tool cards (viewer, transcript, load app). */
 export const ACTION_PILL_CLASS = `inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full bg-black/[0.05] px-2.5 ${TEXT_DETAIL_CLASS} font-medium text-neutral-600 hover:bg-black/[0.09] hover:text-neutral-900 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-white/[0.06] dark:text-neutral-300 dark:hover:bg-white/[0.11] dark:hover:text-white ${FAST_COLOR_TRANSITION_CLASS} ${FOCUS_RING_CLASS}`

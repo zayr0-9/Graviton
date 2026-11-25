@@ -183,6 +183,38 @@ Generic tool results are a renderer-only projection controlled by `chat:truncate
 
 Collapsed generic tool cards do not construct their result subtree until expanded, and `DisclosurePanel` mounts no children at all while collapsed. Preserve both behaviors when changing tool-card rendering so truncation continues to reduce DOM work rather than only hiding full content with CSS.
 
+## Tool card key/value palette
+
+Generic tool cards colour-code their `key: value` rows so keys, literal values and punctuation
+read apart at a glance, as JSON does in an editor. The palette is derived at render time, not
+stored as theme tokens:
+
+- `src/components/ChatMessage/toolCardPalette.ts` maps each slot (`key`, `text`, `string`,
+  `literal`, `punctuation`) to an existing `markdownSyntax*` theme token plus a per-mode
+  modulation (saturation multiplier, lightness offset, alpha). `getToolCardThemeVars` resolves
+  them to `--tool-*` CSS variables. `ChatMessage` memoizes the result (the default theme stands
+  in while the custom theme is off, exactly like `markdownThemeVars`) and `ToolCallGroupCard`
+  sets it on every card wrapper, so the generic, edit, plan, task and link variants all inherit it.
+- The sources follow the highlight.js mapping in `index.css` (`.hljs-attr` is the variable
+  colour, `.hljs-string` the string colour, `.hljs-number`/`.hljs-literal` the number colour,
+  `.hljs-punctuation` the punctuation colour), so a tool card and a JSON code block agree under
+  any theme. Keys and literals carry colour; nested strings are mostly desaturated; top-level
+  string values are plain text. Tune the look in `TOOL_CARD_PALETTE`; do not add theme tokens.
+- `src/components/ThemeManager/colorModulation.ts` does the arithmetic (`modulateColor`,
+  `parseCssColor`, `mixRgba`). A theme value it cannot parse falls back to CSS relative colour
+  syntax when the runtime supports it, otherwise passes through unchanged.
+- `FieldRows` renders values through `ToolValue` (`messagePrimitives.tsx`): strings stay raw,
+  numbers, booleans and null take the literal colour, and objects and arrays are tokenised from
+  their compact JSON by `toolValueTokens.ts`. The rendered text is unchanged, so copying a row
+  still yields valid JSON. Tokenising stops above 2,000 characters or 400 tokens and the value
+  stays one plain span, which bounds the DOM a large payload can add.
+- Error and incomplete results pass `palette={false}`, so their red or amber tint still owns
+  the row. `toolFields.css` holds the five classes; each falls back to `currentColor` when the
+  variables are absent.
+
+Tests: `colorModulation.test.ts`, `toolCardPalette.test.ts`, `toolValueTokens.test.ts`, plus the
+`FieldRows` and palette cases in `messagePrimitives.test.tsx` and `ToolCallGroupCard.test.tsx`.
+
 ## Process/Tool/Reasoning Grouping
 
 There are two related grouping layers.

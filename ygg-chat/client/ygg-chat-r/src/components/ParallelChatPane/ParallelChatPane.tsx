@@ -271,6 +271,8 @@ export function ParallelChatPane({
         repeatNum: 1,
         think,
         reasoningConfig: think ? reasoningConfig : undefined,
+        // Recorded on the branch so the primary composer shows the level this pane used.
+        reasoningLevel: think ? reasoningConfig.effort : 'off',
         operationMode,
         streamId: nextStreamId,
         lineageId,

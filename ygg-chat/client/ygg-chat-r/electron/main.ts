@@ -1365,7 +1365,12 @@ function promptHandle(channel: string, handler: (...args: any[]) => any): void {
   })
 }
 promptHandle('execution-preferences:read', () => readHostExecutionPreferences())
-promptHandle('execution-preferences:save', (_event, request) => saveHostExecutionPreferences(request))
+promptHandle('execution-preferences:save', (event, request) => {
+  if (request?.patch && Object.hasOwn(request.patch, 'allowClaudeNativeHooks') && event.sender !== mainWindow?.webContents) {
+    throw new Error('Change Claude Code hook permissions in the main Graviton window.')
+  }
+  return saveHostExecutionPreferences(request)
+})
 promptHandle('execution-preferences:import', (event, raw) => event.sender === mainWindow?.webContents ? importHostExecutionPreferences(raw) : readHostExecutionPreferences())
 promptHandle('prompts:read', () => getHostPromptStore().snapshot())
 promptHandle('prompts:save', (_event, revision: number, prompts: unknown, identity: { hostId: string; epoch: string }) => {

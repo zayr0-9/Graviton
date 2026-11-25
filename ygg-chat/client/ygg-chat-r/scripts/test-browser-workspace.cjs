@@ -251,7 +251,16 @@ if (!process.versions.electron) {
     await click(windows[1], '[aria-label="Open sidebar panel"]')
     await wait(windows[1], `(()=>{const panel=document.querySelector('[role="dialog"][aria-label="Sidebar panel"]'); if(!panel)return false; const r=panel.getBoundingClientRect(); return r.width > 200 && r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight;})()`, 'Phone sidebar panel not visible within viewport')
     await click(windows[1], 'button[aria-label="Close sidebar panel"]')
-    console.log('PASS responsive web selectors at 320/390/767/820px, horizontal phone navigation and sidebar panel')
+    // Wider phone/unfolded foldable: the top bar spans the viewport, so the panel must open
+    // from the left below it, not get pushed to the right by the bar's right edge.
+    windows[1].setContentSize(700, 900)
+    await new Promise(resolve => setTimeout(resolve, 400))
+    await click(windows[1], '[aria-label="Open sidebar panel"]')
+    await wait(windows[1], `(()=>{const panel=document.querySelector('[role="dialog"][aria-label="Sidebar panel"]'); const rail=document.querySelector('[aria-label="Sidebar rail"]'); if(!panel||!rail)return false; const r=panel.getBoundingClientRect(), b=rail.getBoundingClientRect(); return r.left <= 12 && r.width >= innerWidth - 24 && r.right <= innerWidth && r.top >= b.bottom - 1 && r.bottom <= innerHeight;})()`, 'Foldable-width sidebar panel not anchored below the top bar')
+    await click(windows[1], 'button[aria-label="Close sidebar panel"]')
+    windows[1].setContentSize(390, 844)
+    await new Promise(resolve => setTimeout(resolve, 300))
+    console.log('PASS responsive web selectors at 320/390/767/820px, horizontal phone navigation and sidebar panel (390/700px)')
     // Test actual computed canvas colors, not only React inline-style strings.
     const assertBackground = async (dark, color, enabled = true, video = false) => {
       const actual = await windows[0].webContents.executeJavaScript(`(async()=>{

@@ -87,7 +87,7 @@ async function connectGraviton(cli: FakeCli, server: any) {
   list()
 }
 
-function warmFixture(options: { warm?: any; turn?: Turn; nativeMcp?: any; gravitonTools?: any } = {}) {
+function warmFixture(options: { warm?: any; turn?: Turn; nativeMcp?: any; allowNativeHooks?: () => boolean; gravitonTools?: any } = {}) {
   const records = new Map<string, any>()
   const tail = { uuid: '' }
   const branches = new Map<string, any>()
@@ -119,6 +119,7 @@ function warmFixture(options: { warm?: any; turn?: Turn; nativeMcp?: any; gravit
   const service = new ClaudeSessionService({ sessions: sessions as any, broker, executable: async () => '/mock/claude', sdk: async () => sdk as any, hookRuns: null,
     messages: { get: vi.fn(() => null), updateClaudeProjection: vi.fn((id: string, content: string, content_blocks: any, meta: any) => ({ id, content, content_blocks, meta })) } as any,
     warm: options.warm === undefined ? WARM : options.warm, ...(options.nativeMcp ? { nativeMcp: () => options.nativeMcp } : {}),
+    allowNativeHooks: options.allowNativeHooks,
     ...(options.gravitonTools ? { gravitonTools: options.gravitonTools } : {}) })
   const emit = vi.fn()
   const input = (overrides: any = {}) => ({ request: { conversationId: 'c', provider: 'Claude Code', modelName: 'claude-sonnet-5-5', content: 'first', streamId: 'stream', operationMode: 'execute', ...overrides.request },
@@ -186,11 +187,30 @@ describe('warm channel primitives', () => {
       expect(await claudeLaunchKey(base)).not.toBe(withMcp)
       expect(await claudeLaunchKey({ ...base, additionalDirectories: ['/b', '/a'] })).toBe(await claudeLaunchKey({ ...base, additionalDirectories: ['/a', '/b'] }))
       expect(await claudeLaunchKey({ ...base, hookShape: 'graviton-hooks' })).not.toBe(await claudeLaunchKey(base))
+      expect(await claudeLaunchKey({ ...base, disableNativeHooks: true })).not.toBe(await claudeLaunchKey(base))
     } finally { await rm(cwd, { recursive: true, force: true }) }
   })
 })
 
 describe('warm Claude sessions', () => {
+  it('relaunches a resumed process after either change to the native hook policy', async () => {
+    let allowed = false
+    const f = warmFixture({ allowNativeHooks: () => allowed })
+    try {
+      const first = await f.service.run(f.input())
+      expect(f.clis[0].options.settings.disableAllHooks).toBe(true)
+      allowed = true
+      const second = await f.service.run(f.next(first))
+      expect(f.clis[0].ended).toBe(true)
+      expect(f.clis[1].options).toMatchObject({ resume: 's', hooks: { PreToolUse: expect.any(Array) } })
+      expect(f.clis[1].options.settings).not.toHaveProperty('disableAllHooks')
+      allowed = false
+      await f.service.run(f.next(second))
+      expect(f.clis[1].ended).toBe(true)
+      expect(f.clis[2].options.settings.disableAllHooks).toBe(true)
+    } finally { await f.service.dispose() }
+  })
+
   it('pushes the next send at the head into the same CLI, applying this turn\'s live settings', async () => {
     const f = warmFixture()
     const first = await f.service.run(f.input({ request: { think: true } }))

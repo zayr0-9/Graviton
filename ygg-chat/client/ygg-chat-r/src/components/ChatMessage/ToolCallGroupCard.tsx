@@ -18,16 +18,18 @@ import {
   formatToolResultSummary,
   MESSAGE_BLOCK_INSET_CLASS,
   MONO_DETAIL_CLASS,
-  MONO_KEY_CLASS,
   parseMcpQualifiedName,
   stringifyToolValue,
   SURFACE_CARD_CLASS,
   TOOL_NAME_BASE_CLASS,
   TOOL_NAME_ERROR_CLASS,
   TOOL_NAME_RUNNING_CLASS,
+  TOOL_FIELD_KEY_CLASS,
+  TOOL_FIELD_PUNCTUATION_CLASS,
   TOOL_NAME_SUCCESS_CLASS,
   type ToolCallRenderGroup,
 } from './chatMessageShared'
+import type { ToolCardThemeCssProperties } from './toolCardPalette'
 import {
   Badge,
   DisclosurePanel,
@@ -59,6 +61,8 @@ export interface ToolCallGroupCardProps {
   disableExpandTransition?: boolean
   onExpandTransitionEnd?: () => void
   contentStyle?: React.CSSProperties
+  /** `--tool-*` palette variables from `getToolCardThemeVars`, set on the card wrapper. */
+  themeVars?: ToolCardThemeCssProperties
   truncateToolOutput: boolean
   readOnly?: boolean
   toolDefinitions: ToolDefinition[]
@@ -160,6 +164,7 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
   disableExpandTransition,
   onExpandTransitionEnd,
   contentStyle,
+  themeVars,
   truncateToolOutput,
   readOnly = false,
   toolDefinitions,
@@ -222,7 +227,10 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
     </button>
   )
 
-  const wrapperStyle = contentStyle
+  // The key/value palette rides on the wrapper so every variant (generic, edit, plan, task)
+  // inherits the same `--tool-*` variables.
+  const wrapperStyle: React.CSSProperties | undefined =
+    themeVars || contentStyle ? { ...themeVars, ...contentStyle } : undefined
 
   // Inspection-only previews share presentation, but never mount executable
   // HTML/MCP apps or offer tool navigation/mutation actions.
@@ -310,7 +318,8 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
           <FieldRows record={Object.keys(fields).length > 0 ? fields : null} fallback={{ key: 'route', value: route }} />
           {!route && errorText && (
             <div className={`${MONO_DETAIL_CLASS} text-red-600 dark:text-red-400`}>
-              <span className={MONO_KEY_CLASS}>error:</span> {errorText}
+              <span className={TOOL_FIELD_KEY_CLASS}>error</span>
+              <span className={TOOL_FIELD_PUNCTUATION_CLASS}>:</span> {errorText}
             </div>
           )}
           {warnings.length > 0 && (
@@ -707,7 +716,11 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
         <SectionLabel label='output'>{group.results.length > 1 && <Badge>{`result ${resultIdx + 1}`}</Badge>}</SectionLabel>
         <SurfaceCard badge={outputStatus ? <Badge tone={outputStatus.tone}>{outputStatus.label}</Badge> : undefined}>
           <div className={errorTextClass}>
-            <FieldRows record={outputRecord} fallback={outputRecord ? undefined : { key: 'content', value: result.content }} />
+            <FieldRows
+              record={outputRecord}
+              fallback={outputRecord ? undefined : { key: 'content', value: result.content }}
+              palette={!errorTextClass}
+            />
           </div>
         </SurfaceCard>
       </div>

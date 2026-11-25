@@ -1,7 +1,7 @@
 import { buildLocalApiUrl } from '../utils/api'
 import { isHostClient } from '../platform/clientCapabilities'
 import { createEmptyStreamState } from '../features/chats/streamHelpers'
-import { MAX_FINISHED_AGENT_FORKS } from '../features/chats/agentRunPreviewSlice'
+import { MAX_FINISHED_AGENT_FORKS, type AgentRunPreview } from '../features/chats/agentRunPreviewSlice'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Message, OperationMode, StreamEvent, StreamLifecycleStatus, StreamState } from '../features/chats/chatTypes'
 import type { Conversation } from '../features/conversations/conversationTypes'
@@ -68,26 +68,66 @@ export const getAgentForkKey = (stream: AgentStreamListItem): string =>
     ? getLineageForkKey(stream.conversationId, stream.lineageId)
     : JSON.stringify(['run', stream.streamId])
 
+type ViewedAgentTranscript = {
+  conversationId: string
+  path: readonly string[]
+  previews: Readonly<Record<string, Pick<AgentRunPreview, 'entries'>>>
+}
+
 /**
- * Drop the whole fork Chat is currently showing, live or finished, so the pill never
- * repeats what is already on screen. `viewedForkKey` is the branch open in Chat (from its
- * conversation + lineage) and catches finished forks; `viewedStreamId` is the live run on
- * that branch and still catches it while its lineage is unconfirmed. Presentation only.
+ * Hide the fork currently open in Chat by confirmed identity (or by its live run).
+ * Also hide finished fork cards whose retained runs are already on Chat's path,
+ * even if they were created on another lineage. A shared fork point is not enough.
  */
 export const excludeViewedAgentFork = (
   activeStreams: AgentStreamListItem[],
   streamHistory: AgentStreamListItem[],
   viewedStreamId: string | null,
-  viewedForkKey: string | null = null
+  viewedForkKey: string | null = null,
+  viewedTranscript: ViewedAgentTranscript | null = null
 ): { activeStreams: AgentStreamListItem[]; streamHistory: AgentStreamListItem[] } => {
   const hiddenKeys = new Set<string>()
   if (viewedForkKey) hiddenKeys.add(viewedForkKey)
   const viewed = viewedStreamId == null ? undefined : activeStreams.find(stream => stream.streamId === viewedStreamId)
   if (viewed) hiddenKeys.add(getAgentForkKey(viewed))
-  if (hiddenKeys.size === 0) return { activeStreams, streamHistory }
+  const path = viewedTranscript?.path.length ? new Set(viewedTranscript.path) : null
+  if (hiddenKeys.size === 0 && !path) return { activeStreams, streamHistory }
+  const activeKeys = path ? new Set(activeStreams.map(getAgentForkKey)) : null
   const keep = (stream: AgentStreamListItem) => !hiddenKeys.has(getAgentForkKey(stream))
+  const alreadyShown = (stream: AgentStreamListItem) => {
+    if (!viewedTranscript || !path || stream.conversationId !== viewedTranscript.conversationId ||
+      stream.status !== 'completed' || stream.hasError || (stream.streamType !== 'primary' && stream.streamType !== 'branch')) return false
+    if ((stream.finalMessageId && !path.has(stream.finalMessageId)) ||
+      (stream.triggerUserMessageId && !path.has(stream.triggerUserMessageId))) return false
+    const entries = viewedTranscript.previews[stream.streamId]?.entries
+    if (!entries) return false
+    let hasPrompt = false
+    let hasResponse = false
+    for (const { message, stream: tail } of entries) {
+      if (!message) {
+        if (tail && (tail.buffer || tail.thinkingBuffer || tail.events.length)) return false
+        continue
+      }
+      if (!path.has(String(message.id))) return false
+      if (message.role === 'user' && !isHeimdallScaffoldingMessage(message)) hasPrompt = true
+      if (message.role === 'assistant') hasResponse = true
+    }
+    return hasPrompt && hasResponse
+  }
+  // Keep the whole card if it represents live work or any run not shown in Chat.
+  const coveredByKey = new Map<string, boolean>()
+  if (path) {
+    for (const stream of streamHistory) {
+      const key = getAgentForkKey(stream)
+      if (hiddenKeys.has(key) || activeKeys?.has(key) || coveredByKey.get(key) === false) continue
+      coveredByKey.set(key, alreadyShown(stream))
+    }
+  }
   const nextActive = activeStreams.filter(keep)
-  const nextHistory = streamHistory.filter(keep)
+  const nextHistory = streamHistory.filter(stream => {
+    const key = getAgentForkKey(stream)
+    return !hiddenKeys.has(key) && coveredByKey.get(key) !== true
+  })
   return {
     activeStreams: nextActive.length === activeStreams.length ? activeStreams : nextActive,
     streamHistory: nextHistory.length === streamHistory.length ? streamHistory : nextHistory,

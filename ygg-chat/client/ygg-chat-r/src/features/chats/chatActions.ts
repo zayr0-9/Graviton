@@ -4,6 +4,8 @@ import { getAdmissionEpoch, resetAdmissionEpoch } from './runAdmissionClient'
 import { getClientId, newClientId } from '../../helpers/clientId'
 import { isCleanStartBranchEdit, isSummaryBranchEdit, isProviderHandoffEdit, resolveBranchModelSelection, resolveEditBranchModelSelection, resolveComposerSummaryHandoff } from './branchModelSelection'
 import { resolveBranchFastMode } from './branchFastMode'
+import { resolveBranchReasoning } from './branchReasoning'
+import { loadChatReasoningSettings } from '../../helpers/chatReasoningSettingsStorage'
 import { resolveBranchPlanMode } from './branchPlanMode'
 import { resolveAnchoredClaudeAutoMode, resolveBranchClaudeAutoMode } from './branchClaudeAutoMode'
 import { defaultToolApproval, resolveAnchoredToolApproval, resolveBranchToolApproval, resolveHandoffToolApproval } from './branchToolApproval'
@@ -908,6 +910,7 @@ export const sendMessage = createAsyncThunk<
       think,
       imageConfig,
       reasoningConfig,
+      reasoningLevel: requestedReasoningLevel,
       cwd,
       operationMode: requestedOperationMode,
       streamId: providedStreamId,
@@ -1026,6 +1029,8 @@ export const sendMessage = createAsyncThunk<
       // Use original provider case for cache lookup (React Query keys are case-sensitive).
       const branchSelection = resolveBranchModelSelection(modelSelectionState, settingsPath, modelSelectionState.conversation.currentConversationId, settingsLineageId)
       const fastMode = resolveBranchFastMode(modelSelectionState, settingsPath, conversationId, settingsLineageId)
+      const reasoningLevel = requestedReasoningLevel
+        ?? resolveBranchReasoning(modelSelectionState, loadChatReasoningSettings(), settingsPath, conversationId, settingsLineageId)
       const provider = branchSelection?.provider ?? modelSelectionState.providerState.currentProvider
       const modelsData = extra.queryClient?.getQueryData<{
         models: Model[]
@@ -1091,6 +1096,7 @@ export const sendMessage = createAsyncThunk<
           ...buildOperationModePromptRequestParams(operationModeAtSend),
           think,
           reasoningConfig,
+          reasoningLevel,
           subagentReasoningEffort: getSubagentReasoningEffort(),
           imageConfig,
           rootPath: effectiveToolRootPath,
@@ -1348,6 +1354,8 @@ export const editMessageWithBranching = createAsyncThunk<
       newContent,
       modelOverride,
       think,
+      reasoningConfig,
+      reasoningLevel: requestedReasoningLevel,
       cwd,
       operationMode: requestedOperationMode,
       streamId: providedStreamId,
@@ -1452,6 +1460,9 @@ export const editMessageWithBranching = createAsyncThunk<
       // Capture the edit-session choice before ChatMessage closes the editor.
       const fastMode = (modelSelectionState.composition.editingBranch ? modelSelectionState.composition.branchEditModes?.fastMode : undefined)
         ?? resolveBranchFastMode(modelSelectionState, providedBranchPath ?? modelSelectionState.conversation.currentPath, conversationId, providedLineageId === undefined ? modelSelectionState.conversation.currentLineageId : providedLineageId)
+      const reasoningLevel = requestedReasoningLevel
+        ?? (modelSelectionState.composition.editingBranch ? modelSelectionState.composition.branchEditModes?.reasoningLevel : undefined)
+        ?? resolveBranchReasoning(modelSelectionState, loadChatReasoningSettings(), providedBranchPath ?? modelSelectionState.conversation.currentPath, conversationId, providedLineageId === undefined ? modelSelectionState.conversation.currentLineageId : providedLineageId)
       const modelsData = extra.queryClient?.getQueryData<{
         models: Model[]
         default: Model
@@ -1570,6 +1581,9 @@ export const editMessageWithBranching = createAsyncThunk<
           operationMode: operationModeAtSend,
           ...buildOperationModePromptRequestParams(operationModeAtSend),
           think,
+          // Previously omitted: edited branches ran at the provider's default effort.
+          reasoningConfig: think ? reasoningConfig : undefined,
+          reasoningLevel,
           subagentReasoningEffort: getSubagentReasoningEffort(),
           rootPath: effectiveToolRootPath,
           fullAccess: isFullAccessEnabled(),

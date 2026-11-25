@@ -8,6 +8,8 @@ export interface HostExecutionPreferences {
   hookGeneration: HostHookGeneration
   /** Claude Code's own MCP servers in Claude chats. */
   claudeMcp: HostClaudeMcpPreferences
+  /** Desktop opt-in to Claude Code's unmanaged hooks in Graviton chats. */
+  allowClaudeNativeHooks: boolean
   provider: HostProviderPreferences
   tools: Record<string, boolean>
   subagent: HostSubagentPreferences
@@ -30,9 +32,9 @@ export interface HostExecutionSnapshot {
 export function normalizeHostExecutionPreferences(input: unknown): HostExecutionPreferences {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid execution preferences')
   const value = input as Record<string, unknown>
-  const allowed = new Set(['toolAutoApprove', 'autoCompactionEnabled', 'longTermMemoryContextEnabled', 'contextDirectories', 'planModeVerbosity', 'provider', 'tools', 'subagent', 'modePrompts', 'toolTimeouts', 'hookGeneration', 'claudeMcp'])
+  const allowed = new Set(['toolAutoApprove', 'autoCompactionEnabled', 'longTermMemoryContextEnabled', 'contextDirectories', 'planModeVerbosity', 'provider', 'tools', 'subagent', 'modePrompts', 'toolTimeouts', 'hookGeneration', 'claudeMcp', 'allowClaudeNativeHooks'])
   if (Object.keys(value).some(key => !allowed.has(key))) throw new Error('Unknown execution preference')
-  for (const key of ['toolAutoApprove', 'autoCompactionEnabled', 'longTermMemoryContextEnabled']) {
+  for (const key of ['toolAutoApprove', 'autoCompactionEnabled', 'longTermMemoryContextEnabled', 'allowClaudeNativeHooks']) {
     if (value[key] !== undefined && typeof value[key] !== 'boolean') throw new Error(`Invalid ${key}`)
   }
   if (value.planModeVerbosity !== undefined && !['concise', 'normal', 'detailed'].includes(String(value.planModeVerbosity))) throw new Error('Invalid plan verbosity')
@@ -43,6 +45,7 @@ export function normalizeHostExecutionPreferences(input: unknown): HostExecution
     !Number.isSafeInteger(toolTimeouts.toolCallTimeoutMs) || toolTimeouts.toolCallTimeoutMs < 1000 || toolTimeouts.toolCallTimeoutMs > 6000000 ||
     !Number.isSafeInteger(toolTimeouts.bashTimeoutMs) || toolTimeouts.bashTimeoutMs < 1000 || toolTimeouts.bashTimeoutMs > 600000) throw new Error('Invalid tool timeouts')
   return { hookGeneration: validateHostHookGeneration(value.hookGeneration ?? {}), claudeMcp: validateHostClaudeMcpPreferences(value.claudeMcp ?? {}), toolTimeouts, modePrompts: validateHostModePrompts(value.modePrompts ?? {}), subagent: validateHostSubagentPreferences(value.subagent ?? {}), tools: { ...tools } as Record<string, boolean>, provider: validateHostProviderPreferences(value.provider ?? {}), autoCompactionEnabled: value.autoCompactionEnabled !== false, toolAutoApprove: value.toolAutoApprove === true, longTermMemoryContextEnabled: value.longTermMemoryContextEnabled !== false,
+    allowClaudeNativeHooks: value.allowClaudeNativeHooks === true,
     contextDirectories: normalizeContextDirectorySettings(value.contextDirectories),
     planModeVerbosity: (value.planModeVerbosity ?? 'concise') as HostExecutionPreferences['planModeVerbosity'] }
 }

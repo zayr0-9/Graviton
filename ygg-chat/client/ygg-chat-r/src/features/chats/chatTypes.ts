@@ -454,7 +454,7 @@ export interface CompositionState {
   imagePreparationError: string | null
   imagePreparationGeneration: number
   editingBranch: boolean // true when user is editing a branch; controls UI like hiding image drafts
-  branchEditModes?: { operationMode?: OperationMode; fastMode?: boolean; toolAutoApprove?: boolean; claudePlanMode?: boolean; claudeAutoMode?: boolean }
+  branchEditModes?: { operationMode?: OperationMode; fastMode?: boolean; reasoningLevel?: import('../../../../../shared/reasoningLevel').ReasoningLevel; toolAutoApprove?: boolean; claudePlanMode?: boolean; claudeAutoMode?: boolean }
   branchEditMessageId?: MessageId
   branchEditModelSelection?: { provider: string; model: string | null }
   optimisticMessage: Message | null // temp message for instant UI feedback in web mode only
@@ -571,6 +571,7 @@ export interface ChatState {
   operationModeDrafts: Record<string, OperationMode>
   branchModelDrafts?: Record<string, import('./branchModelSelection').BranchModelSelection>
   branchFastModeDrafts?: Record<string, boolean>
+  branchReasoningDrafts?: Record<string, import('../../../../../shared/reasoningLevel').ReasoningLevel>
   branchToolApprovalDrafts?: Record<string, boolean>
   /** Pending live switches, keyed by `operationModeChangeKey(conversationId, streamId)`. */
   operationModeChanges: Record<string, {
@@ -633,6 +634,8 @@ export interface SendMessagePayload {
   retrigger?: boolean
   imageConfig?: ImageConfig
   reasoningConfig?: ReasoningConfig
+  /** The branch's chosen level, recorded on persisted rows; defaults to the branch's resolved level. */
+  reasoningLevel?: import('../../../../../shared/reasoningLevel').ReasoningLevel
   serviceTier?: OpenAIServiceTier
   cwd?: string | null
   // Captured at send time: 'plan' = Chat Mode, 'execute' = Agent Mode.
@@ -656,6 +659,9 @@ export interface EditMessagePayload {
   modelOverride?: string
   systemPrompt?: string
   think: boolean
+  reasoningConfig?: ReasoningConfig
+  /** The branch's chosen level, recorded on persisted rows; defaults to the branch's resolved level. */
+  reasoningLevel?: import('../../../../../shared/reasoningLevel').ReasoningLevel
   serviceTier?: OpenAIServiceTier
   cwd?: string | null
   // Captured at send time: 'plan' = Chat Mode, 'execute' = Agent Mode.

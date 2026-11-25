@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createReplDispatchExecutor, ReplSessions } from '../replExecutor.js'
+import { createMultiCallDispatchExecutor } from '../multiCallExecutor.js'
+import type { ChatHookSession } from '../chatHookService.js'
 import { createChatPausingExecutor } from '../chatOrchestrator.js'
 import { DecisionBroker } from '../decisionBroker.js'
 import { REPL_GUIDE } from '../../../../../../shared/replGuide.js'
@@ -15,11 +17,11 @@ function setup(nested: ToolExecutor = async () => ({ success: true, content: 'se
   const sessions = new ReplSessions()
   stores.push(sessions)
   const leaf = vi.fn(nested)
-  const dispatch = createReplDispatchExecutor(leaf, sessions)
+  const dispatch = createMultiCallDispatchExecutor(createReplDispatchExecutor(leaf, sessions))
   const context: ToolExecutionContext = {
     conversationId: 'chat', messageId: 'msg', lineageId: 'branch', operationMode: 'execute',
-    allowedToolNames: new Set(['read_file', 'browse_web', 'edit_file', 'mcp__test', 'subagent_manager']),
-    nestedExecutor: leaf,
+    allowedToolNames: new Set(['multi_call', 'read_file', 'browse_web', 'edit_file', 'mcp__test', 'subagent_manager']),
+    nestedExecutor: dispatch,
   }
   let id = 0
   const run = (args: any, overrides: Partial<ToolExecutionContext> = {}) => dispatch({ id: `cell-${++id}`, name: 'repl', arguments: args }, { ...context, ...overrides })
@@ -212,7 +214,7 @@ describe('replExecutor', () => {
 
   it('fails closed for unavailable tools, mode violations and bypass attempts', async () => {
     const { run, leaf } = setup()
-    for (const tool of ['repl', 'multi_call', 'skill_manager', 'html_renderer', 'view_image', 'unavailable']) {
+    for (const tool of ['repl', 'skill_manager', 'html_renderer', 'view_image', 'unavailable']) {
       expect(await run({ ...capture, tool, overwrite: true })).toMatchObject({ toolStatus: 'error' })
     }
     expect(await run({ ...capture, tool: 'edit_file', overwrite: true }, { operationMode: 'plan' })).toMatchObject({ toolStatus: 'error' })
@@ -289,6 +291,99 @@ describe('replExecutor', () => {
   })
 })
 
+
+describe('capturing multi_call', () => {
+  const batch = (args: Record<string, unknown>) => ({ action: 'invoke', tool: 'multi_call', assign: 'batch', args })
+
+  it('captures parallel results in input order and omits ephemeral modelContent', async () => {
+    const { run, leaf } = setup(async call => ({ persistedContent: call.name, modelContent: 'not for capture' }))
+    const receipt = await run(batch({ parallel: true, calls: [{ tool: 'read_file' }, { toolName: 'browse_web' }] }))
+    expect(receipt).toMatchObject({ status: 'stored', variable: 'batch', toolStatus: 'success' })
+    expect(JSON.stringify(receipt)).not.toContain('persistedContent')
+    expect(JSON.parse((await run({ action: 'show', variable: 'batch' })).content)).toEqual({
+      parallel: true, stopOnError: true, results: [
+        { tool: 'read_file', ok: true, data: { persistedContent: 'read_file' } },
+        { tool: 'browse_web', ok: true, data: { persistedContent: 'browse_web' } },
+      ],
+    })
+    expect(leaf).toHaveBeenCalledTimes(2)
+  })
+
+  it('enforces the caller allowlist, Chat mode and direct-only restrictions on batch members', async () => {
+    const { run, leaf } = setup()
+    const allowedToolNames = new Set(['multi_call', 'read_file', 'edit_file', 'theme_manager', 'view_image', 'repl', 'plan_md'])
+    const calls = ['repl', 'view_image', 'missing', 'edit_file', 'theme_manager', 'read_file'].map(tool => ({ tool }))
+    expect(await run(batch({ stopOnError: false, calls }), { allowedToolNames, operationMode: 'plan' })).toMatchObject({ status: 'stored' })
+    const { results } = JSON.parse((await run({ action: 'show', variable: 'batch' })).content)
+    expect(results.map((entry: any) => entry.ok)).toEqual([false, false, false, false, false, true])
+    expect(leaf).toHaveBeenCalledOnce()
+    expect(leaf.mock.calls[0][0].name).toBe('read_file')
+    expect(await run({ ...batch({ calls: [{ tool: 'read_file' }] }), overwrite: true }, {
+      allowedToolNames: new Set(['read_file']),
+    })).toMatchObject({ toolStatus: 'error' })
+    expect(leaf).toHaveBeenCalledOnce()
+  })
+
+  it('blocks batch recursion in both directions but keeps multi_call → repl for leaf captures', async () => {
+    const { run, dispatch, context, leaf } = setup()
+    expect(await run(batch({ calls: [{ tool: 'multi_call', args: { calls: [{ tool: 'read_file' }] } }] })))
+      .toMatchObject({ toolStatus: 'error' })
+    const result = await dispatch({ id: 'outer', name: 'multi_call', arguments: { calls: [
+      { tool: 'repl', args: { ...batch({ calls: [{ tool: 'read_file' }] }), assign: 'recursive' } },
+      { tool: 'repl', args: capture },
+    ] } }, context)
+    expect(result.results.map((entry: any) => entry.data.toolStatus)).toEqual(['error', 'success'])
+    expect((await run({ action: 'show', variable: 'recursive' })).content).toContain('cannot invoke nested tool: multi_call')
+    expect(leaf).toHaveBeenCalledOnce()
+  })
+
+  it('prompts for each batch member and stores denials and skipped calls', async () => {
+    const { dispatch, run, context, leaf } = setup()
+    const broker = new DecisionBroker()
+    broker.initSession('stream', { autoApproveAll: false })
+    const execute = createChatPausingExecutor({ base: dispatch, broker, streamId: 'stream', emit: vi.fn() })
+    const pending = execute({ id: 'outer', name: 'repl', arguments: batch({ calls: [{ tool: 'read_file' }, { tool: 'browse_web' }] }) },
+      { ...context, nestedExecutor: undefined })
+    await vi.waitFor(() => expect(broker.hasPending('stream', 'outer')).toBe(true))
+    broker.resolve('stream', 'outer', 'allow_once')
+    await vi.waitFor(() => expect(broker.hasPending('stream', 'outer:invoke:1')).toBe(true))
+    broker.resolve('stream', 'outer:invoke:1', 'deny')
+    await expect(pending).resolves.toMatchObject({ status: 'stored' })
+    expect(leaf).not.toHaveBeenCalled()
+    const { results } = JSON.parse((await run({ action: 'show', variable: 'batch' })).content)
+    expect(results).toMatchObject([{ tool: 'read_file', ok: false, error: 'Tool execution denied by user' },
+      { tool: 'browse_web', ok: false, skipped: true }])
+  })
+
+  it('rechecks REPL restrictions after a per-member hook rewrites inputs', async () => {
+    const { dispatch, run, context, leaf } = setup()
+    const broker = new DecisionBroker()
+    broker.initSession('stream', { autoApproveAll: true })
+    const hookSession = {
+      runPreToolUse: vi.fn(async call => call.name === 'plan_md' ? { updatedInput: { action: 'display' } } : {}),
+      runPostToolUse: vi.fn(), runPostToolUseFailure: vi.fn(),
+    } as unknown as ChatHookSession
+    const execute = createChatPausingExecutor({ base: dispatch, broker, streamId: 'stream', emit: vi.fn(), hookSession })
+    await execute({ id: 'outer', name: 'repl', arguments: batch({ calls: [{ tool: 'plan_md', args: { action: 'list' } }] }) },
+      { ...context, allowedToolNames: new Set(['multi_call', 'plan_md']), nestedExecutor: undefined })
+    const { results } = JSON.parse((await run({ action: 'show', variable: 'batch' })).content)
+    expect(results[0]).toMatchObject({ tool: 'plan_md', ok: false, error: expect.stringContaining('Use plan_md directly') })
+    expect(leaf).not.toHaveBeenCalled()
+  })
+
+  it('cancels an in-flight batch without storing late results or starting later calls', async () => {
+    let finish!: () => void
+    const { run, leaf } = setup(() => new Promise<void>(resolve => { finish = resolve }))
+    const controller = new AbortController()
+    const pending = run(batch({ calls: [{ tool: 'read_file' }, { tool: 'browse_web' }] }), { signal: controller.signal })
+    await vi.waitFor(() => expect(leaf).toHaveBeenCalledOnce())
+    controller.abort()
+    await expect(pending).rejects.toThrow()
+    finish()
+    expect(await run({ action: 'list' })).toMatchObject({ variables: [], pendingCaptures: [] })
+    expect(leaf).toHaveBeenCalledOnce()
+  })
+})
 
 describe('shared REPL workspaces', () => {
   it('queues concurrent agent cells in FIFO order and attributes changes', async () => {

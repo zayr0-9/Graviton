@@ -85,7 +85,15 @@ This does **not** suppress existing tool-job persistence or hook processing. It 
 
 Tool failures are stored as values and signalled with `toolStatus: "error"`; use `show` to inspect. Cancellation propagates rather than becoming a successful stored error. Storage/serialization failures explicitly report that the tool may already have executed: **never retry mutations blindly**. Failed JavaScript cells can also leave partial variable changes.
 
-Direct-only in this version: `repl`, `multi_call`, `skill_manager`, `html_renderer`, `view_image`, and `plan_md` display. These require recursion guards or special transcript/UI adapters. Other split-channel outputs store only `persistedContent`/`displayContent` and report `metadataOnly: true`; ephemeral `modelContent` is not captured as ordinary JSON.
+`invoke` can capture one `multi_call` batch into a variable:
+
+```json
+{"action":"invoke","tool":"multi_call","args":{"calls":[{"tool":"read_file","args":{"path":"package.json"}},{"tool":"glob","args":{"pattern":"*.md"}}],"parallel":true},"assign":"batch"}
+```
+
+The receipt describes the capture, not individual successes. Inspect `batch.results` for ordered per-tool data, errors and skips. Normal batch limits, caller allowlists, per-tool approval, hooks and mode checks still apply. A captured batch cannot contain another batch or a REPL call. Direct `multi_call` can still include REPL calls as long as they do not invoke another batch.
+
+Use `repl`, `skill_manager`, `html_renderer`, `view_image`, `switch_mode`, and `plan_md` display directly rather than capturing them, including inside a captured batch. For other split-channel outputs, single captures store only `persistedContent`/`displayContent` and report `metadataOnly: true`; batches keep the normal per-item result shape without ephemeral `modelContent`.
 
 No new subagent recursion is enabled. The existing parent-only subagent dispatcher remains the boundary. No arbitrary-code tool-call bridge, artifact viewer, notebook UI, restart checkpoints, or transaction rollback is implemented.
 

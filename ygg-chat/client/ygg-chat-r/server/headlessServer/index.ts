@@ -29,6 +29,7 @@ import { registerSubagentRoutes } from './routes/subagentRoutes.js'
 import { registerTestHarnessRoutes } from './routes/testHarnessRoutes.js'
 import { registerGatewayRoutes } from './routes/gatewayRoutes.js'
 import { registerLineageRoutes } from './routes/lineageRoutes.js'
+import { registerClaudeHookRoutes } from './routes/claudeHookRoutes.js'
 import { registerClaudeMcpRoutes } from './routes/claudeMcpRoutes.js'
 import { ClaudeMcpControlService } from './services/claudeMcpControl.js'
 import { claudeWarmConfigFromEnv } from './services/claudeWarmProcess.js'
@@ -350,6 +351,7 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
   const claudeMcpControl = new ClaudeMcpControlService({ preferences: () => readHostExecutionPreferences().values.claudeMcp })
   activeClaudeMcpControls.add(claudeMcpControl)
   registerClaudeMcpRoutes(app, { control: claudeMcpControl })
+  registerClaudeHookRoutes(app, deps)
 
   // /api/gw/*: the renderer's local data gateway (facade over /api/app/*).
   registerGatewayRoutes(app, { db: deps.db, statements: deps.statements })
@@ -434,16 +436,19 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
     // Phase 3: in-process chat hooks (fires only when a request sets hooksEnabled).
     hookRunner: runHookRequest,
     claudeNativeMcp: () => readHostExecutionPreferences().values.claudeMcp,
+    allowClaudeNativeHooks: () => readHostExecutionPreferences().values.allowClaudeNativeHooks,
     // Claude CLIs stay open between turns of a branch (GRAVITON_CLAUDE_WARM_IDLE_MS=0 turns it off).
     claudeWarm: claudeWarmConfigFromEnv(),
     // Graviton tools reach Claude as the `graviton` MCP server, following Settings → Tools live.
     claudeGravitonToolStates: () => readHostExecutionPreferences().values.tools,
   })
   activeOrchestrators.add(chatOrchestrator)
-  const stopToolSettingsWatch = onHostExecutionPreferencesSaved(domains => {
+  const stopExecutionSettingsWatch = onHostExecutionPreferencesSaved(domains => {
     if (domains.includes('tools')) chatOrchestrator.gravitonToolsChanged()
+    if (domains.includes('allowClaudeNativeHooks')) void chatOrchestrator.disposeClaudeSessions().catch(error =>
+      console.warn('[ClaudeSession] could not close parked sessions after hook settings changed', error instanceof Error ? error.message : error))
   })
-  reaperStops.add(stopToolSettingsWatch)
+  reaperStops.add(stopExecutionSettingsWatch)
   // Synchronously releases stale 'running' Claude branches, then checkpoints their heads.
   void chatOrchestrator.recoverInterruptedClaudeBranches().catch(error =>
     console.warn('[ClaudeSession] interrupted branch recovery failed', error instanceof Error ? error.message : error))

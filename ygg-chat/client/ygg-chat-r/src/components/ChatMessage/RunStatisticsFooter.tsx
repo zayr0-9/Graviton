@@ -18,6 +18,10 @@ export const RunStatisticsFooter = memo(function RunStatisticsFooter({ statistic
         aria-expanded={expanded} data-expanded={expanded ? 'true' : undefined}
         aria-label={`${summary}. ${details}. Slice tokens estimate transcript content once, excluding replayed history. Up arrow: input tokens (user text and tool results). Down arrow: output tokens (assistant/reasoning and tool calls). Hover or focus for details.`}
         onClick={() => setExpanded(value => !value)}
+        onPointerLeave={event => {
+          if (event.pointerType !== 'touch') setExpanded(false)
+        }}
+        onBlur={() => setExpanded(false)}
         onKeyDown={event => {
           if (event.key === 'Escape') setExpanded(false)
           if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setExpanded(value => !value) }
