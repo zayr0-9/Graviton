@@ -22,7 +22,7 @@ import rehypeKatex from 'rehype-katex'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import { Check, RotateCw, X } from 'lucide-react'
-import { fetchMcpTools } from '../../features/chats/chatActions'
+import { blobToDataURL, fetchMcpTools, resolveAttachmentUrl } from '../../features/chats/chatActions'
 import { chatSliceActions } from '../../features/chats/chatSlice'
 import {
   appendAttachedImagePathMetadata,
@@ -595,6 +595,24 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
     const messageData = useSelector((state: RootState) => selectMessageByIdMap(state).get(String(id)))
     const toolDefinitions = useSelector((state: RootState) => state.chat.tools)
     const conversationId = messageData?.conversation_id ?? null
+    // Only mounted virtual rows need image bytes. Keep base64 for the existing branch
+    // editor, but cancel off-screen loads and never restore an image the user removed.
+    const removedImages = useSelector((state: RootState) => state.chat.attachments.backup[String(id)]?.length ?? 0)
+    const imageUrlsKey = JSON.stringify((messageData?.attachments ?? []).filter(a => !a.mime_type || a.mime_type.startsWith('image/'))
+      .map(a => resolveAttachmentUrl(a.url, a.file_path ?? (typeof a.storage_path === 'string' ? a.storage_path : undefined), a.id)).filter(Boolean))
+    const needsImages = !artifacts.length && !removedImages && role !== 'assistant'
+    useEffect(() => {
+      if (!needsImages || imageUrlsKey === '[]' || !conversationId) return
+      const controller = new AbortController()
+      void Promise.all((JSON.parse(imageUrlsKey) as string[]).map(async url => {
+        const response = await fetch(url, { signal: controller.signal })
+        if (!response.ok) throw new Error('Attachment unavailable')
+        return blobToDataURL(await response.blob())
+      })).then(images => {
+        if (!controller.signal.aborted) dispatch(chatSliceActions.messageArtifactsSet({ messageId: id, artifacts: images }))
+      }).catch(() => { /* Retry on remount; branch submission independently validates retained originals. */ })
+      return () => controller.abort()
+    }, [conversationId, id, dispatch, imageUrlsKey, needsImages])
     const projectId = useSelector((state: RootState) =>
       conversationId ? (selectConversationByIdMap(state).get(String(conversationId))?.project_id ?? null) : null
     )

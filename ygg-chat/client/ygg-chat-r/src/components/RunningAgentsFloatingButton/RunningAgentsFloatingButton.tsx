@@ -327,6 +327,8 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
   presentation = 'pill',
 }) => {
   const windowMode = presentation === 'window'
+  const [expandedState, setExpanded] = useState(false)
+  const expanded = windowMode || expandedState
   const chatNavigate = useNavigate()
   // The agents window has no Chat: hand the route to the main window instead.
   const navigate = (href: string) => {
@@ -339,7 +341,7 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
     streamHistory: allStreamHistory,
     buildAgentStreamListItem,
     streamingRoot,
-  } = useRunningAgentStreams(notes, allConversations)
+  } = useRunningAgentStreams(notes, allConversations, expanded)
   // The run open in Chat is already on screen there. Only while a chat route is showing it:
   // the selection outlives Chat (e.g. on Settings), where the pill should list it again.
   const onChatRoute = useLocation().pathname.startsWith('/chat/')
@@ -376,8 +378,6 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
   const headerTargets = useAgentsHeader()
   const headerMode = !windowMode && Boolean(onChatRoute && headerTargets.launcher?.isConnected)
   const compactTriggerRef = useRef<HTMLButtonElement>(null)
-  const [expandedState, setExpanded] = useState(false)
-  const expanded = windowMode || expandedState
   const [gridOrderMode, setGridOrderMode] = useState(readAgentGridOrderMode)
   const pillResize = useAgentsPillResize(expanded, className, !headerMode && !windowMode)
   const [selectedRun, setSelectedRun] = useState<AgentStreamListItem | null>(null)

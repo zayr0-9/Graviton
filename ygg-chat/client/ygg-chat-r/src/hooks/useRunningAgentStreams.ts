@@ -363,7 +363,7 @@ const resolveParentMessage = (messagesById: Map<string, Message>, stream: Stream
   return null
 }
 
-export function useRunningAgentStreams(notes: ResearchNoteItem[] = [], allConversations: Conversation[] = []) {
+export function useRunningAgentStreams(notes: ResearchNoteItem[] = [], allConversations: Conversation[] = [], showFinished = true) {
   const scopedConversations = useAppSelector(state => state.conversations.items)
   const streamingRoot = useAppSelector(state => state.chat.streaming)
   const messages = useAppSelector(state => state.chat.conversation.messages)
@@ -491,7 +491,7 @@ export function useRunningAgentStreams(notes: ResearchNoteItem[] = [], allConver
   }, [buildAgentStreamListItem, streamingRoot.activeIds, streamingRoot.byId, hostRuns])
 
   const liveForkKeys = useMemo(() => new Set(activeStreams.map(getAgentForkKey)), [activeStreams])
-  useHostAgentRunSync(hostRuns, liveForkKeys)
+  useHostAgentRunSync(hostRuns, liveForkKeys, showFinished)
 
   useEffect(() => {
     for (const stream of activeStreams) {

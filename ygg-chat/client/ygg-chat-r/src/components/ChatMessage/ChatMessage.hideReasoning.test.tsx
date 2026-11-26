@@ -5,7 +5,7 @@ import { HIDE_REASONING_BLOCKS_KEY } from '../../helpers/hideReasoningSettings'
 import { createDefaultCustomChatTheme } from '../ThemeManager/themeConfig'
 
 const { state } = vi.hoisted(() => ({
-  state: { chat: { conversation: { messages: [] }, tools: [] }, conversations: { items: [] } },
+  state: { chat: { conversation: { messages: [] }, attachments: { backup: {} }, tools: [] }, conversations: { items: [] } },
 }))
 
 vi.mock('react-redux', () => ({ useSelector: (selector: (value: unknown) => unknown) => selector(state) }))

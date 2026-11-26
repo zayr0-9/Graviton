@@ -117,6 +117,18 @@ describe('coordinateConversationSnapshot', () => {
     expect(queryClient.getQueryData(conversationQueryKeys.messages('c1'))).toBeUndefined()
   })
 
+  it('requests the remembered tip and distinguishes intact, stale and deleted siblings', async () => {
+    const rows = ['keep', 'changed', 'deleted'].map(id => ({ ...message(id, 'root'), revision: 1 }))
+    const current = state('c1', rows)
+    current.chat.conversation.lastViewedTips = { c1: 'tip' }
+    const fetchSnapshot = vi.fn(async () => ({ messages: [message('root', null), message('tip', 'root')], tree: null,
+      retained: [['keep', 1], ['changed', 2]] as Array<[string, number]> }))
+    const result = await coordinateConversationSnapshot({ conversationId: 'c1', queryClient: new QueryClient(),
+      branchOnly: true, getState: () => current, dispatch: vi.fn(), fetchSnapshot })
+    expect(fetchSnapshot).toHaveBeenCalledWith('c1', expect.objectContaining({ branch: expect.objectContaining({ tip: 'tip' }) }))
+    expect(result.data?.messages.map(row => row.id)).toEqual(['keep', 'root', 'tip'])
+  })
+
   it('retains a terminal lease until every protected row is durable', async () => {
     const queryClient = new QueryClient()
     const currentState = state('c1', [message('root', null), message('final', 'root')])

@@ -112,7 +112,6 @@ import { getCompactionPresentationScope, isCompactionVisibleFor, type Compaction
 import {
   abortGeneration,
   cancelPlanClarification,
-  blobToDataURL,
   chatSliceActions,
   compactBranch,
   abortCompaction,
@@ -121,7 +120,6 @@ import {
   fetchConversationStreamUndo,
   initializeUserAndConversation,
   Message,
-  resolveAttachmentUrl,
   respondToPlanClarification,
   respondToOperationModeUpgrade,
   respondToToolPermission,
@@ -3776,6 +3774,17 @@ function Chat() {
     return null
   }, [currentConversationId, projectConversations, currentConversation, idsMatch])
 
+  const [parallelPane, setParallelPane] = useState<ParallelChatPaneTarget | null>(null)
+  const [heimdallVisible, setHeimdallVisible] = useState(() => {
+    const defaultValue = typeof window === 'undefined' || window.innerWidth >= 768
+    try {
+      const stored = window.localStorage.getItem('chat:heimdallVisible')
+      return stored === null ? defaultValue : stored === 'true'
+    } catch { return defaultValue }
+  })
+  // Heimdall's search/transfer and parallel panes need canonical sibling bodies.
+  // A hidden workspace must not force the phone transcript to fetch them.
+  const branchOnly = isBrowserClient && !heimdallVisible && !parallelPane
   // Persisted snapshots only enter Redux through the generation-gated coordinator.
   // Cached query data is never projected directly, so Settings -> Back cannot clobber
   // the same-conversation live SSE projection before the route-entry fetch completes.
@@ -3787,7 +3796,8 @@ function Chat() {
     isCurrentError: isCurrentSnapshotError,
     isFetching: isSnapshotFetching,
     refresh: refreshConversationSnapshot,
-  } = useConversationSnapshotCoordinator(conversationIdFromUrl)
+  } = useConversationSnapshotCoordinator(conversationIdFromUrl, branchOnly)
+  const graphPending = isBrowserClient && (!conversationData || conversationData.retained != null)
 
   const handleHookRunsUpdated = useCallback(
     (messageId: string, runs: HookRunRecord[]) => {
@@ -3908,55 +3918,6 @@ function Chat() {
     }
   }, [conversationIdFromUrl, dispatch, queryClient, snapshotConversationId])
 
-  // Run post-acceptance side effects. Messages/tree were already installed atomically by
-  // the coordinator; this effect only hydrates attachments.
-  useEffect(() => {
-    if (
-      !conversationIdFromUrl ||
-      !isConversationDataFetched ||
-      !conversationData ||
-      acceptedConversationId !== String(conversationIdFromUrl)
-    ) return
-
-    const fetchedMessages = conversationData.messages
-    if (fetchedMessages.length === 0) return
-
-    // Process attachments from React Query response
-    // This converts attachment URLs to base64 artifacts for display in ChatMessage
-    fetchedMessages.forEach(msg => {
-      const includedAttachments = (msg as any).attachments
-      if (includedAttachments && Array.isArray(includedAttachments) && includedAttachments.length > 0) {
-        // Dispatch attachment metadata immediately
-        dispatch(
-          chatSliceActions.attachmentsSetForMessage({
-            messageId: msg.id,
-            attachments: includedAttachments,
-          })
-        )
-
-        // Fetch and convert binaries to base64 asynchronously (don't await, let it run in background)
-        Promise.all(
-          includedAttachments.map(async (a: any) => {
-            const url = resolveAttachmentUrl(a.url, a.storage_path || a.file_path, a.id)
-            if (!url) return null
-            try {
-              const res = await fetch(url)
-              if (!res.ok) return null
-              const blob = await res.blob()
-              return await blobToDataURL(blob)
-            } catch {
-              return null
-            }
-          })
-        ).then(dataUrls => {
-          const validUrls = dataUrls.filter((x): x is string => Boolean(x))
-          if (validUrls.length > 0) {
-            dispatch(chatSliceActions.messageArtifactsSet({ messageId: msg.id, artifacts: validUrls }))
-          }
-        })
-      }
-    })
-  }, [acceptedConversationId, conversationData, conversationIdFromUrl, dispatch, isConversationDataFetched])
 
   // Sync React Query conversations to Redux to ensure system_prompt and conversation_context are available
   // This fixes the issue where refreshing the page doesn't load context and system prompt from query cache
@@ -3992,24 +3953,9 @@ function Chat() {
     }
   })
   const [isParallelResizing, setIsParallelResizing] = useState(false)
-  // Session-only secondary transcript. It intentionally resets with this route container.
-  const [parallelPane, setParallelPane] = useState<ParallelChatPaneTarget | null>(null)
   const [activeChatPane, setActiveChatPane] = useState<'primary' | 'parallel'>('primary')
   const [settingsOpen, setSettingsOpen] = useState(false)
   useCommandBlocker(settingsOpen)
-  const [heimdallVisible, setHeimdallVisible] = useState<boolean>(() => {
-    try {
-      const stored = typeof window !== 'undefined' ? window.localStorage.getItem('chat:heimdallVisible') : null
-      // Check if on mobile (< 768px) to set appropriate default
-      const isMobileDevice = typeof window !== 'undefined' && window.innerWidth < 768
-      const defaultValue = isMobileDevice ? false : true
-      return stored !== null ? stored === 'true' : defaultValue
-    } catch {
-      // Fallback: check if mobile
-      const isMobileDevice = typeof window !== 'undefined' && window.innerWidth < 768
-      return isMobileDevice ? false : true
-    }
-  })
 
   const [treeFocusRequest, setTreeFocusRequest] = useState(0)
   useCommands([{
@@ -8397,9 +8343,9 @@ function Chat() {
             key={currentConversationId ?? 'none'}
             keyboardFocusRequest={treeFocusRequest}
             onKeyboardFocusHandled={() => setTreeFocusRequest(0)}
-            chatData={heimdallData}
-            loading={loading}
-            error={error}
+            chatData={graphPending ? null : heimdallData}
+            loading={loading || (graphPending && !snapshotError)}
+            error={snapshotError?.message ?? error}
             compactMode={compactMode}
             conversationId={currentConversationId}
             onNodeSelect={handleNodeSelect}
@@ -8452,9 +8398,9 @@ function Chat() {
                     key={currentConversationId ?? 'none'}
                     keyboardFocusRequest={treeFocusRequest}
                     onKeyboardFocusHandled={() => setTreeFocusRequest(0)}
-                    chatData={heimdallData}
-                    loading={loading}
-                    error={error}
+                    chatData={graphPending ? null : heimdallData}
+                    loading={loading || (graphPending && !snapshotError)}
+                    error={snapshotError?.message ?? error}
                     compactMode={compactMode}
                     conversationId={currentConversationId}
                     onNodeSelect={handleNodeSelect}

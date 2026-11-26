@@ -65,7 +65,7 @@ const pressBack = () => document.getElementById('keyboard-input')!.dispatchEvent
 }))
 function ChatProbe() {
   const { id } = useParams()
-  snapshot = useConversationSnapshotCoordinator(id!, 'local')
+  snapshot = useConversationSnapshotCoordinator(id!)
   const selection = useSelector((state: ReturnType<typeof store.getState>) => state.chat.selection)
   const messages = useSelector((state: ReturnType<typeof store.getState>) => state.chat.conversation.messages)
   const coordinator = useChatSelection()

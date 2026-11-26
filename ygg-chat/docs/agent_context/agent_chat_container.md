@@ -79,7 +79,7 @@ All conversations are local. There is no storage mode to resolve: message fetche
 3. The coordinator generation-gates requests, reconciles fetched rows with active-stream/terminal-lease-protected Redux rows, and treats other fetched omissions as authoritative deletions.
 4. It rebuilds Heimdall with `buildConversationTree()` and dispatches one `conversationSnapshotApplied` action so messages/tree/path change atomically.
 5. Only accepted snapshots are written to the exact React Query key; raw or superseded responses never enter the cache.
-6. Chat runs post-acceptance attachment hydration.
+6. On an attached browser with Heimdall and the parallel pane closed, loads and refreshes request `scope=branch`. The host sends the selected ancestry/continuation with normal enrichment and only ID/revision pairs for omitted rows. Matching loaded siblings survive; missing or stale ones are not mistaken for current bodies. Explicit targets win over the current/remembered tip. A bounded, host/user-scoped browser hint survives reloads without changing another device's selection. Opening Heimdall requests the legacy full snapshot for its search, notes and subtree actions. Large finite tree responses negotiate gzip; SSE is unchanged. Mounted transcript rows hydrate attached images on demand.
 7. Project conversations from React Query are mirrored into Redux via `conversationsLoaded(projectConversations)` so current conversation metadata is available to selectors and prompts.
 
 ## Rendering Pipeline

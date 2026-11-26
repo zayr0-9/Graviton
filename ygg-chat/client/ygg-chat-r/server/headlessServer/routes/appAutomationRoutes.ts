@@ -6,8 +6,10 @@ import { isClaudeTranscriptMessage } from '../../../../../shared/claudeProvider.
 import type Database from 'better-sqlite3'
 import type { Express } from 'express'
 import path from 'node:path'
+import { gzip } from 'node:zlib'
 import { v4 as uuidv4 } from 'uuid'
 import { toSafeHookRunRecord } from '../../hooks/hookDiagnostics.js'
+import { selectSnapshotBranch, type BranchSnapshotTarget } from '../persistence/branchSnapshot.js'
 import { HookRunRepo } from '../persistence/hookRunRepo.js'
 import { buildTopLevelUserMessagesCte } from '../../topLevelUserMessages.js'
 
@@ -101,10 +103,16 @@ export function buildConversationMessagesTreePayload(
   db: Database.Database,
   statements: any,
   conversationId: string,
-  includeTree = true
-): { messages: any[]; tree: ChatNode | null } {
-  const messages = statements.getMessagesByConversationId.all(conversationId) as any[]
-  if (messages.length === 0) return { messages: [], tree: null }
+  includeTree = true,
+  target?: BranchSnapshotTarget
+) {
+  const branch = target && selectSnapshotBranch(db, conversationId, target)
+  const ids = branch && JSON.stringify(branch.ids)
+  const scope = branch ? { retained: branch.retained } : {}
+  const messages: any[] = ids === undefined ? statements.getMessagesByConversationId.all(conversationId)
+    : db.prepare(`SELECT * FROM messages WHERE id IN (SELECT value FROM json_each(?)) AND conversation_id = ?
+        ORDER BY created_at ASC, rowid ASC`).all(ids, conversationId)
+  if (messages.length === 0) return { messages: [], tree: null, ...scope }
 
   // Same rows and per-message order as statements.getAttachmentsByMessageId, in one query.
   const attachmentsByMessage = new Map<string, any[]>()
@@ -113,10 +121,10 @@ export function buildConversationMessagesTreePayload(
       SELECT mal.message_id AS link_message_id, ma.*
       FROM message_attachment_links mal
       JOIN message_attachments ma ON ma.id = mal.attachment_id
-      WHERE mal.message_id IN (SELECT id FROM messages WHERE conversation_id = ?)
+      WHERE mal.message_id IN (${ids === undefined ? 'SELECT id FROM messages WHERE conversation_id = ?' : 'SELECT value FROM json_each(?)'})
       ORDER BY ma.created_at ASC, ma.id ASC
     `)
-    .all(conversationId) as Array<Record<string, unknown> & { link_message_id: string }>
+    .all(ids ?? conversationId) as Array<Record<string, unknown> & { link_message_id: string }>
   for (const { link_message_id, ...attachment } of attachmentRows) {
     const key = String(link_message_id)
     const list = attachmentsByMessage.get(key) || []
@@ -125,7 +133,7 @@ export function buildConversationMessagesTreePayload(
   }
 
   const hookRunsByMessage = new Map<string, ReturnType<typeof toSafeHookRunRecord>[]>()
-  for (const run of new HookRunRepo({ db }).listForConversationMessages(conversationId)) {
+  for (const run of new HookRunRepo({ db }).listForConversationMessages(conversationId, ids)) {
     const key = String(run.messageId)
     const list = hookRunsByMessage.get(key) || []
     list.push(toSafeHookRunRecord(run))
@@ -146,7 +154,7 @@ export function buildConversationMessagesTreePayload(
     }
   })
 
-  return { messages: normalizedMessages, tree: includeTree ? buildMessageTree(normalizedMessages) : null }
+  return { messages: normalizedMessages, tree: includeTree ? buildMessageTree(normalizedMessages) : null, ...scope }
 }
 
 type TopLevelMessageSearchCandidate = {
@@ -941,7 +949,24 @@ export function registerAppAutomationRoutes(app: Express, deps: AppAutomationRou
 
   app.get('/api/app/conversations/:id/messages/tree', (req, res) => {
     try {
-      res.json(buildConversationMessagesTreePayload(db, statements, req.params.id, req.query.includeTree !== 'false'))
+      const target = req.query.scope === 'branch' ? {
+        tip: typeof req.query.tip === 'string' ? req.query.tip : undefined,
+        lineage: typeof req.query.lineage === 'string' ? req.query.lineage : undefined,
+      } : undefined
+      const payload = buildConversationMessagesTreePayload(db, statements, req.params.id, !target && req.query.includeTree !== 'false', target)
+      // Large single-branch chats still contain repetitive tool JSON. Compress this
+      // finite read only (never SSE); let zlib's worker pool do the compression.
+      res.vary('Accept-Encoding')
+      if (req.headers['accept-encoding'] && req.acceptsEncodings('gzip', 'identity') === 'gzip') {
+        const json = JSON.stringify(payload)
+        res.type('application/json')
+        if (json.length < 8192) { res.send(json); return }
+        gzip(json, { level: 1 }, (error, compressed) => {
+          if (res.destroyed) return
+          if (error) { res.send(json); return }
+          res.set('Content-Encoding', 'gzip').send(compressed)
+        })
+      } else res.json(payload)
     } catch (error) {
       console.error('[HeadlessServer] Error fetching app message tree:', error)
       res.status(500).json({ error: 'Failed to fetch message tree' })

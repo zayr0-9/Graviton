@@ -38,7 +38,7 @@ function createSchema(db: Database.Database): void {
       children_ids TEXT DEFAULT '[]', role TEXT NOT NULL, content TEXT NOT NULL, plain_text_content TEXT,
       thinking_block TEXT, tool_calls TEXT, tool_call_id TEXT, model_name TEXT DEFAULT 'unknown',
       note TEXT, note_color TEXT, ex_agent_session_id TEXT, ex_agent_type TEXT, content_blocks TEXT,
-      meta TEXT, created_at TEXT
+      meta TEXT, created_at TEXT, revision INTEGER NOT NULL DEFAULT 1
     );
     CREATE TABLE hook_runs (
       id TEXT PRIMARY KEY, conversation_id TEXT, stream_id TEXT, event TEXT NOT NULL, message_id TEXT,
@@ -151,6 +151,21 @@ describeIfSqlite('messages/tree read', () => {
     return { status: res.status, body: await res.json() }
   }
 
+  it('discloses only the requested ancestry and its enrichment, even with a multi-megabyte sibling', async () => {
+    db.prepare(`INSERT INTO messages (id, conversation_id, parent_id, role, content, created_at)
+      VALUES ('fork', 'c1', 'm1', 'assistant', ?, ?)`).run('z'.repeat(4 * 1024 * 1024), at(9000))
+    const { body } = await get('/api/app/conversations/c1/messages/tree?scope=branch&tip=m2')
+    expect(body.messages.map((row: any) => row.id)).toEqual(['m1', 'm2', 'm3'])
+    expect(body.messages[0].attachments).toHaveLength(2)
+    expect(body.messages[0].hook_runs).toHaveLength(505)
+    expect(body.retained).toEqual([['fork', 1]])
+    expect(body.tree).toBeNull()
+    expect(JSON.stringify(body).length).toBeLessThan(512 * 1024)
+    const { body: fallback } = await get('/api/app/conversations/c1/messages/tree?scope=branch&tip=x1')
+    expect(fallback.messages.map((row: any) => row.id)).toEqual(['m1', 'fork'])
+    expect((await get('/api/app/conversations/c-empty/messages/tree?scope=branch')).body).toEqual({ retained: [], messages: [], tree: null })
+  })
+
   it('attaches the same attachment rows, in the same order, as the per-message query did', async () => {
     const { status, body } = await get('/api/app/conversations/c1/messages/tree')
     expect(status).toBe(200)
@@ -168,6 +183,17 @@ describeIfSqlite('messages/tree read', () => {
     expect(m3.attachments.map((a: any) => a.id)).toEqual(['att-a'])
     // The grouping key must not leak into the attachment objects.
     expect(Object.keys(m1.attachments[0])).not.toContain('link_message_id')
+  })
+
+  it('negotiates gzip for large finite snapshots without changing their decoded shape', async () => {
+    const url = `${baseUrl}/api/app/conversations/c1/messages/tree?scope=branch`
+    const compressed = await fetch(url, { headers: { 'Accept-Encoding': 'gzip' } })
+    const identity = await fetch(url, { headers: { 'Accept-Encoding': 'identity' } })
+    expect(compressed.headers.get('content-encoding')).toBe('gzip')
+    expect(compressed.headers.get('vary')).toContain('Accept-Encoding')
+    expect(identity.headers.get('content-encoding')).toBeNull()
+    expect(Number(compressed.headers.get('content-length'))).toBeLessThan(Number(identity.headers.get('content-length')))
+    expect(await compressed.json()).toEqual(await identity.json())
   })
 
   it('parses JSON columns and builds the tree and meta as before', async () => {

@@ -31,7 +31,7 @@ import IdeContextBootstrap from './IdeContextBootstrap'
 import { KeyboardProvider } from './keyboard/KeyboardProvider'
 import { NavigationCommands } from './keyboard/NavigationCommands'
 
-import { isHostClient } from './platform/clientCapabilities'
+import { isBrowserClient, isHostClient } from './platform/clientCapabilities'
 
 // Hash routing everywhere: Electron loads from file:// and the shared UI is served by the host.
 const Router = HashRouter
@@ -74,14 +74,15 @@ const HtmlToolsShell = ({ enabled }: { enabled: boolean }) => {
   const bootstrappedUserIdRef = useRef<string | null>(null)
 
   useEffect(() => {
-    if (!registry || !enabled || !currentUser || bootstrappedUserIdRef.current === currentUser.id) return
+    if (isBrowserClient || !registry || !enabled || !currentUser || bootstrappedUserIdRef.current === currentUser.id) return
     bootstrappedUserIdRef.current = currentUser.id
     registry.bootstrapFromLocalCache(currentUser.id)
   }, [currentUser, enabled, registry])
 
   useEffect(() => {
     if (!registry || !enabled || !currentUser) return
-    if (!registry.isModalOpen || registry.entries.length > 0) return
+    if (!registry.isModalOpen || (isBrowserClient ? bootstrappedUserIdRef.current === currentUser.id : registry.entries.length > 0)) return
+    if (isBrowserClient) bootstrappedUserIdRef.current = currentUser.id
     registry.bootstrapFromLocalCache(currentUser.id)
   }, [currentUser, enabled, registry])
 

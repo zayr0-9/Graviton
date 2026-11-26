@@ -44,7 +44,9 @@ describe('local lineage routes', () => {
     getDetail.mockReturnValue({ id: 'l1', pathMessageIds: ['m1', 'm2'], path: [{ id: 'm1' }, { id: 'm2' }] })
     const response = await fetch(`${baseUrl}/api/gw/conversations/c1/lineages/l1`)
     expect(await response.json()).toMatchObject({ pathMessageIds: ['m1', 'm2'] })
-    expect(getDetail).toHaveBeenCalledWith('c1', 'l1')
+    expect(getDetail).toHaveBeenCalledWith('c1', 'l1', false)
+    await fetch(`${baseUrl}/api/gw/conversations/c1/lineages/l1?idsOnly=true`)
+    expect(getDetail).toHaveBeenLastCalledWith('c1', 'l1', true)
 
     getDetail.mockReturnValue(null)
     expect((await fetch(`${baseUrl}/api/gw/conversations/c1/lineages/missing`)).status).toBe(404)

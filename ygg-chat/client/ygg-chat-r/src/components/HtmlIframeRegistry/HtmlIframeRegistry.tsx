@@ -20,9 +20,8 @@ import {
   type HtmlToolRecord,
 } from '../../hooks/useQueries'
 import { buildCachedLocalApiUrl, localApi } from '../../utils/api'
-import { isNativeShell } from '../../platform/clientCapabilities'
+import { isBrowserClient, isNativeShell } from '../../platform/clientCapabilities'
 import { isolateBrowserAppHtml } from '../../utils/browserAppIsolation'
-import { isBrowserClient } from '../../platform/clientCapabilities'
 import { attachMessageBridge as attachSharedMessageBridge } from '../../utils/iframeBridge'
 import {
   buildCspValue,
@@ -1709,14 +1708,14 @@ export const HtmlIframeRegistryProvider: React.FC<{
       if (!userId || bootstrapInFlightRef.current) return
       bootstrapInFlightRef.current = true
       try {
-        if (entriesRef.current.size > 0) return
+        if (!isBrowserClient && entriesRef.current.size > 0) return
         const cachedTools = getHtmlToolsFromCache(queryClient, userId)
         if (cachedTools.length > 0) {
           syncEntriesFromCache(cachedTools)
           return
         }
 
-        if (isElectronEnv) {
+        if (isElectronEnv || isBrowserClient) {
           const tools = await localApi.get<HtmlToolRecord[]>(`/local/tools?userId=${userId}`)
           if (Array.isArray(tools) && tools.length > 0) {
             queryClient.setQueryData(htmlToolsQueryKey(userId), tools)
@@ -1725,6 +1724,8 @@ export const HtmlIframeRegistryProvider: React.FC<{
           }
         }
 
+        // Never ship conversation histories over LAN to rebuild the host's HTML tool index.
+        if (isBrowserClient) return
         logHtmlTools('bootstrap-start', { userId })
         const conversations = await localApi.get<Conversation[]>(`/app/conversations?userId=${userId}`)
         if (!Array.isArray(conversations) || conversations.length === 0) return

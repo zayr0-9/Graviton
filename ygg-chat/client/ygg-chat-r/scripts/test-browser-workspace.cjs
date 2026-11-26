@@ -48,7 +48,16 @@ if (!process.versions.electron) {
     host.get(['/api/gw/conversations', '/api/gw/conversations/recent'], (_req, res) => res.json([conversation]))
     host.get(['/api/gw/conversations/paginated', '/api/gw/conversations/by-project'], (_req, res) => res.json({ conversations: [conversation], nextCursor: null, hasMore: false }))
     host.get(['/api/app/conversations/c1', '/api/gw/conversations/c1'], (_req, res) => res.json(conversation))
-    host.get(['/api/app/conversations/c1/messages/tree', '/api/gw/conversations/c1/messages/tree'], (_req, res) => res.json({ messages: rows, tree: null, meta: { storage_mode: 'local' } }))
+    const branchSmoke = process.argv.includes('--branch-loading')
+    if (branchSmoke) rows = [row('base', 'user', 'Common ancestor', null), row('left', 'assistant', 'Remember this branch', 'base'),
+      { ...row('right', 'assistant', 'Other fork content', 'base'), created_at: new Date(Date.now() + 5000).toISOString() }]
+    const snapshotQueries = []
+    host.get(['/api/app/conversations/c1/messages/tree', '/api/gw/conversations/c1/messages/tree'], (req, res) => {
+      snapshotQueries.push({ ...req.query })
+      const scoped = req.query.scope === 'branch'
+      const messages = branchSmoke && scoped ? rows.filter(r => r.id === 'base' || r.id === (req.query.tip || 'right')) : rows
+      res.json({ messages, tree: null, ...(scoped && { retained: rows.filter(r => !messages.includes(r)).map(r => [r.id, r.revision]) }) })
+    })
     host.get('/api/host/runs/finished', (_req, res) => res.json({ runs: [] }))
     host.get('/api/local/conversations/c1/heimdall-collapse-groups', (_req, res) => res.json({ groups: [] }))
     host.get('/api/conversations/c1/streaming-runs', (_req, res) => res.json({ runs: [] }))
@@ -143,9 +152,29 @@ if (!process.versions.electron) {
       window.webContents.on('console-message', details => { if (details.level === 'error') console.error('Renderer:', details.message) })
       await window.loadURL(origin + '/blank')
       await window.webContents.executeJavaScript(`localStorage.setItem('currentProvider','Z.AI / GLM')`)
-      await window.loadURL(origin + '/#/chat/p1/c1')
+      const firstSnapshot = snapshotQueries.length
+      await window.loadURL(origin + '/#/chat/p1/c1' + (branchSmoke && i === 1 ? '#left' : ''))
       await wait(window, `!!document.querySelector('textarea[placeholder="Type your message..."]')`, 'Composer missing')
+      if (i === 1) {
+        await wait(window, `!document.querySelector('[aria-label="Opening conversation"]') && performance.getEntriesByType('resource').some(r => r.name.includes('/messages/tree'))`, 'Phone snapshot missing')
+        if (!snapshotQueries.slice(firstSnapshot).length || snapshotQueries.slice(firstSnapshot).some(q => q.scope !== 'branch')) throw new Error('Phone fetched a full conversation on entry')
+      }
       if (await window.webContents.executeJavaScript('!!window.electronAPI')) throw new Error('Unexpected preload')
+    }
+    if (branchSmoke) {
+      const phone = windows[1]
+      await wait(phone, `document.body.innerText.includes('Remember this branch')`, 'Deep link did not select the older fork')
+      await wait(phone, `Object.keys(localStorage).filter(k=>k.startsWith('chat:viewedTips:')).some(k=>localStorage.getItem(k).includes('left'))`, 'Selected tip not saved')
+      const start = snapshotQueries.length
+      await phone.loadURL(origin + '/blank')
+      await phone.loadURL(origin + '/#/chat/p1/c1')
+      await wait(phone, `document.body.innerText.includes('Remember this branch') && !document.body.innerText.includes('Other fork content')`, 'Cold reload lost the branch')
+      if (!snapshotQueries.slice(start).every(q => q.scope === 'branch' && q.tip === 'left')) throw new Error('Cold reload fetched other forks')
+      await click(phone, '[aria-label="Conversation actions"]')
+      await phone.webContents.executeJavaScript(`[...document.querySelectorAll('button')].find(b=>b.textContent.trim()==='Show tree view')?.click()`)
+      await wait(phone, `!!document.querySelector('[data-node-id="right"]')`, 'Opening the full tree did not reveal the other fork')
+      console.log('PASS phone branch-only open, historical deep link, cold same-device restore and on-demand full tree')
+      exit = 0; return
     }
     if (documentsOnly) {
       const { docx, xlsx, largeWorksheet, pdf, emptyPdf } = require('./document-paste-fixtures.cjs')
