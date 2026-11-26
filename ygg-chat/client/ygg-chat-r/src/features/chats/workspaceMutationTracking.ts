@@ -1,3 +1,6 @@
+import { isRunSettingsNotification } from '../../../../../shared/accessNotifications'
+import { isCompactionControl } from '../../../../../shared/compaction'
+import { isContextInjectionMessage } from '../../../../../shared/contextInjection'
 import type { MessageId } from '../../../../../shared/types'
 import type { Message } from './chatTypes'
 import type { ClaudeFilePatch } from '../../../../../shared/claudeProvider'
@@ -308,6 +311,26 @@ const extractMultiEditMutations = (
 
     return [createPendingMutation(toolCall, 'edit', path, asNonEmptyString(edit.operation))]
   })
+}
+
+// Input is the ordered selected branch, including rows hidden by transcript grouping.
+// Every row in a turn points to the same array so scrolling within that turn doesn't reparse tools.
+export const indexWorkspaceMutationTurns = (messages: readonly Message[]): Map<string, Message[]> => {
+  const turnsByMessageId = new Map<string, Message[]>()
+  let turn: Message[] | undefined
+
+  for (const message of messages) {
+    if (message.role === 'user' && !isRunSettingsNotification(message) &&
+        !isContextInjectionMessage(message) && !isCompactionControl(message)) {
+      turn = []
+    }
+    if (!turn) continue
+
+    turn.push(message)
+    turnsByMessageId.set(String(message.id), turn)
+  }
+
+  return turnsByMessageId
 }
 
 export const extractBranchFileMutations = (messages: Message[]): BranchFileMutationData => {

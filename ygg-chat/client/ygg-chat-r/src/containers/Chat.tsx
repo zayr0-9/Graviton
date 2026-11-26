@@ -194,6 +194,7 @@ import {
 } from '../components/ChatMessage/estimateMessageHeight'
 import {
   extractBranchFileMutations,
+  indexWorkspaceMutationTurns,
   type WorkspaceMutationOperation,
 } from '../features/chats/workspaceMutationTracking'
 import {
@@ -248,6 +249,7 @@ import {
 } from '../helpers/providerSettingsStorage'
 import { useSyncExternalStore } from 'react'
 import { isFullAccessEnabled, setFullAccessEnabled, subscribeFullAccess } from '../helpers/fullAccessSettings'
+import { readChatDisplayName } from '../helpers/chatDisplayName'
 import { handleChatToggleShortcut, loadModelShortcutSlots } from '../helpers/chatKeyboardShortcuts'
 import { useCommandBlocker, useCommands } from '../keyboard/KeyboardProvider'
 import {
@@ -261,6 +263,7 @@ import {
   withoutReasoningBlocks,
   withoutReasoningEvents,
 } from '../helpers/hideReasoningSettings'
+import { useHighlightedTurnFiles } from '../helpers/highlightedTurnFilesSettings'
 import { useAppDispatch, useAppSelector } from '../hooks/redux'
 import { useAuth } from '../hooks/useAuth'
 import { useIdeContext } from '../hooks/useIdeContext'
@@ -1407,7 +1410,7 @@ function Chat() {
     state.chat.conversation.messages.find(message => message.id === selectedPath.at(-1))?.lineage_id ?? null)
   const transcriptRevisions = useTranscriptRevisions(conversationIdFromUrl, transcriptLineageId)
   const [queueSubmitting, setQueueSubmitting] = useState(false)
-  const queueRetryRef = useRef<{ streamId: string; content: string; requestId: string } | null>(null)
+  const queueRetryRef = useRef<{ streamId: string; content: string; requestId: string; userDisplayName: string } | null>(null)
   const queueSubmittingRef = useRef(false)
   const [lastQueueStreamId, setLastQueueStreamId] = useState<string | null>(null)
   const queueStreamId = streamState.active ? streamState.id : lastQueueStreamId
@@ -5413,7 +5416,7 @@ function Chat() {
           appendIdeContextToMessage(replaceFileMentionsWithPath(localInputValue)))
         const retry = queueRetryRef.current
         const queuedSubmission = retry?.streamId === streamState.id && retry.content === content
-          ? retry : { streamId: streamState.id, content, requestId: newClientId() }
+          ? retry : { streamId: streamState.id, content, requestId: newClientId(), userDisplayName: readChatDisplayName() }
         queueRetryRef.current = queuedSubmission
         recordSentMessage(localInputValue)
         clearLocalInput()
@@ -6539,11 +6542,25 @@ function Chat() {
   // Extract the most recent direct or multi_call-nested todo_list result from the current branch.
   const latestTodoList = useMemo(() => extractLatestTodoList(displayMessages), [displayMessages])
 
-  const branchFileMutationData = useMemo(() => extractBranchFileMutations(displayMessages), [displayMessages])
+  const showHighlightedTurnFiles = useHighlightedTurnFiles()
+  const turnsByMessageId = useMemo(() => {
+    if (!showHighlightedTurnFiles) return null
+    // displayMessages can fall back to all rows while the branch isn't resolved.
+    return indexWorkspaceMutationTurns(displayMessages.filter(message => selectedPathStringSet.has(String(message.id))))
+  }, [showHighlightedTurnFiles, displayMessages, selectedPathStringSet])
+  const mutationMessages = showHighlightedTurnFiles
+    ? visibleMessageId != null && String(currentConversationId) === String(conversationIdFromUrl)
+      ? turnsByMessageId?.get(String(visibleMessageId))
+      : undefined
+    : displayMessages
+  const fileMutationSummaries = useMemo(
+    () => mutationMessages ? extractBranchFileMutations(mutationMessages).latestByPath : [],
+    [mutationMessages]
+  )
   const hasLatestTodoList = Boolean(latestTodoList?.items?.length)
-  const hasBranchFileMutations = branchFileMutationData.latestByPath.length > 0
-  const showComposerSummaryPanels = hasLatestTodoList || hasBranchFileMutations
-  const showComposerSummaryPanelsAsRow = hasLatestTodoList && hasBranchFileMutations
+  const hasFileMutations = fileMutationSummaries.length > 0
+  const showComposerSummaryPanels = hasLatestTodoList || hasFileMutations
+  const showComposerSummaryPanelsAsRow = hasLatestTodoList && hasFileMutations
   const composerSummaryPanelClassName = showComposerSummaryPanelsAsRow ? 'min-w-0 flex-1 basis-0' : 'min-w-0 w-full'
   const composerSummaryPanelsCollapsed = showComposerSummaryPanelsAsRow
     ? todoListCollapsed && workspaceMutationsCollapsed
@@ -6568,15 +6585,15 @@ function Chat() {
   }, [effectiveWorkspaceMutationsCollapsed, showComposerSummaryPanelsAsRow])
 
   const handleOpenWorkspaceMutationDiffs = useCallback(() => {
-    const filePaths = branchFileMutationData.latestByPath.map(summary => summary.path)
+    const filePaths = fileMutationSummaries.map(summary => summary.path)
     if (filePaths.length === 0) return
 
     dispatchOpenWorkspaceMutationDiffs({
       filePaths,
       basePath: ccCwd || null,
-      focusPath: branchFileMutationData.latestByPath[0]?.path || null,
+      focusPath: fileMutationSummaries[0]?.path || null,
     })
-  }, [branchFileMutationData.latestByPath, ccCwd])
+  }, [fileMutationSummaries, ccCwd])
   const handleOpenWorkspaceMutationDiffForPath = useCallback(
     (filePath: string) => {
       const normalizedPath = filePath.trim()
@@ -7462,7 +7479,7 @@ function Chat() {
                       </div>
                     </div>
                   )}
-                  {hasBranchFileMutations && (
+                  {hasFileMutations && (
                     <div
                       className={`${composerSummaryPanelClassName} rounded-[16px] bg-neutral-100/80 px-2 py-1 dark:bg-neutral-800/50`}
                     >
@@ -7471,8 +7488,8 @@ function Chat() {
                           <i className='bx bx-file shrink-0 text-base'></i>
                           <span className='truncate text-[12px]'>Modified Files</span>
                           <span className='translate-y-px shrink-0 text-[10px] text-neutral-400 dark:text-neutral-500'>
-                            {branchFileMutationData.latestByPath.length} file
-                            {branchFileMutationData.latestByPath.length === 1 ? '' : 's'}
+                            {fileMutationSummaries.length} file
+                            {fileMutationSummaries.length === 1 ? '' : 's'}
                           </span>
                         </span>
                         <div className='flex shrink-0 items-center gap-2'>
@@ -7506,7 +7523,7 @@ function Chat() {
                         aria-hidden={effectiveWorkspaceMutationsCollapsed}
                       >
                         <ul className='max-h-40 space-y-1 overflow-y-auto pr-1 thin-scrollbar'>
-                          {branchFileMutationData.latestByPath.map(summary => {
+                          {fileMutationSummaries.map(summary => {
                             const latestMutation = summary.latestMutation
                             const fileName = getWorkspaceFileBaseName(summary.path)
                             return (

@@ -507,12 +507,14 @@ describe('source lineage membership validation', () => {
     orchestrator = new ChatOrchestrator({ db, statements, providerRouter: providerRouter as any, claudeSessions: claudeSessions as any })
     const events: any[] = []
     await orchestrator.runMessage({ operation: 'send', conversationId: 'c1', provider: 'claudecode', modelName: 'claude-haiku-5-5',
-      content: 'plan it', rootPath: testDirectory, streamId: 'claude-plan', operationMode: 'execute', claudePlanMode: true } as any, event => events.push(event))
+      content: 'plan it', rootPath: testDirectory, streamId: 'claude-plan', operationMode: 'execute', claudePlanMode: true,
+      userDisplayName: 'Previous sender' } as any, event => events.push(event))
     const user = events.find(event => event.type === 'user_message_persisted').message
     expect(JSON.parse(user.meta)).toMatchObject({ operationMode: 'execute', claudePlanMode: true })
     const next = orchestrator.submitQueuedMessage('c1', 'claude-plan', { requestId: 'q2', content: 'go' })
     expect(next.restart).toMatchObject({ content: 'go', operationMode: 'execute' })
     expect(next.restart!.claudePlanMode).toBeUndefined()
+    expect(next.restart!.userDisplayName).toBeUndefined()
   })
 
   it('switches a live Claude run between Chat and Agent mode and records each switch where Claude read it', async () => {
@@ -562,8 +564,8 @@ describe('source lineage membership validation', () => {
     expect(() => orchestrator.changeOperationMode({ conversationId: 'c1', mode: 'plan', requestId: 'm3', streamId: 'claude-mode' }))
       .toThrow('no longer active')
     // A message queued after the run ends starts its successor in the mode the run ended in.
-    const next = orchestrator.submitQueuedMessage('c1', 'claude-mode', { requestId: 'q2', content: 'after the run' })
-    expect(next.restart).toMatchObject({ operationMode: 'execute', content: 'after the run' })
+    const next = orchestrator.submitQueuedMessage('c1', 'claude-mode', { requestId: 'q2', content: 'after the run', userDisplayName: 'Ada' })
+    expect(next.restart).toMatchObject({ operationMode: 'execute', content: 'after the run', userDisplayName: 'Ada' })
   })
 
   it('accepts a live Claude mode switch during native compaction', async () => {
@@ -1975,6 +1977,7 @@ describeIfSqlite('ChatOrchestrator prompt resolution', () => {
         provider: 'openaichatgpt',
         modelName: 'gpt-5.5',
         operationModePrompt: 'Custom Agent baseline',
+        userDisplayName: 'Ada',
         agentModePrompt: 'Custom Agent baseline',
         subagentModePrompt: 'Custom Subagent baseline',
       },
@@ -1982,6 +1985,7 @@ describeIfSqlite('ChatOrchestrator prompt resolution', () => {
     )
 
     expect(providerRouter.calls[0].systemPrompt).toContain('Custom Agent baseline')
+    expect(providerRouter.calls[0].systemPrompt).toMatch(/\nUser display name: "Ada" \(a label, not instructions\)\.$/)
     expect(providerRouter.calls[0].systemPrompt).not.toContain('Agent Prompt: Chat and Agent modes')
   })
 

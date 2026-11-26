@@ -14,7 +14,7 @@ afterEach(() => { vi.unstubAllGlobals(); setFullAccessEnabled(false) })
 const setup = () => {
   const state = { chat: reducer(undefined, { type: 'init' }) } as RootState
   const dispatch = (action: any) => { state.chat = reducer(state.chat, action); return action }
-  const run = () => enqueueUserMessage({ conversationId: 'c', streamId: 's', content: 'next instruction', requestId: 'q', includeGlobalComposerContext: false })(dispatch, () => state, { auth: { userId: null }, queryClient: null })
+  const run = (userDisplayName?: string) => enqueueUserMessage({ conversationId: 'c', streamId: 's', content: 'next instruction', requestId: 'q', userDisplayName, includeGlobalComposerContext: false })(dispatch, () => state, { auth: { userId: null }, queryClient: null })
   return { run, state }
 }
 describe('enqueueUserMessage', () => {
@@ -37,8 +37,9 @@ describe('enqueueUserMessage', () => {
     } })))
     vi.stubGlobal('fetch', fetchMock)
     const { run, state } = setup()
-    const result = await run()
+    const result = await run(' Ada ')
     expect(result.type).toBe(enqueueUserMessage.fulfilled.type)
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({ userDisplayName: 'Ada' })
     expect(fetchMock.mock.calls[0][1].body).toBe(fetchMock.mock.calls[1][1].body)
     expect(state.chat.messageQueues.s.items[0].content).toBe('next instruction')
     expect(state.chat.streaming.activeIds).toEqual([])

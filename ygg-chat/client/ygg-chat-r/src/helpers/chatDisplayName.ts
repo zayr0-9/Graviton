@@ -4,7 +4,7 @@ const key = 'chat:userDisplayName'
 const changeEvent = 'userDisplayNameChange'
 let fallback = ''
 
-function readName(): string {
+export function readChatDisplayName(): string {
   try {
     return localStorage.getItem(key) ?? ''
   } catch {
@@ -34,5 +34,5 @@ function subscribe(notify: () => void) {
 }
 
 export function useChatDisplayName(): string {
-  return useSyncExternalStore(subscribe, readName, readName)
+  return useSyncExternalStore(subscribe, readChatDisplayName, readChatDisplayName)
 }

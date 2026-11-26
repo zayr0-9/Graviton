@@ -3,7 +3,7 @@ const path = require('node:path')
 if (!process.versions.electron) {
   const { spawnSync } = require('node:child_process')
   const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE; delete env.NODE_OPTIONS
-  process.exit(spawnSync(require('electron'), [__filename], { env, stdio: 'inherit' }).status ?? 1)
+  process.exit(spawnSync(require('electron'), [__filename, ...process.argv.slice(2)], { env, stdio: 'inherit' }).status ?? 1)
 } else {
   const { app, BrowserWindow } = require('electron')
   const express = require('express'); const fs = require('node:fs'); const os = require('node:os')
@@ -36,6 +36,12 @@ if (!process.versions.electron) {
     host.get('/api/host/changes', (_req, res) => res.json({ epoch, cursor: 0, reset: false, changes: [] }))
     host.get('/api/host/runs', (_req, res) => res.json({ runs: run ? [{ streamId: run.streamId, conversationId: 'c1', parentId: null, lineageId: null, createdAt: now }] : [] }))
     host.get(['/api/custom-tools', '/api/mcp/tools'], (_req, res) => res.json({ success: true, tools: [] }))
+    host.get('/api/custom-tools/directory', (_req, res) => res.json({ success: true, directory: '/fixtures/tools' }))
+    const diffPaths = []
+    host.get('/api/local/git/file-context', (req, res) => {
+      diffPaths.push(req.query.path)
+      res.json({ path: req.query.path, repoRoot: null, relativePath: null, status: null })
+    })
     host.get('/api/skills', (_req, res) => res.json({ success: true, skills: [] }))
     host.get(['/api/gw/projects', '/api/local/projects'], (_req, res) => res.json([project]))
     host.get(['/api/gw/projects/p1', '/api/app/projects/p1'], (_req, res) => res.json(project))
@@ -130,7 +136,8 @@ if (!process.versions.electron) {
       await window.webContents.insertText(value)
       await new Promise(resolve => setTimeout(resolve, 100))
     }
-    for (let i = 0; i < 2; i++) {
+    const highlightedFilesOnly = process.argv.includes('--highlighted-files')
+    for (let i = 0; i < (highlightedFilesOnly ? 1 : 2); i++) {
       const window = new BrowserWindow({ show: false, width: i ? 390 : 1280, height: i ? 844 : 900, useContentSize: true, webPreferences: { contextIsolation: true, nodeIntegration: false, partition: `workspace-fixture-${i}` } }); windows.push(window)
       window.webContents.on('console-message', details => { if (details.level === 'error') console.error('Renderer:', details.message) })
       await window.loadURL(origin + '/blank')
@@ -138,6 +145,12 @@ if (!process.versions.electron) {
       await window.loadURL(origin + '/#/chat/p1/c1')
       await wait(window, `!!document.querySelector('textarea[placeholder="Type your message..."]')`, 'Composer missing')
       if (await window.webContents.executeJavaScript('!!window.electronAPI')) throw new Error('Unexpected preload')
+    }
+    if (highlightedFilesOnly) {
+      await testHighlightedFiles()
+      if (unexpected.size) throw new Error('Unexpected fixture requests: ' + [...unexpected].join('; '))
+      exit = 0
+      return
     }
     // Actual textarea identity and draft/caret survive both directions of the breakpoint.
     await fill(windows[1], 'retained compact draft')
@@ -393,10 +406,72 @@ if (!process.versions.electron) {
     await wait(windows[0], `document.body.innerText.includes('Post-compaction send accepted')`, 'Post-compaction parent was stale')
     if (executions !== 3) throw new Error('Expected exactly one compaction and one follow-up')
     console.log('PASS manual compaction -> restored context -> next send at actual head without refresh')
+    await testHighlightedFiles()
     if (unexpected.size) throw new Error('Unexpected fixture requests: ' + [...unexpected].join('; '))
     console.log('PASS production no-preload two-client chat: independent draft, two live observers, permission settlement, queue/remove, one final reply, phone workspace')
     console.log('Fixture ancillary coverage:', [...unexpected].join('; '))
     exit = 0
+
+    async function testHighlightedFiles() {
+      // Load a settled branch with two disjoint sets of edits and one read-only turn.
+      run = undefined
+      const fileTurn = (n, parent, file) => {
+        const user = row(`files-u${n}`, 'user', `File turn ${n}`, parent)
+        const answer = row(`files-a${n}`, 'assistant', `Reply ${n}\n\n${'A paragraph to separate turns in the viewport.\n\n'.repeat(18)}`, user.id)
+        if (file) answer.content_blocks.unshift(
+          { type: 'tool_use', id: `edit-${n}`, name: 'edit_file', input: { path: file } },
+          { type: 'tool_result', tool_use_id: `edit-${n}`, content: { success: true, path: file } },
+        )
+        return [user, answer]
+      }
+      rows = [...fileTurn(1, null, '/fixtures/first.ts'), ...fileTurn(2, 'files-a1', '/fixtures/second.ts'), ...fileTurn(3, 'files-a2')]
+      const desktop = windows[0]
+      await desktop.webContents.executeJavaScript(`localStorage.setItem('chat:leftWidthPct','72'); localStorage.setItem('chat:heimdallVisible','true')`)
+      await desktop.reload()
+      const diffs = 'button[title="Open modified files in Git diff"]'
+      const panel = `document.querySelector(${JSON.stringify(diffs)})?.parentElement.parentElement.parentElement`
+      const files = (first, second) => `(()=>{const t=${panel}?.textContent ?? '';return t.includes('first.ts')===${first} && t.includes('second.ts')===${second}})()`
+      await wait(desktop, files(true, true), 'Default Modified Files did not include both turns')
+      const toggle = 'button[aria-labelledby="highlighted-turn-files-label"]'
+      const openFileSettings = async () => {
+        await click(desktop, 'button[aria-label="Chat settings"]')
+        await wait(desktop, `!!document.querySelector(${JSON.stringify(toggle)})`, 'Highlighted turn setting missing')
+        await desktop.webContents.executeJavaScript(`[...document.querySelectorAll('button')].find(b=>b.querySelector('p')?.textContent.trim()==='Chat Settings' && b.nextElementSibling?.classList.contains('grid-rows-[0fr]'))?.click()`)
+      }
+      await openFileSettings()
+      await wait(desktop, `document.querySelector(${JSON.stringify(toggle)}).getAttribute('aria-pressed')==='false'`, 'Missing default-off file setting')
+      for (const dark of [false, true]) {
+        await desktop.webContents.executeJavaScript(`document.documentElement.classList.toggle('dark', ${dark}); localStorage.setItem('chat:customThemeEnabled','true'); localStorage.setItem('chat:customTheme',JSON.stringify({colors:{settingsCustomThemesCardBg:{light:'#e0e8f0',dark:'#243448'},settingsCustomThemesTitleText:{light:'#123456',dark:'#e1e2e3'},settingsCustomThemesButtonBg:{light:'#ffffff',dark:'#1a2430'},settingsCustomThemesButtonText:{light:'#234567',dark:'#c1d2e3'}}})); window.dispatchEvent(new Event('chatCustomThemeChange'))`)
+        await wait(desktop, `(()=>{const l=document.getElementById('highlighted-turn-files-label'),b=document.querySelector(${JSON.stringify(toggle)});return getComputedStyle(l).color===${JSON.stringify(dark?'rgb(225, 226, 227)':'rgb(18, 52, 86)')} && getComputedStyle(l.parentElement).backgroundColor===${JSON.stringify(dark?'rgb(36, 52, 72)':'rgb(224, 232, 240)')} && getComputedStyle(b).color===${JSON.stringify(dark?'rgb(193, 210, 227)':'rgb(35, 69, 103)')} && getComputedStyle(b).backgroundColor===${JSON.stringify(dark?'rgb(26, 36, 48)':'rgb(255, 255, 255)')}})()`, 'Highlighted turn setting did not use light/dark theme colors')
+      }
+      await click(desktop, toggle)
+      await wait(desktop, `document.querySelector(${JSON.stringify(toggle)}).getAttribute('aria-pressed')==='true' && localStorage.getItem('chat:showHighlightedTurnFiles')==='true'`, 'Highlighted turn setting did not save')
+      await click(desktop, 'button[aria-label="Close settings"]')
+      const scroller = `document.querySelector('[data-bottom-sentinel]').parentElement`
+      const outlined = id => `!!document.querySelector('[data-node-id="${id}"]')?.parentElement.querySelector('[fill="none"][stroke-width]')`
+      await desktop.webContents.executeJavaScript(`${scroller}.scrollTop=0`)
+      const showTurn = async (n, first, second, scrollDirection = 1) => {
+        const id = `files-u${n}`
+        const target = `document.getElementById('message-${id}')`
+        await wait(desktop, `(()=>{if (${target}) return true; ${scroller}.scrollTop+=${160 * scrollDirection}; return false})()`, `Turn ${n} not mounted`)
+        await desktop.webContents.executeJavaScript(`(()=>{const scroll=${scroller},row=${target};scroll.scrollTop+=row.getBoundingClientRect().top-scroll.getBoundingClientRect().top-21})()`)
+        await wait(desktop, `${outlined(id)} && ${files(first, second)}`, `Modified Files did not follow outline to turn ${n}`)
+      }
+      await showTurn(1, true, false)
+      await showTurn(2, false, true)
+      await showTurn(3, false, false)
+      await wait(desktop, `!document.querySelector(${JSON.stringify(toggle)})`, 'Settings did not close')
+      await openFileSettings()
+      await click(desktop, toggle)
+      await wait(desktop, files(true, true), 'Disabling the filter did not restore the branch summary')
+      await click(desktop, toggle)
+      await click(desktop, 'button[aria-label="Close settings"]')
+      await showTurn(2, false, true, -1)
+      await click(desktop, diffs)
+      await wait(desktop, `document.body.innerText.includes('This file is not inside a Git repository.')`, 'Diffs request did not settle')
+      if (JSON.stringify(diffPaths) !== '["/fixtures/second.ts"]') throw new Error('Diffs did not use the highlighted turn: ' + JSON.stringify(diffPaths))
+      console.log('PASS highlighted-turn files follow Heimdall, scope Diffs, and use light/dark settings theme colors')
+    }
   }).catch(error => console.error(error)).finally(async () => {
     clearTimeout(timeout); for (const window of windows) window.destroy()
     if (server) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)) }

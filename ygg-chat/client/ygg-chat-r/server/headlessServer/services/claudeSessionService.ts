@@ -16,6 +16,7 @@ import { claudeWorkspaceChangedError } from './claudeWorkspaceError.js'
 import type { MessageRepo } from '../persistence/messageRepo.js'
 import type { MessageSink } from './messageSink.js'
 import { OperationModeControl } from './operationModeControl.js'
+import { formatUserDisplayNamePrompt } from './headlessSystemPrompt.js'
 import type { OperationMode } from '../../../../../shared/operationModeToolPolicy.js'
 import type { ClarifyDecision, DecisionBroker, OperationModeUpgradeDecision, PermissionDecision } from './decisionBroker.js'
 import type { ChatHookSession } from './chatHookService.js'
@@ -591,9 +592,10 @@ export class ClaudeSessionService {
     const liveSettings: ClaudeWarmSettings = { model: request.modelName, effort: selectedEffort ?? null, ultracode: request.claudeUltracode === true }
     const gravitonTools = this.deps.gravitonTools ?? null
     const availableGravitonTools = () => this.gravitonAvailable().filter(tool => tool.name !== 'revise_transcript' || input.reviseTranscript)
+    const systemPromptAppend = formatUserDisplayNamePrompt(request.userDisplayName)
     const launchKey = this.warm.enabled ? await claudeLaunchKey({ cwd, additionalDirectories: input.additionalDirectories, adaptiveThinking, mcp,
       plansDirectory: CLAUDE_PLANS_DIRECTORY, executable, hookShape: input.hookSession ? 'graviton-hooks' : 'native-only',
-      disableNativeHooks, gravitonTools: Boolean(gravitonTools), transcriptRevision: Boolean(input.reviseTranscript) }) : ''
+      disableNativeHooks, gravitonTools: Boolean(gravitonTools), transcriptRevision: Boolean(input.reviseTranscript), systemPromptAppend }) : ''
     // The branch's parked CLI, taken synchronously after the last await so nothing else closes or
     // claims it. It is reused only for a send at the exact head it parked at; anything else closes it.
     let warm = this.warm.take(lineageId)
@@ -1108,7 +1110,7 @@ export class ClaudeSessionService {
       ...(adaptiveThinking
         ? { thinking: { type: 'adaptive', display: 'summarized' } as const, ...(selectedEffort ? { effort: selectedEffort } : {}) }
         : { extraArgs: { 'thinking-display': 'summarized' } }),
-      systemPrompt: { type: 'preset', preset: 'claude_code' },
+      systemPrompt: { type: 'preset', preset: 'claude_code', ...(systemPromptAppend ? { append: systemPromptAppend } : {}) },
       // Ultracode is session-scoped flag settings, so every run (each resume) restates it.
       settings: { plansDirectory: CLAUDE_PLANS_DIRECTORY, ...(request.claudeUltracode ? { ultracode: true } : {}), ...mcp.settings,
         ...(disableNativeHooks ? { disableAllHooks: true } : {}) },

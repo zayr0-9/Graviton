@@ -1,6 +1,7 @@
 import { isClaudeProvider } from '../../../../../shared/claudeProvider'
 import { resolveComposerToolApproval } from '../../features/chats/branchToolApproval'
 import { newClientId } from '../../helpers/clientId'
+import { readChatDisplayName } from '../../helpers/chatDisplayName'
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useConversationRunStatistics } from '../../hooks/useConversationRunStatistics'
 import { deriveRunStatistics, placeRunFooters } from '../../features/chats/runStatistics'
@@ -252,7 +253,7 @@ export function ParallelChatPane({
       recordSentMessage(rawContent)
       inputControllerRef.current?.clear()
       void dispatch(enqueueUserMessage({ conversationId: target.conversationId, streamId, content,
-        requestId: newClientId(), includeGlobalComposerContext: false, updatePath: false })).unwrap()
+        requestId: newClientId(), userDisplayName: readChatDisplayName(), includeGlobalComposerContext: false, updatePath: false })).unwrap()
         .catch(error => {
           console.error('Failed to queue parallel message:', error)
         })

@@ -39,6 +39,7 @@ export interface BuildServerLoopRequestParams {
   provider: string
   modelName?: string
   userId?: string | null
+  userDisplayName?: string
   /** send: post-compaction parent; branch: parentId; edit: originalMessage.parent_id. */
   parentId?: string | null
   /** branch: the message branched FROM; edit: the message being edited. Required for those ops. */
@@ -219,6 +220,8 @@ export function buildServerLoopRequest(operation: ServerLoopOperation, params: B
   if (params.operationModePrompt != null) body.operationModePrompt = params.operationModePrompt
   if (params.agentModePrompt != null) body.agentModePrompt = params.agentModePrompt
   if (params.subagentModePrompt != null) body.subagentModePrompt = params.subagentModePrompt
+  const userDisplayName = params.userDisplayName?.trim()
+  if (userDisplayName) body.userDisplayName = userDisplayName
 
   // Send the tools array whenever the caller provided one (even []), so an
   // all-disabled set is respected; omit only when tools were not provided.

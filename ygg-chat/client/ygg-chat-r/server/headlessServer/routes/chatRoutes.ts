@@ -100,6 +100,10 @@ function validSelectedFiles(value: unknown): boolean {
     typeof file.relativePath === 'string' && file.relativePath.length <= 4096 && typeof file.contents === 'string' &&
     Number.isSafeInteger(file.contentLength) && file.contentLength >= 0 && file.contentLength <= 2_000_000))
 }
+function readUserDisplayName(value: unknown): string | undefined {
+  return typeof value === 'string' ? value.trim().slice(0, 64) || undefined : undefined
+}
+
 function buildHeadlessMessageRequest(req: Request, operation: HeadlessChatOperation): HeadlessMessageRequest {
   const body = req.body ?? {}
   if (!validSelectedFiles(body.selectedFiles ?? body.selected_files)) throw new Error('Invalid selected file context')
@@ -123,6 +127,7 @@ function buildHeadlessMessageRequest(req: Request, operation: HeadlessChatOperat
     accessToken: null,
     accountId: null,
     systemPrompt: body.systemPrompt ?? body.system_prompt ?? null,
+    userDisplayName: readUserDisplayName(body.userDisplayName),
     operationModePrompt: body.operationModePrompt ?? body.operation_mode_prompt ?? null,
     agentModePrompt: body.agentModePrompt ?? body.agent_mode_prompt ?? null,
     subagentModePrompt: body.subagentModePrompt ?? body.subagent_mode_prompt ?? null,
@@ -566,6 +571,7 @@ export function registerChatRoutes(app: Express, deps: RegisterChatRoutesDeps): 
   })
   app.post('/api/conversations/:id/streams/:streamId/queue', (req, res) => {
     const { requestId, content, attachmentsBase64, selectedFiles, fullAccess, fullAccessNotificationId, operationMode } = req.body ?? {}
+    const userDisplayName = readUserDisplayName(req.body?.userDisplayName)
     if (typeof requestId !== 'string' || !requestId || requestId.length > 128 || typeof content !== 'string' || !content.trim() ||
       (operationMode != null && operationMode !== 'plan' && operationMode !== 'execute') ||
       content.length > 200_000 || !validSelectedFiles(selectedFiles) || (fullAccess != null && typeof fullAccess !== 'boolean') ||
@@ -580,13 +586,13 @@ export function registerChatRoutes(app: Express, deps: RegisterChatRoutesDeps): 
       if (!orchestrator.submitQueuedMessage || !runSessions || !resumableRuns) throw new Error('Queued messages require resumable runs')
       if (deps.admissions) {
         const result = deps.admissions.enqueue(String(req.params.id), String(req.params.streamId),
-          { requestId, content, attachmentsBase64, selectedFiles, fullAccess, fullAccessNotificationId,
+          { requestId, content, attachmentsBase64, selectedFiles, fullAccess, fullAccessNotificationId, userDisplayName,
             ...(operationMode ? { operationMode } : {}) },
           typeof req.body?.epoch === 'string' ? req.body.epoch : hostEpoch)
         res.json(result); return
       }
       const result = orchestrator.submitQueuedMessage(String(req.params.id), String(req.params.streamId), {
-        requestId, content, attachmentsBase64, selectedFiles, fullAccess, fullAccessNotificationId,
+        requestId, content, attachmentsBase64, selectedFiles, fullAccess, fullAccessNotificationId, userDisplayName,
         ...(operationMode ? { operationMode } : {}),
       })
       if (result.restart) {

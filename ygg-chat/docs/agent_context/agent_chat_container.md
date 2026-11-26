@@ -203,6 +203,11 @@ Chat passes Heimdall:
 - `conversationId={currentConversationId}`;
 - `visibleMessageId` from message-list visibility tracking.
 
+The primary composer's Modified Files panel also uses `visibleMessageId` when Chat Settings →
+**Show modified files for the highlighted turn only** is enabled (`chat:showHighlightedTurnFiles`, off by default).
+It reads successful tracked file mutations from the selected branch's prompt and response rows up to the next turn,
+including grouped tool rows. With the setting off, the panel summarizes the whole selected branch.
+
 Mobile layout may render Heimdall differently/conditionally, but most desktop tree work should be validated on non-mobile first.
 
 ## Parallel Branch Pane (Shared View, Separate Controller)

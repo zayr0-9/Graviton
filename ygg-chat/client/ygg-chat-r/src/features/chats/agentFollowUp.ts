@@ -1,6 +1,7 @@
 import type { AppDispatch, RootState } from '../../store/store'
 import type { AgentForkGroup } from '../../hooks/useRunningAgentStreams'
 import { newClientId } from '../../helpers/clientId'
+import { readChatDisplayName } from '../../helpers/chatDisplayName'
 import { getPendingFullAccessNotification, isFullAccessEnabled } from '../../helpers/fullAccessSettings'
 import { runningAgentsUiActions as actions } from '../ui/runningAgentsUiSlice'
 import { findFollowUpKey, relatedFollowUpKeys, type AgentFollowUpAttempt } from '../ui/agentFollowUpState'
@@ -85,6 +86,7 @@ export const submitAgentFollowUp = (fork: AgentForkGroup, confirmPolicy = false,
       } : {
         conversationId: target.run.conversationId!, streamId: target.run.streamId,
         content: draft.content, revision: draft.revision, requestId: newClientId(),
+        userDisplayName: readChatDisplayName(),
         ...(draft.operationMode ? { operationMode: draft.operationMode } : {}),
         preparedTextSubmission: { epoch: await getAdmissionEpoch(), fullAccess: isFullAccessEnabled(),
           fullAccessNotificationId: getPendingFullAccessNotification(target.run.conversationId!) },

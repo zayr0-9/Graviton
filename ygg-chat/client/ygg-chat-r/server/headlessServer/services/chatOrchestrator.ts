@@ -846,6 +846,8 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     return { ...run.request, operation: 'send', streamId: nextId, lineageId,
       parentId, messageId: null, operationId: null, content: submission.content, manualCompaction: false,
       watcherCompletion: submission.watcherCompletion,
+      // A different client may send the successor; do not inherit the previous sender's display name.
+      userDisplayName: submission.userDisplayName,
       selectedFiles: submission.selectedFiles ?? [],
       fullAccess: run.request.fullAccess === true,
       fullAccessNotificationId: submission.fullAccessNotificationId,
@@ -2000,6 +2002,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
         requestPrompt: request.systemPrompt ?? null,
         projectPrompt: project?.system_prompt ?? null,
         conversationPrompt: conversation?.system_prompt ?? null,
+        userDisplayName: request.userDisplayName,
         planModeVerbosity: request.planModeVerbosity ?? 'concise',
         skillsIndex: contextPromptParts.skillsIndex,
         agentsIndex: contextPromptParts.agentsIndex,

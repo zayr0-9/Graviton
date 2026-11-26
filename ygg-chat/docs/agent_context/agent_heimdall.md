@@ -148,6 +148,7 @@ For selected-message copying/moving:
 
 - Heimdall has a local modal search over the current conversation's flat messages.
 - It strips Markdown into plain text asynchronously for client-side matching.
+- The panel is `HeimdallSearchPanel.tsx` (styles in `heimdallSearchPanel.css`, soft-popover `--cloud-*` palette via `getActionPopoverThemeStyle`). Matching and the All/User/Assistant role filter live in `heimdallSearch.ts` (`ex_agent` counts as assistant; system/tool rows appear only under All). Each filter chip shows its match count for the current query; the role choice persists while Heimdall stays mounted.
 - Selecting a search result sets the branch path and focused message, then closes search.
 - Search result scroll-to-node in Heimdall uses a `searchFocusPendingRef` so unrelated focus updates do not auto-center the graph.
 

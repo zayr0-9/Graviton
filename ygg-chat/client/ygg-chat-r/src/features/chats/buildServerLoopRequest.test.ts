@@ -92,6 +92,15 @@ describe('buildServerLoopRequest', () => {
     expect(body.operationId).toBe('operation-fixed')
   })
 
+  it.each(['send', 'branch', 'edit'] as const)('forwards the display name separately from prompts for %s', op => {
+    const params = { ...base, messageId: 'm1', operationModePrompt: 'Custom baseline' }
+    expect(buildServerLoopRequest(op, { ...params, userDisplayName: '  Ada  ' }).body).toMatchObject({
+      userDisplayName: 'Ada', operationModePrompt: 'Custom baseline', content: 'hello',
+    })
+    expect(buildServerLoopRequest(op, { ...params, userDisplayName: '   ' }).body).not.toHaveProperty('userDisplayName')
+    expect(buildServerLoopRequest(op, params).body).not.toHaveProperty('userDisplayName')
+  })
+
   it('forwards renderer-selected prompt baselines without sending a supplemental systemPrompt', () => {
     const { body } = buildServerLoopRequest('send', {
       ...base,

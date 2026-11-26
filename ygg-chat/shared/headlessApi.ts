@@ -40,6 +40,8 @@ export interface HeadlessMessageRequest {
   accessToken?: string | null
   accountId?: string | null
   systemPrompt?: string | null
+  /** Optional renderer-local display label, used as model context rather than identity. */
+  userDisplayName?: string
   /** Renderer-selected baseline for the request's current operation mode. */
   operationModePrompt?: string | null
   /** Renderer-selected Agent baseline used when a Plan run upgrades to Agent mode. */

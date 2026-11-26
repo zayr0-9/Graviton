@@ -50,6 +50,7 @@ export class RunAdmissionService {
       if (target.activeStreamId) {
         const result = orchestrator.submitQueuedMessage(request.conversationId, target.activeStreamId, {
           requestId: operationId, content: request.content, attachmentsBase64: request.attachmentsBase64, selectedFiles: request.selectedFiles,
+          userDisplayName: request.userDisplayName,
           fullAccess: request.fullAccess === true, fullAccessNotificationId: request.fullAccessNotificationId,
         })
         receipt.lineageId = result.snapshot?.lineageId ?? receipt.lineageId

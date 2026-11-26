@@ -77,6 +77,7 @@ import {
 } from './inflightStreams'
 import { isResumableRunsEnabled } from '../../helpers/serverLoopSettings'
 import { buildServerLoopRequest } from './buildServerLoopRequest'
+import { readChatDisplayName } from '../../helpers/chatDisplayName'
 import { buildConversationTree } from './conversationTree'
 import { finalizeChatTree } from './immutableChatTree'
 export { AUTO_COMPACTION_NOTE } from './summaryPresentation'
@@ -151,11 +152,11 @@ const refreshHeimdallTreeFromState = (getState: () => RootState, dispatch: (acti
 }
 
 /**
- * Renderer-local operation-mode settings are not visible to the Electron main process.
- * Send the stable combined Chat/Agent baseline plus the subagent baseline so the
- * server can assemble the final prompt without duplicating bundled defaults.
+ * Send the selected baselines and the renderer-local display name separately so the
+ * server can assemble the final prompt without changing the saved prompts.
  */
-const buildOperationModePromptRequestParams = (_operationMode: 'plan' | 'execute') => ({
+const buildPromptRequestParams = () => ({
+  userDisplayName: readChatDisplayName(),
   operationModePrompt: getCombinedOperationModePrompt(),
   subagentModePrompt: getSubagentModePrompt().prompt,
   planModeVerbosity: loadPlanModeResponseSettings().verbosity,
@@ -1093,7 +1094,7 @@ export const sendMessage = createAsyncThunk<
           userId: auth.userId,
           parentId: summaryHandoff?.id ?? parent ?? null,
           operationMode: operationModeAtSend,
-          ...buildOperationModePromptRequestParams(operationModeAtSend),
+          ...buildPromptRequestParams(),
           think,
           reasoningConfig,
           reasoningLevel,
@@ -1579,7 +1580,7 @@ export const editMessageWithBranching = createAsyncThunk<
           messageId: String(originalMessageId),
           parentId: parentMessageId ?? null,
           operationMode: operationModeAtSend,
-          ...buildOperationModePromptRequestParams(operationModeAtSend),
+          ...buildPromptRequestParams(),
           think,
           // Previously omitted: edited branches ran at the provider's default effort.
           reasoningConfig: think ? reasoningConfig : undefined,
@@ -1839,7 +1840,7 @@ export const sendMessageToBranch = createAsyncThunk<
           messageId: String(parentId),
           parentId: parentId ?? null,
           operationMode: operationModeAtSend,
-          ...buildOperationModePromptRequestParams(operationModeAtSend),
+          ...buildPromptRequestParams(),
           think,
           subagentReasoningEffort: getSubagentReasoningEffort(),
           rootPath: effectiveToolRootPath,
@@ -2848,6 +2849,8 @@ export interface QueueRejection { message: string; uncertain: boolean; code?: st
 export const enqueueUserMessage = createAsyncThunk<QueueAcceptance, {
   conversationId: string; streamId: string; content: string; requestId: string
   includeGlobalComposerContext?: boolean; updatePath?: boolean
+  /** Capture with the request ID so retrying a submission cannot pick up a changed name. */
+  userDisplayName?: string
   /** Card retries retain this exact prepared text-only payload, including access expectation. */
   preparedTextSubmission?: { epoch: string; fullAccess: boolean; fullAccessNotificationId?: string }
   /** Mode for the follow-up run when the target run has already finished (agents pill). */
@@ -2862,6 +2865,7 @@ export const enqueueUserMessage = createAsyncThunk<QueueAcceptance, {
   const url = await buildLocalApiUrl(`/conversations/${encodeURIComponent(params.conversationId)}/streams/${encodeURIComponent(params.streamId)}/queue`)
   const epoch = params.preparedTextSubmission?.epoch ?? await getAdmissionEpoch()
   let body = JSON.stringify({ epoch, requestId: params.requestId, content: params.content, attachmentsBase64, selectedFiles,
+    userDisplayName: params.userDisplayName?.trim() || undefined,
     fullAccess: params.preparedTextSubmission?.fullAccess ?? isFullAccessEnabled(),
     fullAccessNotificationId: params.preparedTextSubmission
       ? params.preparedTextSubmission.fullAccessNotificationId : getPendingFullAccessNotification(params.conversationId),

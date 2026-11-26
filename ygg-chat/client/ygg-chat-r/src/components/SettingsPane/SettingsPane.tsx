@@ -1,6 +1,7 @@
 import { HOST_SKILLS_CHANGED } from '../../services/hostCatalogClient'
 import { useActivityStepLabels, saveActivityStepLabels } from '../../helpers/activityStepLabelsSettings'
 import { saveHideReasoningBlocks, useHideReasoningBlocks } from '../../helpers/hideReasoningSettings'
+import { saveHighlightedTurnFiles, useHighlightedTurnFiles } from '../../helpers/highlightedTurnFilesSettings'
 import {
   MCP_APP_MAX_HEIGHT,
   MCP_APP_MIN_HEIGHT,
@@ -265,7 +266,7 @@ const extractTextFromDocx = async (file: File): Promise<string> => {
   return text.trim()
 }
 
-function DisplayNameSettings() {
+function DisplayNameSettings({ descriptionStyle }: { descriptionStyle?: React.CSSProperties }) {
   const name = useChatDisplayName()
   return (
     <section className='space-y-2'>
@@ -273,7 +274,11 @@ function DisplayNameSettings() {
         Display name
       </label>
       <input id='chat-display-name' type='text' className={inputSurfaceClass} placeholder='User'
+        aria-describedby='chat-display-name-help'
         value={name} maxLength={64} onChange={event => saveChatDisplayName(event.target.value)} />
+      <p id='chat-display-name-help' className='text-xs text-neutral-700 dark:text-neutral-300' style={descriptionStyle}>
+        Sent to your selected model in the system prompt when a run starts. Leave blank to omit it.
+      </p>
     </section>
   )
 }
@@ -427,6 +432,7 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
 
   const showActivityStepLabels = useActivityStepLabels()
   const hideReasoningBlocks = useHideReasoningBlocks()
+  const showHighlightedTurnFiles = useHighlightedTurnFiles()
   const mcpAppConstraintsEnabled = useMcpAppConstraintsEnabled()
 
   const [truncateToolOutput, setTruncateToolOutput] = useState<boolean>(loadToolOutputTruncationEnabled)
@@ -1538,7 +1544,7 @@ ${block}`
               aria-hidden='true'
             />
 
-            <DisplayNameSettings />
+            <DisplayNameSettings descriptionStyle={settingsSectionTitleStyle} />
 
             {/* System Prompt and Context Collapsible Section */}
             <div className='space-y-2'>
@@ -2129,6 +2135,20 @@ ${block}`
                       style={savedCustomThemesColors ? { backgroundColor: savedCustomThemesColors.buttonBg, color: savedCustomThemesColors.buttonText } : undefined}>
                       {showActivityStepLabels ? <Check {...lucideIconProps}
                         style={savedCustomThemesColors ? { color: savedCustomThemesColors.primaryButtonBg } : undefined} /> : <X {...lucideIconProps} />}
+                    </button>
+                  </div>
+
+                  <div className='flex items-center justify-between gap-3 rounded-2xl bg-neutral-50/70 px-3 py-3 dark:bg-neutral-900/10'
+                    style={settingsSectionCardStyle}>
+                    <span id='highlighted-turn-files-label' className='text-sm font-medium text-stone-700 dark:text-neutral-100'
+                      style={settingsSectionTitleStyle}>
+                      Show modified files for the highlighted turn only
+                    </span>
+                    <button type='button' className={iconButtonClass} aria-labelledby='highlighted-turn-files-label'
+                      aria-pressed={showHighlightedTurnFiles} onClick={() => saveHighlightedTurnFiles(!showHighlightedTurnFiles)}
+                      title={showHighlightedTurnFiles ? 'Show files from the whole branch' : 'Show files from the highlighted turn'}
+                      style={savedCustomThemesColors ? { backgroundColor: savedCustomThemesColors.buttonBg, color: savedCustomThemesColors.buttonText } : undefined}>
+                      {showHighlightedTurnFiles ? <Check {...lucideIconProps} /> : <X {...lucideIconProps} />}
                     </button>
                   </div>
 
