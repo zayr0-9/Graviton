@@ -137,7 +137,8 @@ if (!process.versions.electron) {
       await new Promise(resolve => setTimeout(resolve, 100))
     }
     const highlightedFilesOnly = process.argv.includes('--highlighted-files')
-    for (let i = 0; i < (highlightedFilesOnly ? 1 : 2); i++) {
+    const documentsOnly = process.argv.includes('--documents')
+    for (let i = 0; i < (highlightedFilesOnly || documentsOnly ? 1 : 2); i++) {
       const window = new BrowserWindow({ show: false, width: i ? 390 : 1280, height: i ? 844 : 900, useContentSize: true, webPreferences: { contextIsolation: true, nodeIntegration: false, partition: `workspace-fixture-${i}` } }); windows.push(window)
       window.webContents.on('console-message', details => { if (details.level === 'error') console.error('Renderer:', details.message) })
       await window.loadURL(origin + '/blank')
@@ -145,6 +146,99 @@ if (!process.versions.electron) {
       await window.loadURL(origin + '/#/chat/p1/c1')
       await wait(window, `!!document.querySelector('textarea[placeholder="Type your message..."]')`, 'Composer missing')
       if (await window.webContents.executeJavaScript('!!window.electronAPI')) throw new Error('Unexpected preload')
+    }
+    if (documentsOnly) {
+      const { docx, xlsx, largeWorksheet, pdf, emptyPdf } = require('./document-paste-fixtures.cjs')
+      const win = windows[0]
+      const input = `document.querySelector('textarea[placeholder="Type your message..."]')`
+      const importFiles = (source, entries, action = '') => win.webContents.executeJavaScript(`(() => {
+        const input = ${input}
+        const transfer = new DataTransfer()
+        for (const [name, base64] of ${JSON.stringify(entries)}) {
+          transfer.items.add(new File([Uint8Array.from(atob(base64), char => char.charCodeAt(0))], name))
+        }
+        if (${JSON.stringify(source)} === 'picker') {
+          const picker = [...document.querySelectorAll('input[type=file]')].find(el => el.accept.includes('.xlsx'))
+          picker.files = transfer.files
+          picker.dispatchEvent(new Event('change', { bubbles: true }))
+        } else if (${JSON.stringify(source)} === 'drop') {
+          input.dispatchEvent(new DragEvent('drop', { dataTransfer: transfer, bubbles: true, cancelable: true }))
+        } else {
+          input.dispatchEvent(new ClipboardEvent('paste', { clipboardData: transfer, bubbles: true, cancelable: true }))
+        }
+        ${action}
+      })()`)
+      const base64 = value => Buffer.from(value).toString('base64')
+      await win.webContents.executeJavaScript(`(() => {
+        const input = ${input}
+        input.focus()
+        input.dispatchEvent(new KeyboardEvent('keydown', { key: 'V', code: 'KeyV', shiftKey: true, metaKey: true, bubbles: true }))
+        const clipboardData = new DataTransfer()
+        clipboardData.setData('text/plain', 'Spreadsheet selection')
+        clipboardData.items.add(new File(['fixture image'], 'selection.png', { type: 'image/png' }))
+        input.dispatchEvent(new ClipboardEvent('paste', { clipboardData, bubbles: true, cancelable: true }))
+      })()`)
+      await wait(win, `${input}.value === ${JSON.stringify('```\nSpreadsheet selection\n```')}`, 'Shift+Paste should prefer text when the clipboard also has an image')
+      await fill(win, 'Before replace after')
+      await win.webContents.executeJavaScript(`${input}.setSelectionRange(7, 14)`)
+      await importFiles('paste', [['README.md', base64('# Hello')], ['data.json', base64('{"n": 1}')]])
+      await wait(win, `${input}.value === ${JSON.stringify('Before \n```\nFile: README.md\n\n# Hello\n```\n\n```\nFile: data.json\n\n{"n": 1}\n```\n after')}`,
+        'Pasted Markdown and JSON did not replace the selection in order')
+      await importFiles('drop', [['report.docx', docx], ['sales.xlsx', xlsx], ['paper.pdf', pdf]])
+      await wait(win, `['Text from Word','Sheet: Revenue','Item\\t12','Sheet: Notes','Second sheet','Text from PDF'].every(text => ${input}.value.includes(text))`,
+        'Binary files dropped into the composer did not all extract')
+      if (await win.webContents.executeJavaScript(`${input}.value.includes('5+7')`)) throw new Error('XLSX formula leaked instead of its saved value')
+      await importFiles('picker', [['notes.txt', base64('Text from picker')]])
+      await wait(win, `${input}.value.includes('Text from picker')`, 'Picker did not use the document engine')
+      await importFiles('paste', [['not-a-text-layer.pdf', emptyPdf], ['large.xlsx', largeWorksheet], ['old.doc', base64('Invalid')]])
+      await wait(win, `['Scanned PDFs need OCR', 'Worksheet is too large', 'Save as .docx or .xlsx'].every(text => document.body.innerText.includes(text))`, 'Missing per-file errors')
+      for (const dark of [false, true]) {
+        const color = await win.webContents.executeJavaScript(`(async () => {
+          localStorage.setItem('chat:customThemeEnabled', 'true');
+          localStorage.setItem('chat:customTheme', JSON.stringify({ colors: { toolJobsPrimaryText: { light: '#123456', dark: '#e1e2e3' } } }));
+          document.documentElement.classList.toggle('dark', ${dark});
+          window.dispatchEvent(new Event('chatCustomThemeChange'));
+          await new Promise(resolve => setTimeout(resolve, 100));
+          return getComputedStyle([...document.querySelectorAll('[role=status]')].find(el => el.innerText.includes('Scanned PDFs need OCR'))).color;
+        })()`)
+        if (color !== (dark ? 'rgb(225, 226, 227)' : 'rgb(18, 52, 86)')) throw new Error(`Wrong import notice color: ${color}`)
+      }
+      const cancelImport = `[...document.querySelectorAll('button')].find(el => el.textContent === 'Cancel import')`
+      await win.webContents.executeJavaScript(`
+        window.originalArrayBuffer = Blob.prototype.arrayBuffer;
+        Blob.prototype.arrayBuffer = function() {
+          if (this.name !== 'cancel.docx') return window.originalArrayBuffer.call(this);
+          return new Promise(resolve => { window.finishPendingRead = () => resolve(window.originalArrayBuffer.call(this)); });
+        };
+        void 0;
+      `)
+      await importFiles('paste', [['cancel.docx', docx]], `document.querySelector('button[title="Send message"]').click()`)
+      await wait(win, `!!${cancelImport}`, 'Missing cancel control')
+      if (executions !== 0) throw new Error('A send slipped through while extracting')
+      await win.webContents.executeJavaScript(`${cancelImport}.click(); window.finishPendingRead(); Blob.prototype.arrayBuffer = window.originalArrayBuffer; void 0;`)
+      await new Promise(resolve => setTimeout(resolve, 300))
+      if (await win.webContents.executeJavaScript(`${input}.value.includes('cancel.docx')`)) throw new Error('Cancelled file was inserted')
+      await win.webContents.executeJavaScript(`
+        window.originalArrayBuffer = Blob.prototype.arrayBuffer;
+        Blob.prototype.arrayBuffer = function() {
+          if (this.name !== 'delayed.txt') return window.originalArrayBuffer.call(this);
+          return new Promise(resolve => { window.finishPendingRead = () => resolve(window.originalArrayBuffer.call(this)); });
+        };
+        void 0;
+      `)
+      await importFiles('paste', [['delayed.txt', base64('late text')]])
+      await wait(win, `!!${cancelImport}`, 'Missing second pending read')
+      await win.webContents.executeJavaScript(`${input}.focus(); ${input}.setSelectionRange(0,0)`)
+      await win.webContents.insertText('New draft text ')
+      await win.webContents.executeJavaScript(`window.finishPendingRead(); Blob.prototype.arrayBuffer = window.originalArrayBuffer; void 0;`)
+      await wait(win, `${input}.value.startsWith('New draft text Before ') && ${input}.value.endsWith('late text\\n\x60\x60\x60')`, 'Late conversion overwrote new draft text or reused the old caret')
+      await click(win, 'button[title="Send message"]')
+      await wait(win, `document.body.innerText.includes('Permission requested')`, 'Imported text was not submitted by the normal Send path')
+      if (!run.content.includes('Text from Word') || !run.content.includes('Text from PDF') || !run.content.includes('Text from picker')) throw new Error('Converted text missing from request content')
+      if (unexpected.size) throw new Error('Unexpected fixture requests: ' + [...unexpected].join('; '))
+      console.log('PASS document paste, binary drop, picker, errors, theme colors, cancellation, and model-facing send content')
+      exit = 0
+      return
     }
     if (highlightedFilesOnly) {
       await testHighlightedFiles()

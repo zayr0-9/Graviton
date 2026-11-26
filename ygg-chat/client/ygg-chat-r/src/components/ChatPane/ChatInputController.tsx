@@ -2,6 +2,8 @@ import React, { useCallback, useEffect, useRef, useState } from 'react'
 import type { ConversationId } from '../../../../../shared/types'
 import type { ImageDraftTarget } from '../../features/chats/chatTypes'
 import { insertFencedText, shouldComposerEnterSubmit } from '../../helpers/chatKeyboardShortcuts'
+import { getTransferredFiles, isImageFile } from '../../features/fileInsertion/fileInsertion'
+import type { InputFileInsertionHandle } from '../../features/fileInsertion/useFileInsertion'
 import { useIsTouchPrimary } from '../../hooks/useMediaQuery'
 import { InputTextArea } from '../InputTextArea/InputTextArea'
 import { getSentMessageHistory } from './sentMessageHistory'
@@ -14,6 +16,8 @@ export type ChatInputControllerHandle = {
   clear: () => void
   focus: () => void
   appendFencedText: (text: string) => void
+  insertFiles: InputFileInsertionHandle['insertFiles']
+  isFileInsertionPending: InputFileInsertionHandle['isPending']
 }
 
 export type ComposerSlashCommandResult = {
@@ -35,6 +39,8 @@ export type ChatInputControllerProps = {
   fallbackFileSearchRoot?: string | null
   imageDraftTarget?: ImageDraftTarget
   enableImageAttachments?: boolean
+  fileInsertionScope?: string
+  onFileInsertionPendingChange?: (pending: boolean) => void
   enableFileMentions?: boolean
   fontSizeOffset?: number
   autoFocus?: boolean
@@ -62,6 +68,8 @@ export const ChatInputController = React.memo(
         fallbackFileSearchRoot,
         imageDraftTarget = { kind: 'composer' },
         enableImageAttachments = true,
+        fileInsertionScope,
+        onFileInsertionPendingChange,
         enableFileMentions = true,
         fontSizeOffset = 0,
         autoFocus = true,
@@ -72,6 +80,7 @@ export const ChatInputController = React.memo(
       const [value, setValueState] = useState(initialValue)
       const valueRef = useRef(initialValue)
       const wrapperRef = useRef<HTMLDivElement | null>(null)
+      const fileInsertionRef = useRef<InputFileInsertionHandle | null>(null)
       const lastHasTextRef = useRef(initialValue.trim().length > 0)
       const shiftPressedRef = useRef(false)
       const markdownPastePendingRef = useRef(false)
@@ -139,7 +148,11 @@ export const ChatInputController = React.memo(
 
       React.useImperativeHandle(
         ref,
-        () => ({ getValue: () => valueRef.current, setValue, clear, focus, appendFencedText: insertMarkdownText }),
+        () => ({
+          getValue: () => valueRef.current, setValue, clear, focus, appendFencedText: insertMarkdownText,
+          insertFiles: files => fileInsertionRef.current?.insertFiles(files) ?? false,
+          isFileInsertionPending: () => fileInsertionRef.current?.isPending() ?? false,
+        }),
         [clear, focus, insertMarkdownText, setValue]
       )
 
@@ -214,7 +227,7 @@ export const ChatInputController = React.memo(
         (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
           const shouldPasteAsMarkdown = shiftPressedRef.current || markdownPastePendingRef.current
           markdownPastePendingRef.current = false
-          if (!shouldPasteAsMarkdown) return
+          if (!shouldPasteAsMarkdown || getTransferredFiles(event.clipboardData).some(file => !isImageFile(file))) return
 
           const pastedText = event.clipboardData.getData('text/plain')
           if (!pastedText) return
@@ -255,7 +268,7 @@ export const ChatInputController = React.memo(
                 event.preventDefault()
                 historyIndexRef.current = null
                 historyDraftRef.current = ''
-                onSubmit()
+                if (!fileInsertionRef.current?.isPending()) onSubmit()
               }
             }}
             onPaste={handlePaste}
@@ -276,6 +289,10 @@ export const ChatInputController = React.memo(
             selectedIdeContextItems={selectedIdeContextItems}
             fallbackFileSearchRoot={fallbackFileSearchRoot}
             enableImageAttachments={enableImageAttachments}
+            enableFileInsertion
+            fileInsertionScope={fileInsertionScope ?? String(conversationId)}
+            onFileInsertionPendingChange={onFileInsertionPendingChange}
+            fileInsertionRef={fileInsertionRef}
             enableFileMentions={enableFileMentions}
             imageDraftTarget={imageDraftTarget}
             fontSizeOffset={fontSizeOffset}

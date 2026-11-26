@@ -286,7 +286,7 @@ import { chatSelectionScrollHandled, isPendingViewStreamOwned, type PendingViewS
 import { executeToolAndWait } from '../utils/executeToolAndWait'
 import { getHookRunsRenderSignature } from '../components/ChatMessage/hookActivityState'
 import { parseId } from '../utils/helpers'
-import { extractTextFromPdf } from '../utils/pdfUtils'
+import { getFileInsertionAccept, isImageFile, mapOutsideFileInsertions } from '../features/fileInsertion/fileInsertion'
 import { addFileMentionLookupKeys } from '../../shared/fileMatchRanking'
 import { extractLatestTodoList } from '../features/chats/todoListTracking'
 import { ConversationLinkRootProvider } from '../components/MarkdownLink/markdownLinkRoot'
@@ -1061,6 +1061,7 @@ function Chat() {
   // Keep high-frequency keystrokes inside the input controller to avoid rerendering Chat.
   const inputControllerRef = useRef<ChatInputControllerHandle | null>(null)
   const [hasLocalInput, setHasLocalInput] = useState(false)
+  const [fileInsertionPending, setFileInsertionPending] = useState(false)
   const [addedIdeContexts, setAddedIdeContexts] = useState<AddedIdeContext[]>([])
   const chatSelection = useChatSelection()
   const selection = useAppSelector(state => state.chat.selection)
@@ -2132,12 +2133,12 @@ function Chat() {
       // Replace mentions in the message.
       // Regex: Matches @ followed by alphanumeric, dot (.), underscore (_), slash (/), dash (-).
       const mentionRegex = /@([A-Za-z0-9._\/-]+)/g // 'g' flag for global replacement.
-      return message.replace(mentionRegex, (full: string, mName: string) => {
+      return mapOutsideFileInsertions(message, text => text.replace(mentionRegex, (full: string, mName: string) => {
         // For each match: Look up full path by captured name (mName).
         // If found, replace with path; otherwise, keep original.
         const path = nameToPath.get(mName)
         return path != null ? path : full
-      })
+      }))
     },
     [selectedFilesForChat] // Dependency array: Re-creates if selectedFilesForChat changes.
   )
@@ -5267,8 +5268,8 @@ function Chat() {
     queueSubmitting,
   })
   // Input queued behind a Claude /compact waits for its summary, then continues in a successor run.
-  const canQueueLocal = canQueueAvailable
-  const canSendLocal = canSendImmediately || canQueueLocal
+  const canQueueLocal = canQueueAvailable && !fileInsertionPending
+  const canSendLocal = !fileInsertionPending && (canSendImmediately || canQueueLocal)
 
   /**
    * Re-run generation from the last user message on the current branch.
@@ -5614,12 +5615,12 @@ function Chat() {
   preparedSendRef.current = handlePreparedSend
   const imageSubmitPendingRef = useRef(false)
   const handleSend = useCallback(async (value: number) => {
-    if (imageSubmitPendingRef.current) return
+    if (imageSubmitPendingRef.current || inputControllerRef.current?.isFileInsertionPending()) return
     imageSubmitPendingRef.current = true
     const revision = selectionRevisionRef.current
     try {
       await dispatch(waitForImagePreparation({ kind: 'composer' }))
-      if (selectionRevisionRef.current === revision) preparedSendRef.current(value)
+      if (selectionRevisionRef.current === revision && !inputControllerRef.current?.isFileInsertionPending()) preparedSendRef.current(value)
     } catch (error) {
       recordLocalChatError(error, { phase: 'preflight', conversationId: currentConversationId })
     } finally {
@@ -6420,6 +6421,7 @@ function Chat() {
   )
 
   const handleComposerSubmit = useCallback(() => {
+    if (inputControllerRef.current?.isFileInsertionPending()) return
     const content = getLocalInput().trim()
     if (content.startsWith('/')) {
       void (async () => {
@@ -6447,42 +6449,22 @@ function Chat() {
   )
 
   const handleAttachmentInputChange = useCallback(
-    async (e: React.ChangeEvent<HTMLInputElement>) => {
-      const files = Array.from(e.target.files || [])
-      if (files.length === 0) return
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const files = Array.from(e.target.files ?? [])
+      e.target.value = ''
+      const imageFiles = files.filter(isImageFile)
+      const documents = files.filter(file => !isImageFile(file))
 
-      const pdfFiles = files.filter(file => file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf'))
-      const imageFiles = files.filter(file => file.type.startsWith('image/'))
-
-      // Register image preparation before awaiting unrelated PDF extraction.
+      // Keep images on the existing attachment path, including mixed selections.
       if (imageFiles.length) {
         const target: ImageDraftTarget = activeBranchEditingMessageId != null
           ? { kind: 'branch', messageId: parseId(activeBranchEditingMessageId) } : { kind: 'composer' }
         void dispatch(prepareImageFiles(imageFiles, target))
       }
 
-      if (pdfFiles.length > 0) {
-        try {
-          const pdfTexts = await Promise.all(
-            pdfFiles.map(async file => {
-              const text = await extractTextFromPdf(file)
-              return `[Pdf Content for ${file.name}]:\n${text}`
-            })
-          )
-          updateLocalInput(prev => {
-            const prefix = prev ? `${prev}\n\n` : ''
-            return prefix + '```\n' + pdfTexts + '\n``` \n\n'
-          })
-          focusLocalInput()
-        } catch (err) {
-          console.error('Failed to extract PDF text(s)', err)
-        }
-      }
-
-
-      e.target.value = ''
+      if (inputControllerRef.current?.insertFiles(documents)) focusLocalInput()
     },
-    [dispatch, activeBranchEditingMessageId, updateLocalInput, focusLocalInput]
+    [dispatch, activeBranchEditingMessageId, focusLocalInput]
   )
 
   // Touch browsers may never deliver an image-only clipboard to the textarea's paste event,
@@ -7686,6 +7668,8 @@ function Chat() {
                   conversationId={currentConversationId}
                   initialValue={messageInput.content}
                   onHasTextChange={setHasLocalInput}
+                  fileInsertionScope={modelSwitchScope}
+                  onFileInsertionPendingChange={setFileInsertionPending}
                   onSubmit={handleComposerSubmit}
                   onBlurPersist={handleComposerBlurPersist}
                   slashCommands={composerSlashCommands}
@@ -8184,7 +8168,7 @@ function Chat() {
                   <input
                     ref={attachmentInputRef}
                     type='file'
-                    accept='application/pdf,image/*'
+                    accept={`image/*,${getFileInsertionAccept()}`}
                     multiple
                     onChange={event => { handleAttachmentInputChange(event); closeComposerMenu() }}
                     className='hidden'

@@ -62,7 +62,6 @@ import {
 } from '../../helpers/toolOutputTruncation'
 import { localApi } from '../../utils/api'
 import { executeToolAndWait } from '../../utils/executeToolAndWait'
-import { extractTextFromPdf } from '../../utils/pdfUtils'
 import { InputTextArea } from '../InputTextArea/InputTextArea'
 import { ThemeManager } from '../ThemeManager/ThemeManager'
 import {
@@ -1271,6 +1270,7 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
 
       if (pdfFiles.length > 0) {
         try {
+          const { extractTextFromPdf } = await import('../../utils/pdfUtils')
           const pdfTexts = await Promise.all(
             pdfFiles.map(
               async file => `[Pdf Content for ${file.name}]:

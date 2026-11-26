@@ -139,6 +139,7 @@ export function ParallelChatPane({
   const providers = { ...providerState, currentProvider: branchSelection?.provider ?? providerState.currentProvider }
   const selectedModel = useSelectedModel(providers.currentProvider, branchSelection?.model)
   const [hasDraft, setHasDraft] = useState(false)
+  const [fileInsertionPending, setFileInsertionPending] = useState(false)
   const [composerNotice, setComposerNotice] = useState<string | null>(null)
   const [pendingStreamId, setPendingStreamId] = useState<string | null>(null)
   const [optimisticMessage, setOptimisticMessage] = useState<{
@@ -185,7 +186,7 @@ export function ParallelChatPane({
   const [queueSubmitting, setQueueSubmitting] = useState(false)
   const queueSubmittingRef = useRef(false)
   const queue = useAppSelector(state => streamId ? state.chat.messageQueues?.[streamId] : undefined)
-  const canSend = hasDraft && !queueSubmitting
+  const canSend = hasDraft && !queueSubmitting && !fileInsertionPending
   useEffect(() => {
     if (streamActive && streamId) void dispatch(loadMessageQueue({ conversationId: target.conversationId, streamId }))
     else setComposerNotice(null)
@@ -240,6 +241,7 @@ export function ParallelChatPane({
   const updateDraft = useCallback((next: ChatInputUpdater) => inputControllerRef.current?.setValue(next), [])
 
   const handleSend = useCallback(() => {
+    if (inputControllerRef.current?.isFileInsertionPending()) return
     const rawContent = inputControllerRef.current?.getValue() ?? ''
     const content = rawContent.trim()
     if (!content || queueSubmittingRef.current) return
@@ -416,6 +418,8 @@ export function ParallelChatPane({
         conversationId={target.conversationId}
         initialValue=''
         onHasTextChange={setHasDraft}
+        fileInsertionScope={JSON.stringify([target.conversationId, target.messageId, target.lineageId, target.path])}
+        onFileInsertionPendingChange={setFileInsertionPending}
         onSubmit={handleSend}
         onBlurPersist={() => undefined}
         fallbackFileSearchRoot={null}

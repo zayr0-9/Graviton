@@ -367,6 +367,16 @@ On touch-primary devices (`(hover: none) and (pointer: coarse)`, `useIsTouchPrim
 
 Textarea paste uses `getPastedImageFiles` (items, then files). Android Chrome may never deliver an image-only clipboard to a plain textarea, so touch devices on a secure origin also get a Paste image button that reads it through `navigator.clipboard.read()` (`helpers/clipboardImages.ts`). Over plain HTTP that API does not exist, and the button stays hidden; use the attach button instead.
 
+## Document file insertion
+
+Chat uses the opt-in `useFileInsertion` adapter in `src/features/fileInsertion/` through `ChatInputController` and `InputTextArea`. Paste and drop feed browser `File` objects to a processor registry; the primary composer's existing picker feeds the same adapter. New formats register extensions, MIME types, and an asynchronous processor accepting the `File`, an abort signal, and a text budget. Other controlled inputs can use the hook without Chat, Redux, or Electron. Images retain their existing attachment behavior.
+
+PDFs with selectable text, Word `.docx`, Excel `.xlsx`, and text files (including Markdown, JSON, CSV, and TSV) are converted locally. PDF.js uses a bundled worker; Office parsing runs off the UI thread. XLSX emits sheet names and tab-separated values, not formula execution. Scanned PDFs need OCR, and legacy `.doc` and `.xls` need conversion. Limits are reported per batch/file; successful files are still inserted when a sibling fails.
+
+The result is filename-labeled, editable text in the existing draft; no document upload, attachment record, or automatic send. It replaces the selection if the draft is unchanged, otherwise appends within the same scope. Changing conversation or branch, leaving the composer, or cancelling invalidates in-flight conversion. Send and Queue wait for extraction to finish or be cancelled; workspace mention expansion skips imported blocks.
+
+Validation: `npm run test:renderer`, both renderer builds, `node scripts/test-browser-workspace.cjs --documents`, and the opt-in macOS `node scripts/test-native-document-paste.cjs` (uses and restores the system clipboard).
+
 ## Quiet composer presentation
 
 The primary pane measures its own width via `useCompactComposer` (not the max-width input wrapper). Below 768px it keeps the same `ChatInputController`/textarea ancestors and displays Add, input and Send/Queue/Stop on one row; attachments and required decisions can grow the surface. The input caps at four rows and preserves a 16px minimum including font-size offsets. No send/queue/provider/permission state moves out of Chat.
