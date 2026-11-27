@@ -9,3 +9,4 @@ export const isNativeShell = buildTarget === 'electron' || (typeof __IS_ELECTRON
 export const isBrowserClient = buildTarget === 'browser-client'
 export const isStandaloneClient = buildTarget === 'standalone'
 export const isHostClient = isNativeShell || isBrowserClient || isStandaloneClient
+export const supportsBranchSnapshots = isNativeShell || isBrowserClient

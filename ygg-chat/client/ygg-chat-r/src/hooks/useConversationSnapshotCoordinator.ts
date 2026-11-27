@@ -8,8 +8,8 @@ import { useAppDispatch, useAppSelector } from './redux'
 import type { ConversationMessagesTreeData } from '../features/chats/conversationMessagesApi'
 import { coordinateConversationSnapshot } from '../features/chats/conversationSnapshotCoordinator'
 import { conversationQueryKeys } from '../features/chats/conversationQueryKeys'
-import { readBrowserViewedTip, saveBrowserViewedTip } from '../features/chats/browserViewedTips'
-import { isBrowserClient } from '../platform/clientCapabilities'
+import { readViewedTip, saveViewedTip } from '../features/chats/browserViewedTips'
+import { supportsBranchSnapshots } from '../platform/clientCapabilities'
 import type { RootState } from '../store/store'
 
 export function useConversationSnapshotCoordinator(conversationId: ConversationId | null, branchOnly = false) {
@@ -18,9 +18,9 @@ export function useConversationSnapshotCoordinator(conversationId: ConversationI
   const queryClient = useQueryClient()
   const currentConversationId = useAppSelector(state => state.chat.conversation.currentConversationId)
   const userId = useAppSelector(state => state.users?.currentUser?.id)
-  const visibleTip = useAppSelector(state => isBrowserClient && state.chat.selection.status === 'ready' ? state.chat.conversation.currentPath.at(-1) : null)
+  const visibleTip = useAppSelector(state => supportsBranchSnapshots && state.chat.selection.status === 'ready' ? state.chat.conversation.currentPath.at(-1) : null)
   useEffect(() => {
-    if (visibleTip && conversationId === currentConversationId) saveBrowserViewedTip(userId, String(conversationId), String(visibleTip))
+    if (visibleTip && conversationId === currentConversationId) saveViewedTip(userId, String(conversationId), String(visibleTip))
   }, [userId, visibleTip, conversationId, currentConversationId])
   const selectionRequestId = useAppSelector(state => state.chat.selection.requestId)
   const snapshotConversationId = useAppSelector(state => state.chat.conversation.snapshotConversationId)
@@ -96,7 +96,7 @@ export function useConversationSnapshotCoordinator(conversationId: ConversationI
         const result = await coordinateConversationSnapshot({
           conversationId,
           branchOnly,
-          savedTip: branchOnly ? readBrowserViewedTip(userId, requestedId) : undefined,
+          savedTip: branchOnly ? readViewedTip(userId, requestedId) : undefined,
           queryClient,
           getState: reduxStore.getState,
           isCurrent: ownsRefresh,

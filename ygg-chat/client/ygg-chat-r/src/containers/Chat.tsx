@@ -1,6 +1,6 @@
 import { selectHostFolder } from '../platform/hostPathPicker'
 import { newClientId } from '../helpers/clientId'
-import { isBrowserClient, isHostClient, isNativeShell } from '../platform/clientCapabilities'
+import { isBrowserClient, isHostClient, isNativeShell, supportsBranchSnapshots } from '../platform/clientCapabilities'
 import { ConversationOpeningOverlay } from '../components/ChatPane/ConversationOpeningOverlay'
 import { useModelSwitchConfirmation } from '../hooks/useModelSwitchConfirmation'
 import { ModelSwitchDialog } from '../components/ModelSelectControl/ModelSwitchDialog'
@@ -3783,8 +3783,7 @@ function Chat() {
     } catch { return defaultValue }
   })
   // Heimdall's search/transfer and parallel panes need canonical sibling bodies.
-  // A hidden workspace must not force the phone transcript to fetch them.
-  const branchOnly = isBrowserClient && !heimdallVisible && !parallelPane
+  const branchOnly = supportsBranchSnapshots && !heimdallVisible && !parallelPane
   // Persisted snapshots only enter Redux through the generation-gated coordinator.
   // Cached query data is never projected directly, so Settings -> Back cannot clobber
   // the same-conversation live SSE projection before the route-entry fetch completes.
@@ -3797,7 +3796,7 @@ function Chat() {
     isFetching: isSnapshotFetching,
     refresh: refreshConversationSnapshot,
   } = useConversationSnapshotCoordinator(conversationIdFromUrl, branchOnly)
-  const graphPending = isBrowserClient && (!conversationData || conversationData.retained != null)
+  const graphPending = supportsBranchSnapshots && (!conversationData || conversationData.retained != null)
 
   const handleHookRunsUpdated = useCallback(
     (messageId: string, runs: HookRunRecord[]) => {

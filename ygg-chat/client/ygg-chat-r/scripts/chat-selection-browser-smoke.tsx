@@ -10,6 +10,8 @@ import { filterChatTree, layoutChatTree, walkChatTree } from '../src/components/
 import { buildKeyboardTree } from '../src/components/Heimdall/heimdallKeyboard'
 import { ChatSelectionProvider, useChatSelection } from '../src/components/ChatSelection/ChatSelectionProvider'
 import { useConversationSnapshotCoordinator } from '../src/hooks/useConversationSnapshotCoordinator'
+import { supportsBranchSnapshots } from '../src/platform/clientCapabilities'
+import { saveViewedTip, readViewedTip } from '../src/features/chats/browserViewedTips'
 import { NavigationCommands, useAppNavigation } from '../src/keyboard/NavigationCommands'
 import { KeyboardProvider, useCommandBlocker, useCommands } from '../src/keyboard/KeyboardProvider'
 import { KeyboardShortcutsModal } from '../src/components/SettingsPane/KeyboardShortcutsModal'
@@ -17,14 +19,15 @@ import { loadShortcutOverrides, saveShortcutOverrides } from '../src/keyboard/sh
 
 declare global {
   interface Window {
-    __fetchSnapshot: (id: string, options: { signal?: AbortSignal }) => Promise<unknown>
+    __fetchSnapshot: (id: string, options: { signal?: AbortSignal; branch?: { tip?: string } }) => Promise<unknown>
     __runSelectionSmoke: () => Promise<string[]>
   }
 }
 
-const requests: Array<{ id: string; resolve: (data: any) => void; reject: (error: Error) => void }> = []
+let setGraphOpen: (open: boolean) => void
+const requests: Array<{ id: string; branch?: { tip?: string }; resolve: (data: any) => void; reject: (error: Error) => void }> = []
 window.__fetchSnapshot = (id, options) => new Promise((resolve, reject) => {
-  requests.push({ id, resolve, reject })
+  requests.push({ id, branch: options.branch, resolve, reject })
   options.signal?.addEventListener('abort', () => reject(new Error('Wrapped transport abort')), { once: true })
 })
 const store = configureStore({ reducer: { chat: reducer, users: () => ({ currentUser: { id: 'smoke-user' } }) },
@@ -65,7 +68,9 @@ const pressBack = () => document.getElementById('keyboard-input')!.dispatchEvent
 }))
 function ChatProbe() {
   const { id } = useParams()
-  snapshot = useConversationSnapshotCoordinator(id!)
+  const [graphOpen, setOpen] = React.useState(true)
+  setGraphOpen = setOpen
+  snapshot = useConversationSnapshotCoordinator(id!, supportsBranchSnapshots && !graphOpen)
   const selection = useSelector((state: ReturnType<typeof store.getState>) => state.chat.selection)
   const messages = useSelector((state: ReturnType<typeof store.getState>) => state.chat.conversation.messages)
   const coordinator = useChatSelection()
@@ -275,6 +280,24 @@ window.__runSelectionSmoke = async () => {
   latest().resolve({ messages: deepRows, tree: null })
   await until(ready, 'deep return ready')
   checks.push('20,000-deep tree loads, refreshes, lays out, indexes and survives route return in Electron')
+  // A conversation with no session state must use the native profile's saved tip.
+  saveViewedTip('smoke-user', 'forks', 'older')
+  setGraphOpen(false)
+  await tick()
+  navigation.navigate('/chat/p/forks')
+  await until(() => latest().id === 'forks', 'branch-only entry')
+  assert(latest().branch?.tip === 'older', 'Electron failed to request the persisted branch')
+  const row = (id: string, parent_id: string | null) => ({ id, parent_id, conversation_id: 'forks', children_ids: [], created_at: '2026-01-01' })
+  const path = [row('root', null), row('older', 'root'), row('continued', 'older')]
+  latest().resolve({ messages: path, retained: [['sibling', 1]], tree: null })
+  await until(() => ready() && readViewedTip('smoke-user', 'forks') === 'continued', 'remember continued tip')
+  const beforeGraph = requests.length
+  setGraphOpen(true)
+  await until(() => requests.length > beforeGraph, 'full snapshot for graph')
+  assert(!latest().branch, 'Electron graph requested only one branch')
+  latest().resolve({ messages: [...path, row('sibling', 'root')], tree: null })
+  await until(() => store.getState().chat.conversation.messages.some(m => m.id === 'sibling'), 'hydrate sibling for graph')
+  checks.push('Electron restores the saved branch, remembers its continuation and fetches siblings on opening the tree')
   root.unmount()
   queryClient.clear()
   return checks
