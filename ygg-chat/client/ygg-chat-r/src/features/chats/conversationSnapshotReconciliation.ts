@@ -52,6 +52,9 @@ export function reconcileConversationSnapshot({
 
   const reconciled = fetchedMessages.map(message => {
     const live = liveById.get(idOf(message))
+    // A branch read ships rows outside its window compacted. A hydrated live row of the same
+    // revision is the full copy of the same durable state; keep it rather than regress it.
+    if (message.body_omitted && live && !live.body_omitted && typeof live.revision === 'number' && live.revision === message.revision) return live
     if (live && typeof live.revision === 'number' && typeof message.revision === 'number') {
       if (live.revision > message.revision) return live
       if (message.revision > live.revision) return message

@@ -2242,6 +2242,14 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(props => {
       {compactionPlaceholder}
     </CompactMessageNotice>
   }
+  // A branch read outside the renderer window ships this row without its large block payloads;
+  // Chat hydrates it as it scrolls into view. Editing would write the compacted blocks back.
+  if (message?.body_omitted) {
+    return <>
+      <ChatMessageBody {...props} onEdit={undefined} />
+      <div role='status' className={`${MESSAGE_BLOCK_INSET_CLASS} py-1 text-xs text-neutral-500 dark:text-neutral-400`}>Loading full message…</div>
+    </>
+  }
   return props.role === 'assistant' && props.transcriptRevision
     ? <RevisedChatMessage key={props.transcriptRevision.id} props={props} />
     : <ChatMessageBody {...props} />

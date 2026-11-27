@@ -68,3 +68,34 @@ describe('conversationSnapshotApplied', () => {
     expect(next.conversation.messages).toEqual([])
   })
 })
+
+describe('messageBodiesHydrated', () => {
+  const compact: Message = { ...message('old', null), revision: 2, body_omitted: true, body_omitted_chars: 900, artifacts: ['kept.png'],
+    content_blocks: [{ type: 'tool_result', index: 0, tool_use_id: 't', is_error: false, omitted: true } as unknown as NonNullable<Message['content_blocks']>[number]] }
+  const full: Message = { ...message('old', null), revision: 2, artifacts: [], content_blocks: [{ type: 'tool_result', index: 0, tool_use_id: 't', content: 'output', is_error: false }] }
+  const seeded = () => {
+    const state = chatReducer(undefined, chatSliceActions.conversationSet('a'))
+    return chatReducer(state, chatSliceActions.conversationSnapshotApplied({ conversationId: 'a', messages: [compact, message('tip', 'old')], tree: null }))
+  }
+
+  it('installs full bodies, clears the flag and keeps renderer artifacts', () => {
+    const state = seeded()
+    const next = chatReducer(state, chatSliceActions.messageBodiesHydrated({ conversationId: 'a', messages: [full] }))
+    const row = next.conversation.messages[0]
+    expect(row.content_blocks).toEqual(full.content_blocks)
+    expect(row.body_omitted).toBeUndefined()
+    expect(row.body_omitted_chars).toBeUndefined()
+    expect(row.artifacts).toEqual(['kept.png'])
+    expect(next.conversation.messages[1]).toBe(state.conversation.messages[1])
+  })
+
+  it('ignores rows that are not compacted, older fetched revisions and other conversations', () => {
+    const state = seeded()
+    const stale = chatReducer(state, chatSliceActions.messageBodiesHydrated({ conversationId: 'a', messages: [{ ...full, revision: 1 }] }))
+    expect(stale.conversation.messages[0].body_omitted).toBe(true)
+    const other = chatReducer(state, chatSliceActions.messageBodiesHydrated({ conversationId: 'b', messages: [full] }))
+    expect(other.conversation.messages[0].body_omitted).toBe(true)
+    const untouched = chatReducer(state, chatSliceActions.messageBodiesHydrated({ conversationId: 'a', messages: [{ ...full, id: 'tip', content: 'replaced' }] }))
+    expect(untouched.conversation.messages[1].content).toBe('tip')
+  })
+})

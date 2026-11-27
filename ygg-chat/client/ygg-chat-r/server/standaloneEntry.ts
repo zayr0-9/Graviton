@@ -12,6 +12,8 @@
 //   YGG_DB_PATH                  default <YGG_DATA_DIR>/local-sync.db
 //   YGG_TEMP_DIR                 default os.tmpdir()/ygg-server
 //   YGG_RESOURCES_DIR            default: directory of this bundle
+//   YGG_BROWSER_UI_DIR           optional built browser client (dist-browser) to
+//                                serve at the host root; unset = API only
 //   YGG_PROMPTS_DIR              default <resources>/prompts
 //   YGG_OAUTH_CALLBACK_ENABLED   default off
 //   YGG_OAUTH_CALLBACK_PORT      default 1455
@@ -105,6 +107,7 @@ async function main(): Promise<void> {
     dbPath: process.env.YGG_DB_PATH?.trim() || undefined,
     resourcesDir,
     promptsDir,
+    browserUiDir: process.env.YGG_BROWSER_UI_DIR?.trim() || undefined,
     cors: allowedOrigins.length > 0 ? { mode: 'allowlist', allowedOrigins } : { mode: 'loopback', allowedOrigins: [] },
     oauth: {
       enabled: isEnvTruthy(process.env.YGG_OAUTH_CALLBACK_ENABLED),

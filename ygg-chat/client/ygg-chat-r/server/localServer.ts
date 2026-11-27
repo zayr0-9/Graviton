@@ -50,6 +50,7 @@ import { canFallbackToLocalExecution } from './tools/runtime/toolRuntimeSandbox.
 // server/server/builtinToolRegistry.ts with the registrations.
 import { registerHeadlessServerRoutes, stopHeadlessSessions } from './headlessServer/index.js'
 import { registerBrowserUiRoutes } from './routes/browserUiRoutes.js'
+import { jsonCompressionMiddleware } from './responseCompression.js'
 import { setServerInternalOrigin } from './serverHost.js'
 import { attachChatErrorCode } from './headlessServer/providers/providerErrorFormatter.js'
 import {
@@ -1729,6 +1730,8 @@ function setupServer() {
       exposedHeaders: ['Authorization'],
     })
   )
+  // Every finite JSON response negotiates gzip and carries an ETag; SSE never uses res.json.
+  app.use(jsonCompressionMiddleware)
   app.use('/api', opaqueMutationFence)
   app.use(express.json({ limit: '25mb' }))
 

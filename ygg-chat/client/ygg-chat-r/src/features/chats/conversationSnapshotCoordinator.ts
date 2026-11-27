@@ -27,6 +27,8 @@ if (typeof window !== 'undefined') window.addEventListener(HOST_DATA_CHANGED, ((
     else ids.delete(change.entity_id)
   }
 }) as EventListener)
+/** Newest rows of a branch read that arrive with full bodies; older rows hydrate as they scroll into view. */
+export const BRANCH_SNAPSHOT_WINDOW = 80
 const requestGenerations = new Map<string, number>()
 const requestControllers = new Map<string, AbortController>()
 const terminalLeases = new Map<string, TerminalSnapshotLease>()
@@ -133,7 +135,7 @@ export async function coordinateConversationSnapshot({
       conversation.currentPath?.at(-1) ?? conversation.lastViewedTips?.[normalizedId] ?? savedTip
     const lineage = target?.kind === 'lineage' ? target.lineageId : target?.kind === 'message' ? null : conversation.currentLineageId
     const fetched = await fetchSnapshot(conversationId, {
-      ...(branchOnly && { branch: { tip: tip == null ? undefined : String(tip), lineage: lineage ?? undefined } }),
+      ...(branchOnly && { branch: { tip: tip == null ? undefined : String(tip), lineage: lineage ?? undefined }, window: BRANCH_SNAPSHOT_WINDOW }),
       includeTree: false,
       signal: controller.signal,
     })

@@ -1549,6 +1549,26 @@ export const chatSlice = createSlice({
       }
     },
 
+    /** Installs full bodies for rows a branch read shipped compacted. Unknown, already full or newer rows are left alone. */
+    messageBodiesHydrated: (state, action: PayloadAction<{ conversationId: ConversationId; messages: Message[] }>) => {
+      if (String(state.conversation.currentConversationId ?? '') !== String(action.payload.conversationId)) return
+      const incoming = new Map(action.payload.messages.map(message => [String(message.id), message]))
+      state.conversation.messages = state.conversation.messages.map(existing => {
+        const fetched = incoming.get(String(existing.id))
+        if (!fetched || !existing.body_omitted) return existing
+        if (typeof existing.revision === 'number' && typeof fetched.revision === 'number' && fetched.revision < existing.revision) return existing
+        const row: Message = {
+          ...existing,
+          ...fetched,
+          artifacts: existing.artifacts?.length ? existing.artifacts : fetched.artifacts ?? [],
+          pastedContext: existing.pastedContext?.length ? existing.pastedContext : fetched.pastedContext ?? [],
+        }
+        delete row.body_omitted
+        delete row.body_omitted_chars
+        return row
+      })
+    },
+
     messageDeleted: (state, action: PayloadAction<MessageId>) => {
       const id = action.payload
       const deleted = new Set<MessageId>([id])

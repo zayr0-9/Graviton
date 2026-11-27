@@ -55,8 +55,16 @@ if (!process.versions.electron) {
     host.get(['/api/app/conversations/c1/messages/tree', '/api/gw/conversations/c1/messages/tree'], (req, res) => {
       snapshotQueries.push({ ...req.query })
       const scoped = req.query.scope === 'branch'
-      const messages = branchSmoke && scoped ? rows.filter(r => r.id === 'base' || r.id === (req.query.tip || 'right')) : rows
-      res.json({ messages, tree: null, ...(scoped && { retained: rows.filter(r => !messages.includes(r)).map(r => [r.id, r.revision]) }) })
+      const selected = branchSmoke && scoped ? rows.filter(r => r.id === 'base' || r.id === (req.query.tip || 'right')) : rows
+      // A windowed branch read ships the oldest row without its large block payloads.
+      const messages = branchSmoke && scoped && req.query.window ? selected.map(r => r.id === 'base' ? { ...r, body_omitted: true, body_omitted_chars: 12 } : r) : selected
+      res.json({ messages, tree: null, ...(scoped && { retained: rows.filter(r => !selected.includes(r)).map(r => [r.id, r.revision]) }) })
+    })
+    const bodyRequests = []
+    host.get('/api/app/conversations/c1/messages/bodies', (req, res) => {
+      const ids = String(req.query.ids).split(',')
+      bodyRequests.push(ids)
+      res.json({ messages: rows.filter(r => ids.includes(r.id)) })
     })
     host.get('/api/host/runs/finished', (_req, res) => res.json({ runs: [] }))
     host.get('/api/local/conversations/c1/heimdall-collapse-groups', (_req, res) => res.json({ groups: [] }))
@@ -164,6 +172,9 @@ if (!process.versions.electron) {
     if (branchSmoke) {
       const phone = windows[1]
       await wait(phone, `document.body.innerText.includes('Remember this branch')`, 'Deep link did not select the older fork')
+      for (let i = 0; i < 100 && !bodyRequests.some(ids => ids.includes('base')); i++) await new Promise(resolve => setTimeout(resolve, 100))
+      if (!bodyRequests.some(ids => ids.includes('base'))) throw new Error('Compacted ancestor on screen was not hydrated')
+      await wait(phone, `document.body.innerText.includes('Common ancestor') && !document.body.innerText.includes('Loading full message')`, 'Hydrated row kept its placeholder')
       await wait(phone, `Object.keys(localStorage).filter(k=>k.startsWith('chat:viewedTips:')).some(k=>localStorage.getItem(k).includes('left'))`, 'Selected tip not saved')
       const start = snapshotQueries.length
       await phone.loadURL(origin + '/blank')
@@ -173,7 +184,7 @@ if (!process.versions.electron) {
       await click(phone, '[aria-label="Conversation actions"]')
       await phone.webContents.executeJavaScript(`[...document.querySelectorAll('button')].find(b=>b.textContent.trim()==='Show tree view')?.click()`)
       await wait(phone, `!!document.querySelector('[data-node-id="right"]')`, 'Opening the full tree did not reveal the other fork')
-      console.log('PASS phone branch-only open, historical deep link, cold same-device restore and on-demand full tree')
+      console.log('PASS phone branch-only open, compacted ancestor hydration, historical deep link, cold same-device restore and on-demand full tree')
       exit = 0; return
     }
     if (documentsOnly) {

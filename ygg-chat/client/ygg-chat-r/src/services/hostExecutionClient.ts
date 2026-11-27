@@ -33,7 +33,8 @@ export async function initializeHostExecutionPreferences(): Promise<void> {
 }
 export async function refreshHostExecutionPreferences(): Promise<void> {
   if (isNativeShell) { install(await window.electronAPI!.executionPreferences.read()); return }
-  const response = await fetch(await buildLocalApiUrl('/host/execution-preferences'), { cache: 'no-store', signal: AbortSignal.timeout(10000) })
+  // `no-cache` revalidates with the host's ETag on every poll: an unchanged body costs a 304, not ~80 KB.
+  const response = await fetch(await buildLocalApiUrl('/host/execution-preferences'), { cache: 'no-cache', signal: AbortSignal.timeout(10000) })
   if (!response.ok) throw new Error('Host settings unavailable')
   install(await response.json())
 }

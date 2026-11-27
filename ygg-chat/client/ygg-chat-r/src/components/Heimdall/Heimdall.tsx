@@ -26,6 +26,7 @@ import { createChatFromSelection, moveSelection } from '../../features/chats/tra
 import { chatSliceActions } from '../../features/chats/chatSlice'
 import { buildBranchPathForMessage } from '../../features/chats/pathUtils'
 import { buildMessageTransferPayload, hasUnselectedDescendants, transferErrorMessage } from '../../features/chats/messageTransfer'
+import { hydrateMessageBodies, withHydratedBodies } from '../../features/chats/messageBodyHydration'
 import { claudeTransferRefusal } from '../../../../../shared/claudeTransfer'
 import { createConversation, deleteConversation, updateCwd } from '../../features/conversations/conversationActions'
 import { makeSelectConversationById } from '../../features/conversations/conversationSelectors'
@@ -53,7 +54,7 @@ import { useCommandBlocker, useCommands } from '../../keyboard/KeyboardProvider'
 import { formatShortcut, isMacKeyboard } from '../../keyboard/commands'
 import { useShortcutOverrides } from '../../keyboard/useShortcutOverrides'
 import { buildKeyboardTree, getKeyboardActivationPath, moveKeyboardNode, resolveKeyboardNode } from './heimdallKeyboard'
-import type { RootState } from '../../store/store'
+import type { AppDispatch, RootState } from '../../store/store'
 import { parseId } from '../../utils/helpers'
 import stripMarkdownToText from '../../utils/markdownStripper'
 import { getCompactionPlaceholder } from '../../features/chats/summaryPresentation'
@@ -298,6 +299,15 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   const streamingRoot = useSelector((state: RootState) => state.chat.streaming)
   // const selectedProject = useSelector(selectSelectedProject)
   const allMessages = useSelector((state: RootState) => state.chat.conversation.messages)
+  // Transfers copy bodies out of Redux. Rows a branch read shipped compacted (`body_omitted`)
+  // must be hydrated first, or the copy would persist the compacted blocks.
+  const withFullBodies = useCallback(async (ids: readonly MessageId[]): Promise<Message[]> => {
+    const sourceConversationId = conversationId ?? currentConversationId
+    const selected = new Set(ids.map(String))
+    if (sourceConversationId == null || !allMessages.some(message => message.body_omitted && selected.has(String(message.id)))) return allMessages
+    const hydrated = await (dispatch as AppDispatch)(hydrateMessageBodies({ conversationId: sourceConversationId, messageIds: [...selected] })).unwrap()
+    return withHydratedBodies(allMessages, hydrated)
+  }, [allMessages, conversationId, currentConversationId, dispatch])
   // Get current conversation to access project_id
   const currentConversation = useSelector(conversationId ? makeSelectConversationById(conversationId) : () => null)
   const [showConversationSelector, setShowConversationSelector] = useState<boolean>(false)
@@ -2518,7 +2528,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
 
     try {
       setConversationSelectorError(null)
-      const messagesToCopy = buildMessageTransferPayload(allMessages, transferMessageIds)
+      const messagesToCopy = buildMessageTransferPayload(await withFullBodies(transferMessageIds), transferMessageIds)
       // Move must validate and delete exactly the rows included in the copy.
       const idsToTransfer = messagesToCopy.map(message => message.source_id)
 
@@ -2586,14 +2596,14 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   // Create new chat from selected nodes. The menu stays open until it succeeds, so a failure can be shown there.
   const handleCreateNewChat = async (ids: MessageId[]): Promise<void> => {
     if (isCreatingChat) return
-    const messagesToCopy = buildMessageTransferPayload(allMessages, ids)
-    if (messagesToCopy.length === 0) {
+    if (buildMessageTransferPayload(allMessages, ids).length === 0) {
       setShowContextMenu(false)
       return
     }
     setIsCreatingChat(true)
     setTransferNotice(null)
     try {
+      const messagesToCopy = buildMessageTransferPayload(await withFullBodies(ids), ids)
       // Generate title from first message content
       const firstContent = messagesToCopy[0].content
       const title = firstContent.slice(0, 100) + (firstContent.length > 100 ? '...' : '')

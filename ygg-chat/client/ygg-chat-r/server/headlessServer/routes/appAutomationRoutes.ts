@@ -6,10 +6,11 @@ import { isClaudeTranscriptMessage } from '../../../../../shared/claudeProvider.
 import type Database from 'better-sqlite3'
 import type { Express } from 'express'
 import path from 'node:path'
-import { gzip } from 'node:zlib'
+import { sendCompressedJson } from '../../responseCompression.js'
 import { v4 as uuidv4 } from 'uuid'
 import { toSafeHookRunRecord } from '../../hooks/hookDiagnostics.js'
 import { selectSnapshotBranch, type BranchSnapshotTarget } from '../persistence/branchSnapshot.js'
+import { compactMessageBody } from '../persistence/messageBodyCompaction.js'
 import { HookRunRepo } from '../persistence/hookRunRepo.js'
 import { buildTopLevelUserMessagesCte } from '../../topLevelUserMessages.js'
 
@@ -99,15 +100,27 @@ function buildMessageTree(messages: any[]): ChatNode | null {
  * over HTTP. Three queries regardless of conversation size: the messages, every attachment linked
  * to any of them, and every hook run recorded against them.
  */
+export interface ConversationMessagesTreeOptions {
+  /** Branch reads: full bodies for the newest `window` rows; older rows ship compacted and flagged `body_omitted`. */
+  window?: number
+  /** Exactly these rows, with full bodies and enrichment: the hydration read behind compacted rows. */
+  ids?: readonly string[]
+}
+
+/** Upper bound on one `/messages/bodies` request; the renderer batches below it. */
+export const MESSAGE_BODIES_MAX_IDS = 200
+
 export function buildConversationMessagesTreePayload(
   db: Database.Database,
   statements: any,
   conversationId: string,
   includeTree = true,
-  target?: BranchSnapshotTarget
+  target?: BranchSnapshotTarget,
+  options: ConversationMessagesTreeOptions = {}
 ) {
-  const branch = target && selectSnapshotBranch(db, conversationId, target)
-  const ids = branch && JSON.stringify(branch.ids)
+  const branch = target && !options.ids ? selectSnapshotBranch(db, conversationId, target) : undefined
+  const selected = options.ids ?? branch?.ids
+  const ids = selected && JSON.stringify(selected)
   const scope = branch ? { retained: branch.retained } : {}
   const messages: any[] = ids === undefined ? statements.getMessagesByConversationId.all(conversationId)
     : db.prepare(`SELECT * FROM messages WHERE id IN (SELECT value FROM json_each(?)) AND conversation_id = ?
@@ -140,14 +153,19 @@ export function buildConversationMessagesTreePayload(
     hookRunsByMessage.set(key, list)
   }
 
-  const normalizedMessages = messages.map(msg => {
+  // Rows are in branch order, oldest first; only the newest `window` keep their large block payloads.
+  const compactBefore = branch && options.window && options.window > 0 ? Math.max(0, messages.length - options.window) : 0
+  const normalizedMessages = messages.map((msg, index) => {
     const attachments = attachmentsByMessage.get(String(msg.id)) || []
+    const contentBlocks = msg.content_blocks ? JSON.parse(msg.content_blocks) : null
+    const compacted = index < compactBefore ? compactMessageBody(contentBlocks) : null
     return {
       ...msg,
       hook_runs: hookRunsByMessage.get(String(msg.id)) || [],
       children_ids: msg.children_ids ? JSON.parse(msg.children_ids) : [],
       tool_calls: msg.tool_calls ? JSON.parse(msg.tool_calls) : null,
-      content_blocks: msg.content_blocks ? JSON.parse(msg.content_blocks) : null,
+      content_blocks: compacted ? compacted.content_blocks : contentBlocks,
+      ...(compacted && { body_omitted: true, body_omitted_chars: compacted.omittedChars }),
       attachments,
       attachments_count: attachments.length,
       has_attachments: attachments.length > 0,
@@ -953,23 +971,34 @@ export function registerAppAutomationRoutes(app: Express, deps: AppAutomationRou
         tip: typeof req.query.tip === 'string' ? req.query.tip : undefined,
         lineage: typeof req.query.lineage === 'string' ? req.query.lineage : undefined,
       } : undefined
-      const payload = buildConversationMessagesTreePayload(db, statements, req.params.id, !target && req.query.includeTree !== 'false', target)
-      // Large single-branch chats still contain repetitive tool JSON. Compress this
-      // finite read only (never SSE); let zlib's worker pool do the compression.
-      res.vary('Accept-Encoding')
-      if (req.headers['accept-encoding'] && req.acceptsEncodings('gzip', 'identity') === 'gzip') {
-        const json = JSON.stringify(payload)
-        res.type('application/json')
-        if (json.length < 8192) { res.send(json); return }
-        gzip(json, { level: 1 }, (error, compressed) => {
-          if (res.destroyed) return
-          if (error) { res.send(json); return }
-          res.set('Content-Encoding', 'gzip').send(compressed)
-        })
-      } else res.json(payload)
+      const window = Number.parseInt(String(req.query.window ?? ''), 10)
+      const payload = buildConversationMessagesTreePayload(db, statements, req.params.id, !target && req.query.includeTree !== 'false', target,
+        { window: target && Number.isFinite(window) && window > 0 ? window : undefined })
+      // The client keeps the last representation and revalidates with If-None-Match, so an
+      // unchanged conversation answers 304 and moves no bodies. Gzip covers this finite read
+      // only; SSE is untouched.
+      res.setHeader('Cache-Control', 'private, no-cache')
+      sendCompressedJson(req, res, payload)
     } catch (error) {
       console.error('[HeadlessServer] Error fetching app message tree:', error)
       res.status(500).json({ error: 'Failed to fetch message tree' })
+    }
+  })
+
+  // Full bodies for rows a branch read shipped compacted (`body_omitted`), in branch order.
+  app.get('/api/app/conversations/:id/messages/bodies', (req, res) => {
+    try {
+      const ids = [...new Set(String(req.query.ids ?? '').split(',').map(id => id.trim()).filter(Boolean))]
+      if (ids.length === 0 || ids.length > MESSAGE_BODIES_MAX_IDS) {
+        res.status(400).json({ error: `ids must name between 1 and ${MESSAGE_BODIES_MAX_IDS} messages` })
+        return
+      }
+      const { messages } = buildConversationMessagesTreePayload(db, statements, req.params.id, false, undefined, { ids })
+      res.setHeader('Cache-Control', 'private, no-cache')
+      sendCompressedJson(req, res, { messages })
+    } catch (error) {
+      console.error('[HeadlessServer] Error fetching app message bodies:', error)
+      res.status(500).json({ error: 'Failed to fetch message bodies' })
     }
   })
 

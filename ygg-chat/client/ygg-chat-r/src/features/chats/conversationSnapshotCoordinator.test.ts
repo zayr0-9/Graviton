@@ -9,12 +9,14 @@ vi.hoisted(() => {
 })
 import type { Message } from './chatTypes'
 import {
+  BRANCH_SNAPSHOT_WINDOW,
   clearConversationSnapshotCoordinatorForTests,
   coordinateConversationSnapshot,
   getTerminalSnapshotLeases,
   recordTerminalSnapshotLease,
 } from './conversationSnapshotCoordinator'
 import { conversationQueryKeys } from './conversationQueryKeys'
+import type { fetchConversationMessagesTree } from './conversationMessagesApi'
 
 const message = (id: string, parentId: string | null): Message => ({
   id,
@@ -151,5 +153,26 @@ describe('coordinateConversationSnapshot', () => {
       fetchSnapshot: async () => ({ messages: [message('root', null), message('final', 'root')], tree: null }),
     })
     expect(getTerminalSnapshotLeases('c1')).toHaveLength(0)
+  })
+})
+
+describe('branch window', () => {
+  beforeEach(() => clearConversationSnapshotCoordinatorForTests())
+
+  it('asks a branch read for the newest window only and passes compacted rows through unchanged', async () => {
+    const queryClient = new QueryClient()
+    const compacted: Message = { ...message('old', null), revision: 1, body_omitted: true, content_blocks: [] }
+    const fetchSnapshot = vi.fn<typeof fetchConversationMessagesTree>().mockResolvedValue({ messages: [compacted, message('tip', 'old')], tree: null, retained: [] })
+    const dispatched: Array<{ payload: { messages: Message[] } }> = []
+    const result = await coordinateConversationSnapshot({ conversationId: 'c1', branchOnly: true, queryClient, getState: () => state('c1', []), dispatch: action => dispatched.push(action), fetchSnapshot })
+    expect(fetchSnapshot).toHaveBeenCalledWith('c1', expect.objectContaining({ window: BRANCH_SNAPSHOT_WINDOW, branch: expect.any(Object) }))
+    expect(result.accepted).toBe(true)
+    expect(dispatched[0].payload.messages.map(row => [row.id, row.body_omitted ?? false])).toEqual([['old', true], ['tip', false]])
+  })
+
+  it('never asks a full read for a window', async () => {
+    const fetchSnapshot = vi.fn<typeof fetchConversationMessagesTree>().mockResolvedValue({ messages: [], tree: null })
+    await coordinateConversationSnapshot({ conversationId: 'c1', queryClient: new QueryClient(), getState: () => state('c1', []), dispatch: () => undefined, fetchSnapshot })
+    expect(fetchSnapshot.mock.calls[0][1]).not.toHaveProperty('window')
   })
 })

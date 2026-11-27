@@ -287,6 +287,7 @@ import { parseId } from '../utils/helpers'
 import { getFileInsertionAccept, isImageFile, mapOutsideFileInsertions } from '../features/fileInsertion/fileInsertion'
 import { addFileMentionLookupKeys } from '../../shared/fileMatchRanking'
 import { extractLatestTodoList } from '../features/chats/todoListTracking'
+import { hydrateMessageBodies } from '../features/chats/messageBodyHydration'
 import { ConversationLinkRootProvider } from '../components/MarkdownLink/markdownLinkRoot'
 
 type ParsedMessageData = {
@@ -3409,6 +3410,26 @@ function Chat() {
       baseRows: virtualizationMetricsRef.current.lastRenderRowsCount,
     })
   }, [virtualRows.length, renderableMessagesSignature])
+
+  // A branch read ships rows outside its window without their large block payloads. They
+  // hydrate as they enter the rendered range (overscan included), so scrolling up fetches
+  // only what is about to be shown; in-flight ids are deduplicated by the thunk.
+  const hydrationItems = virtualizer.getVirtualItems()
+  const hydrationStart = hydrationItems[0]?.index ?? -1
+  const hydrationEnd = hydrationItems[hydrationItems.length - 1]?.index ?? -1
+  useEffect(() => {
+    if (hydrationStart < 0 || currentConversationId == null) return
+    const pending: string[] = []
+    for (let index = hydrationStart; index <= hydrationEnd; index++) {
+      const row = virtualRows[index]
+      if (row?.kind !== 'message_row') continue
+      const members = row.row.kind === 'message' ? [row.row.message] : row.row.messages
+      for (const message of members) if (message.body_omitted) pending.push(String(message.id))
+    }
+    if (pending.length === 0) return
+    const timer = setTimeout(() => { void dispatch(hydrateMessageBodies({ conversationId: currentConversationId, messageIds: pending })) }, 40)
+    return () => clearTimeout(timer)
+  }, [hydrationStart, hydrationEnd, virtualRows, currentConversationId, dispatch])
 
   const scrollToMessageRowIndex = useCallback(
     (targetIndex: number, align: 'start' | 'center' | 'end' | 'auto' = 'start'): boolean => {
