@@ -82,6 +82,8 @@ export interface ToolResultBlock {
   tool_use_id: string
   content: any
   is_error: boolean
+  /** Layout hint on compact history rows whose HTML output is still waiting for hydration. */
+  html_omitted?: boolean
   /** Native Claude Edit/Write hunks with real file line numbers. */
   patch?: ClaudeFilePatch
   /** The background task this call launched (a Claude Workflow, or a backgrounded Agent/Bash call). */
@@ -454,7 +456,7 @@ export interface CompositionState {
   imagePreparationError: string | null
   imagePreparationGeneration: number
   editingBranch: boolean // true when user is editing a branch; controls UI like hiding image drafts
-  branchEditModes?: { operationMode?: OperationMode; fastMode?: boolean; reasoningLevel?: import('../../../../../shared/reasoningLevel').ReasoningLevel; toolAutoApprove?: boolean; claudePlanMode?: boolean; claudeAutoMode?: boolean }
+  branchEditModes?: { operationMode?: OperationMode; fastMode?: boolean; reasoningLevel?: import('../../../../../shared/reasoningLevel').ReasoningLevel; toolAutoApprove?: boolean; claudePlanMode?: boolean; claudeAutoMode?: boolean; claudeUltracode?: boolean; fullAccess?: import('./branchFullAccess').FullAccessSubmission }
   branchEditMessageId?: MessageId
   branchEditModelSelection?: { provider: string; model: string | null }
   optimisticMessage: Message | null // temp message for instant UI feedback in web mode only
@@ -557,8 +559,10 @@ export interface ChatState {
   claudeAutoMode?: boolean
   /** Claude provider's default approval; undefined follows toolAutoApprove. */
   claudeToolAutoApprove?: boolean
-  /** Claude provider: run each turn with ultracode (standing Workflow orchestration). */
-  claudeUltracode?: boolean
+  /** Claude Ultracode choices scoped to the same branch keys as Fast mode. */
+  claudeUltracodeDrafts?: Record<string, boolean>
+  /** Session-only Full Access choices; never reconstructed from persisted messages. */
+  branchFullAccessChoices?: Record<string, import('./branchFullAccess').FullAccessSubmission>
   /**
    * Claude provider: Plan toggle or /plan choices for native plan mode, keyed by conversation and
    * branch tip like the other branch drafts. resolveBranchPlanMode combines them with the plan

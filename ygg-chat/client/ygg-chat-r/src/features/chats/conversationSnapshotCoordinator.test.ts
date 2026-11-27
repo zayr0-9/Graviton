@@ -129,6 +129,18 @@ describe('coordinateConversationSnapshot', () => {
       branchOnly: true, getState: () => current, dispatch: vi.fn(), fetchSnapshot })
     expect(fetchSnapshot).toHaveBeenCalledWith('c1', expect.objectContaining({ branch: expect.objectContaining({ tip: 'tip' }) }))
     expect(result.data?.messages.map(row => row.id)).toEqual(['keep', 'root', 'tip'])
+    // 'changed' is stale in the cache, so the graph is still partial.
+    expect(result.data?.retained).toEqual([['keep', 1], ['changed', 2]])
+  })
+
+  it('marks a branch read complete when every retained sibling is cached at the same revision', async () => {
+    const current = state('c1', [{ ...message('sib', 'root'), revision: 3 }])
+    const fetchSnapshot = vi.fn(async () => ({ messages: [message('root', null), message('tip', 'root')], tree: null,
+      retained: [['sib', 3]] as Array<[string, number]> }))
+    const result = await coordinateConversationSnapshot({ conversationId: 'c1', queryClient: new QueryClient(),
+      branchOnly: true, getState: () => current, dispatch: vi.fn(), fetchSnapshot })
+    expect(result.data?.retained).toBeUndefined()
+    expect(result.data?.messages.map(row => row.id).sort()).toEqual(['root', 'sib', 'tip'])
   })
 
   it('retains a terminal lease until every protected row is durable', async () => {

@@ -200,7 +200,50 @@ describe('file-backed HTML renderer', () => {
   })
 })
 
-describe('manager-invoked MCP app', () => {
+describe('custom HTML app output', () => {
+  it.each([
+    { html: '<h1>Custom app</h1>', toolName: 'custom_app' },
+    JSON.stringify({ type: 'text/html', content: '<h1>Custom app</h1>' }),
+  ])('renders inline with the existing viewer even when expansion state is closed', content => {
+    const html = renderCard([{ content }], 'custom_app', {}, { expanded: false, canOpenViewer: true })
+    expect(html).toContain('data-test-html-preview')
+    expect(html).toContain('&lt;h1&gt;Custom app&lt;/h1&gt;')
+    expect(html).toContain('aria-label="Open tool output viewer"')
+    expect(html).not.toContain('aria-expanded')
+  })
+
+  it('does not treat a JSON result with a non-string html field as an app', () => {
+    const html = renderCard([{ content: { html: true } }], 'custom_app', {}, { expanded: false, canOpenViewer: true })
+    expect(html).toContain('aria-expanded="false"')
+    expect(html).not.toContain('Open tool output viewer')
+    expect(html).not.toContain('data-test-html-preview')
+  })
+})
+
+describe('MCP app controls', () => {
+  it.each([
+    ['mcp__demo__lookup', {}],
+    ['mcp_manager', { action: 'invoke', name: 'demo', tool: 'lookup' }],
+  ] as const)('keeps JSON-only %s output without a Load app control', (name, args) => {
+    const html = renderCard([{ content: { status: 'available' } }], name, args, {
+      toolDefinitions: [{ name: 'mcp__demo__lookup', isMcp: true, mcpServerName: 'demo', mcpToolName: 'lookup' }] as ToolCallGroupCardProps['toolDefinitions'],
+    })
+    expect(html).toContain('available')
+    expect(html).not.toContain('Load app')
+    expect(html).not.toContain('data-test-mcp-app')
+  })
+
+  it('keeps the Load app and fullscreen controls on a directly called MCP app', () => {
+    const html = renderCard([], 'mcp__demo__open', {}, {
+      expanded: false,
+      canOpenViewer: true,
+      toolDefinitions: [{ name: 'mcp__demo__open', isMcp: true, mcpServerName: 'demo', mcpUi: { resourceUri: 'ui://demo' } }] as ToolCallGroupCardProps['toolDefinitions'],
+    })
+    expect(html).toContain('data-test-mcp-app')
+    expect(html).toContain('aria-label="Load app"')
+    expect(html).toContain('aria-label="Open MCP app viewer"')
+  })
+
   it('renders from persisted discovery metadata without injecting schemas into the registry', () => {
     const html = renderCard([{ content: {
       content: [{ type: 'text', text: 'done' }],
@@ -209,6 +252,7 @@ describe('manager-invoked MCP app', () => {
     }, is_error: false }], 'mcp_manager', { action: 'invoke', name: 'demo_server', tool: 'echo', args: { text: 'x' } })
     expect(html).toContain('data-test-mcp-app')
     expect(html).toContain('MCP App')
+    expect(html).toContain('aria-label="Load app"')
   })
 })
 

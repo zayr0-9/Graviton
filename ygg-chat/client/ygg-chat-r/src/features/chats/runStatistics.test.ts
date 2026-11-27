@@ -92,8 +92,8 @@ describe('run attribution coverage', () => {
 it('keeps the footer outside a collapsed process group and before the next run', () => {
   const [stats] = deriveRunStatistics([message('a', 'r', 5), message('b', 'r', 10)], ['a', 'b'], [run('r', 'b')], 'c')
   const rows = interleaveRunFooters([
-    { kind: 'process_group' as const, memberMessageIds: ['a', 'b'] },
-    { kind: 'message' as const, message: { id: 'next' } },
+    { kind: 'process_group' as const, memberMessageIds: ['a', 'b'], footerAnchor: 'b' },
+    { kind: 'message' as const, message: { id: 'next' }, footerAnchor: 'next' },
   ], new Map([['b', [stats]]]))
   expect(rows.map(row => row.kind)).toEqual(['transcript', 'run_stats', 'transcript'])
 })

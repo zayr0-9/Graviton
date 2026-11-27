@@ -14,6 +14,9 @@ import type { RootState } from '../store/store'
 
 export function useConversationSnapshotCoordinator(conversationId: ConversationId | null, branchOnly = false) {
   const dispatch = useAppDispatch()
+  // Read at request time: toggling Heimdall (a modal on mobile) must not start a reload by itself.
+  const branchOnlyRef = useRef(branchOnly)
+  branchOnlyRef.current = branchOnly
   const reduxStore = useStore() as Store<RootState>
   const queryClient = useQueryClient()
   const currentConversationId = useAppSelector(state => state.chat.conversation.currentConversationId)
@@ -93,10 +96,11 @@ export function useConversationSnapshotCoordinator(conversationId: ConversationI
     setFailure(null)
     const promise = (async () => {
       try {
+        const wantsBranch = branchOnlyRef.current
         const result = await coordinateConversationSnapshot({
           conversationId,
-          branchOnly,
-          savedTip: branchOnly ? readViewedTip(userId, requestedId) : undefined,
+          branchOnly: wantsBranch,
+          savedTip: wantsBranch ? readViewedTip(userId, requestedId) : undefined,
           queryClient,
           getState: reduxStore.getState,
           isCurrent: ownsRefresh,
@@ -136,7 +140,7 @@ export function useConversationSnapshotCoordinator(conversationId: ConversationI
     })()
     latestRefreshRef.current = { visit, revision, promise }
     return promise
-  }, [conversationId, branchOnly, userId, dispatch, queryClient, reduxStore, visit])
+  }, [conversationId, userId, dispatch, queryClient, reduxStore, visit])
 
   useEffect(() => {
     if (typeof window === 'undefined') return
@@ -178,6 +182,13 @@ export function useConversationSnapshotCoordinator(conversationId: ConversationI
     if (contextChanged || ((branchOnly || acceptedConversationId !== String(conversationId) || String(snapshotConversationId) !== String(conversationId)) &&
         attemptedSelectionRef.current !== selectionRequestId)) void refresh()
   }, [conversationId, currentConversationId, refresh, branchOnly, selectionRequestId, acceptedConversationId, snapshotConversationId])
+
+  // A full graph is needed only once per visit: when the accepted snapshot is a partial
+  // branch read and a full-graph consumer (Heimdall, parallel pane) opens. Closing it never reloads.
+  const acceptedPartial = acceptedConversationId === (conversationId == null ? null : String(conversationId)) && data?.retained != null
+  useEffect(() => {
+    if (!branchOnly && acceptedPartial) void refresh()
+  }, [branchOnly, acceptedPartial, refresh])
 
   // Terminal reconciliation is independent of stream pruning. The listener records a
   // lease; this transition supplies the persistence retry after the final SSE projection.

@@ -161,14 +161,14 @@ export function formatRunStatistics(footer: RunStatisticsFooterData): string {
 }
 
 /** Shared logical-row projection; footer rows never become message navigation targets. */
-export function interleaveRunFooters<T extends { kind: 'message'; message: { id: string } } | { kind: 'process_group'; memberMessageIds: string[] }>(
+export function interleaveRunFooters<T extends { footerAnchor?: string }>(
   rows: readonly T[], footers: ReadonlyMap<string, readonly RunStatisticsFooterData[]>
 ): Array<{ kind: 'transcript'; row: T } | { kind: 'run_stats'; statistics: RunStatisticsFooterData }> {
   return rows.flatMap(row => {
-    const endpoint = row.kind === 'message' ? row.message.id : row.memberMessageIds[row.memberMessageIds.length - 1]
+    const endpoint = row.footerAnchor
     return [
       { kind: 'transcript' as const, row },
-      ...(footers.get(String(endpoint)) ?? []).map(statistics => ({ kind: 'run_stats' as const, statistics })),
+      ...(endpoint == null ? [] : footers.get(endpoint) ?? []).map(statistics => ({ kind: 'run_stats' as const, statistics })),
     ]
   })
 }

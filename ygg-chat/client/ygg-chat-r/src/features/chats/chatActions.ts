@@ -2,7 +2,7 @@ import { isClaudeProvider, isClaudeTranscriptMessage } from '../../../../../shar
 import { HOST_DATA_CHANGED } from '../../services/hostChangeEvents'
 import { getAdmissionEpoch, resetAdmissionEpoch } from './runAdmissionClient'
 import { getClientId, newClientId } from '../../helpers/clientId'
-import { isCleanStartBranchEdit, isSummaryBranchEdit, isProviderHandoffEdit, resolveBranchModelSelection, resolveEditBranchModelSelection, resolveComposerSummaryHandoff } from './branchModelSelection'
+import { branchModelKey, branchSettingsTarget, isCleanStartBranchEdit, isSummaryBranchEdit, isProviderHandoffEdit, resolveBranchModelSelection, resolveEditBranchModelSelection, resolveComposerSummaryHandoff } from './branchModelSelection'
 import { resolveBranchFastMode } from './branchFastMode'
 import { resolveBranchReasoning } from './branchReasoning'
 import { loadChatReasoningSettings } from '../../helpers/chatReasoningSettingsStorage'
@@ -10,7 +10,8 @@ import { resolveBranchPlanMode } from './branchPlanMode'
 import { resolveAnchoredClaudeAutoMode, resolveBranchClaudeAutoMode } from './branchClaudeAutoMode'
 import { defaultToolApproval, resolveAnchoredToolApproval, resolveBranchToolApproval, resolveHandoffToolApproval } from './branchToolApproval'
 import { isCommittedCompaction } from '../../../../../shared/compaction'
-import { getPendingFullAccessNotification, isFullAccessEnabled } from '../../helpers/fullAccessSettings'
+import { readFullAccessChoice, resolveRunFullAccess, restrictedAccess, type FullAccessSubmission } from './branchFullAccess'
+import { resolveAnchoredUltracode, resolveBranchUltracode, resolveEditUltracode } from './branchUltracode'
 import { createAsyncThunk } from '@reduxjs/toolkit'
 import type { QueryClient } from '@tanstack/react-query'
 import { ConversationId, MessageId } from '../../../../../shared/types'
@@ -1026,6 +1027,8 @@ export const sendMessage = createAsyncThunk<
       const summaryIndex = latestCompactionMessage ? selectedPath.findIndex(id => String(id) === String(latestCompactionMessage.id)) : -1
       const forksBeforeSummary = explicitParentIndex >= 0 && summaryIndex > explicitParentIndex
       const settingsPath = forksBeforeSummary ? selectedPath.slice(0, explicitParentIndex + 1) : selectedPath
+      const capturedLineage = providedLineageId === undefined
+        ? (providedBranchPath === undefined ? modelSelectionState.conversation.currentLineageId : null) : providedLineageId
       const settingsLineageId = forksBeforeSummary ? null : (providedLineageId === undefined ? modelSelectionState.conversation.currentLineageId : providedLineageId)
       // Use original provider case for cache lookup (React Query keys are case-sensitive).
       const branchSelection = resolveBranchModelSelection(modelSelectionState, settingsPath, modelSelectionState.conversation.currentConversationId, settingsLineageId)
@@ -1083,6 +1086,12 @@ export const sendMessage = createAsyncThunk<
         const summaryHandoff = !manualCompaction && !isBranch
           ? resolveComposerSummaryHandoff(modelSelectionState, provider, selectedPath) : null
         const operation = summaryHandoff ? 'branch' : 'send'
+        const requestedBranch = branchSettingsTarget(modelSelectionState, selectedPath, conversationId, capturedLineage)
+        // An explicit historical cut is a new branch, not an opt-in to the source branch's access.
+        const atSelectedTip = String(parent ?? '') === String(selectedPath.at(-1) ?? '')
+        const accessKey = isClaudeProvider(provider) || isBranch || requestedBranch.mismatch ? null : summaryHandoff
+          ? branchModelKey(conversationId, `handoff:${summaryHandoff.id}`) : atSelectedTip ? requestedBranch.key : null
+        const access = readFullAccessChoice(modelSelectionState, accessKey)
         const { path, body } = buildServerLoopRequest(operation, {
           messageId: summaryHandoff ? String(summaryHandoff.id) : undefined,
           manualCompaction,
@@ -1101,21 +1110,22 @@ export const sendMessage = createAsyncThunk<
           subagentReasoningEffort: getSubagentReasoningEffort(),
           imageConfig,
           rootPath: effectiveToolRootPath,
-          fullAccess: isFullAccessEnabled(),
-          fullAccessNotificationId: getPendingFullAccessNotification(String(conversationId)),
+          ...access,
           conversationContext: conversationContextSource,
           projectContext,
           attachmentsBase64,
           selectedFiles: selectedFilesForChat,
           tools: filterToolsForOperationMode(getAllTools(), operationModeAtSend),
           streamId,
-          currentLineageId: providedLineageId === undefined ? state.chat.conversation.currentLineageId : providedLineageId,
+          currentLineageId: access.fullAccess && !summaryHandoff ? requestedBranch.lineageId : capturedLineage,
           toolAutoApprove: summaryHandoff ? resolveHandoffToolApproval(modelSelectionState, summaryHandoff.id, serverProvider)
             : isBranch ? resolveAnchoredToolApproval(modelSelectionState, parent, conversationId, serverProvider)
             : resolveBranchToolApproval(modelSelectionState, providedBranchPath ?? modelSelectionState.conversation.currentPath, conversationId, providedLineageId === undefined ? modelSelectionState.conversation.currentLineageId : providedLineageId, serverProvider),
           claudeAutoMode: isBranch ? resolveAnchoredClaudeAutoMode(modelSelectionState, parent, conversationId)
             : resolveBranchClaudeAutoMode(modelSelectionState, providedBranchPath ?? modelSelectionState.conversation.currentPath, conversationId),
-          claudeUltracode: modelSelectionState.claudeUltracode,
+          claudeUltracode: isClaudeProvider(provider) && (isBranch
+            ? resolveAnchoredUltracode(modelSelectionState, conversationId, parent)
+            : resolveBranchUltracode(modelSelectionState, settingsPath, conversationId, forksBeforeSummary ? null : capturedLineage)),
           claudePlanMode: resolveBranchPlanMode(modelSelectionState, settingsPath, conversationId),
           hooksEnabled: isElectronMode,
           localApiBase: getCachedLocalApiBase(),
@@ -1137,6 +1147,7 @@ export const sendMessage = createAsyncThunk<
           {
             operation,
             optimisticBubble: 'message',
+            fullAccessSourceKey: accessKey != null && (summaryHandoff || !requestedBranch.lineageId) ? accessKey : undefined,
             conversationId: String(conversationId),
             streamId,
             path,
@@ -1571,6 +1582,11 @@ export const editMessageWithBranching = createAsyncThunk<
         // ChatGPT auth: resolve fresh {accessToken, accountId} from the renderer (auto-
         // refreshing) so the server uses them directly. null for every other provider.
         const chatgptServerAuth = null as { accessToken?: string; accountId?: string } | null
+        const editingTarget = modelSelectionState.composition.editingBranch &&
+          String(modelSelectionState.composition.branchEditMessageId) === String(originalMessageId) &&
+          String(modelSelectionState.conversation.currentConversationId) === String(conversationId)
+        const access = !isClaudeProvider(provider) && editingTarget
+          ? modelSelectionState.composition.branchEditModes?.fullAccess ?? restrictedAccess : restrictedAccess
         const { path, body } = buildServerLoopRequest(summaryBranch ? 'branch' : 'edit', {
           conversationId: String(conversationId),
           content: newContent,
@@ -1587,8 +1603,7 @@ export const editMessageWithBranching = createAsyncThunk<
           reasoningLevel,
           subagentReasoningEffort: getSubagentReasoningEffort(),
           rootPath: effectiveToolRootPath,
-          fullAccess: isFullAccessEnabled(),
-          fullAccessNotificationId: getPendingFullAccessNotification(String(conversationId)),
+          ...access,
           conversationContext: conversationContextSource,
           projectContext,
           attachmentsBase64,
@@ -1601,7 +1616,7 @@ export const editMessageWithBranching = createAsyncThunk<
               : resolveAnchoredToolApproval(modelSelectionState, parentMessageId, conversationId, serverProvider)),
           claudeAutoMode: (modelSelectionState.composition.editingBranch ? modelSelectionState.composition.branchEditModes?.claudeAutoMode : undefined)
             ?? resolveAnchoredClaudeAutoMode(modelSelectionState, parentMessageId, conversationId),
-          claudeUltracode: modelSelectionState.claudeUltracode,
+          claudeUltracode: isClaudeProvider(provider) && resolveEditUltracode(modelSelectionState, conversationId, originalMessageId),
           claudePlanMode: (modelSelectionState.composition.editingBranch ? modelSelectionState.composition.branchEditModes?.claudePlanMode : undefined)
             ?? resolveBranchPlanMode(modelSelectionState, providedBranchPath ?? modelSelectionState.conversation.currentPath, conversationId),
           hooksEnabled: isElectronMode,
@@ -1625,6 +1640,7 @@ export const editMessageWithBranching = createAsyncThunk<
           {
             operation: summaryBranch ? 'branch' : 'edit',
             optimisticBubble: 'branch',
+            fullAccessSourceKey: null,
             conversationId: String(conversationId),
             streamId,
             path,
@@ -1844,8 +1860,7 @@ export const sendMessageToBranch = createAsyncThunk<
           think,
           subagentReasoningEffort: getSubagentReasoningEffort(),
           rootPath: effectiveToolRootPath,
-          fullAccess: isFullAccessEnabled(),
-          fullAccessNotificationId: getPendingFullAccessNotification(String(conversationId)),
+          ...restrictedAccess,
           conversationContext: conversationContextSource,
           projectContext,
           attachmentsBase64,
@@ -1856,7 +1871,7 @@ export const sendMessageToBranch = createAsyncThunk<
           toolAutoApprove: isSummaryBranchEdit(modelSelectionState, parentId) ? defaultToolApproval(modelSelectionState, serverProvider)
             : resolveAnchoredToolApproval(modelSelectionState, parentId, conversationId, serverProvider),
           claudeAutoMode: resolveAnchoredClaudeAutoMode(modelSelectionState, parentId, conversationId),
-          claudeUltracode: modelSelectionState.claudeUltracode,
+          claudeUltracode: isClaudeProvider(provider) && resolveAnchoredUltracode(modelSelectionState, conversationId, parentId),
           claudePlanMode: resolveBranchPlanMode(modelSelectionState, providedBranchPath ?? modelSelectionState.conversation.currentPath, conversationId),
           hooksEnabled: isElectronMode,
           localApiBase: getCachedLocalApiBase(),
@@ -2852,10 +2867,13 @@ export const enqueueUserMessage = createAsyncThunk<QueueAcceptance, {
   /** Capture with the request ID so retrying a submission cannot pick up a changed name. */
   userDisplayName?: string
   /** Card retries retain this exact prepared text-only payload, including access expectation. */
-  preparedTextSubmission?: { epoch: string; fullAccess: boolean; fullAccessNotificationId?: string }
+  preparedTextSubmission?: FullAccessSubmission & { epoch: string }
+  /** Composer retries retain the access choice captured with this submission ID. */
+  accessChoice?: FullAccessSubmission
   /** Mode for the follow-up run when the target run has already finished (agents pill). */
   operationMode?: OperationMode
 }, { state: RootState; extra: ThunkExtraArgument; rejectValue: QueueRejection }>('chat/enqueueUserMessage', async (params, { dispatch, getState, rejectWithValue }) => {
+  const access = params.preparedTextSubmission ?? params.accessChoice ?? resolveRunFullAccess(getState().chat, params.conversationId, params.streamId)
   if (params.includeGlobalComposerContext !== false) await waitForDraftImages(dispatch, getState, { kind: 'composer' })
   const draftOwner = getState()
   const drafts = params.includeGlobalComposerContext === false ? [] : getDraftsForTarget(draftOwner, { kind: 'composer' })
@@ -2866,9 +2884,8 @@ export const enqueueUserMessage = createAsyncThunk<QueueAcceptance, {
   const epoch = params.preparedTextSubmission?.epoch ?? await getAdmissionEpoch()
   let body = JSON.stringify({ epoch, requestId: params.requestId, content: params.content, attachmentsBase64, selectedFiles,
     userDisplayName: params.userDisplayName?.trim() || undefined,
-    fullAccess: params.preparedTextSubmission?.fullAccess ?? isFullAccessEnabled(),
-    fullAccessNotificationId: params.preparedTextSubmission
-      ? params.preparedTextSubmission.fullAccessNotificationId : getPendingFullAccessNotification(params.conversationId),
+    fullAccess: access.fullAccess,
+    fullAccessNotificationId: access.fullAccess ? access.fullAccessNotificationId : undefined,
     ...(params.operationMode ? { operationMode: params.operationMode } : {}) })
   // A lost HTTP acknowledgement is safe to retry with the SAME immutable id/payload.
   let response: Response
@@ -2888,7 +2905,7 @@ export const enqueueUserMessage = createAsyncThunk<QueueAcceptance, {
     window.confirm(`This run uses ${result.fullAccess ? 'Full access' : 'restricted workspace access'}. Queue this input under that existing policy? Your current setting will not change.`)) {
     // A rejected ID is a durable tombstone. The explicit acknowledgement is a
     // new intent with its own identity; never mutate/reuse the rejected payload.
-    body = JSON.stringify({ ...JSON.parse(body), requestId: newClientId(), fullAccess: result.fullAccess })
+    body = JSON.stringify({ ...JSON.parse(body), requestId: newClientId(), fullAccess: result.fullAccess, fullAccessNotificationId: undefined })
     response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body })
     result = await response.json()
   }

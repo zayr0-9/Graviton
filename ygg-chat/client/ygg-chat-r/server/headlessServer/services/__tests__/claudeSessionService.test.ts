@@ -1639,6 +1639,7 @@ describe('Ultracode and background tasks', () => {
       if (ultracode) f.input.request.claudeUltracode = true
       await f.service.run(f.input)
       expect(f.sdk.query.mock.calls[0][0].options.settings).toEqual({ plansDirectory: path.join('.ygg', 'plans'), disableAllHooks: true, ...(ultracode ? { ultracode: true } : {}) })
+      expect(f.rows.at(-1)?.meta).toMatchObject({ claudeUltracode: ultracode })
     }
   })
 

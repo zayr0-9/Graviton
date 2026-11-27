@@ -15,6 +15,17 @@ describe('compactMessageBody', () => {
     ])).toBeNull()
   })
 
+  it.each([
+    { html: '<p>' + 'x'.repeat(800) + '</p>' },
+    JSON.stringify({ type: 'text/html', content: '<p>' + 'x'.repeat(800) + '</p>' }),
+  ])('keeps a layout hint when omitting an HTML tool result', content => {
+    const block = { type: 'tool_result', index: 0, tool_use_id: 'app', content, is_error: false }
+    expect(compactMessageBody([block])?.content_blocks).toEqual([
+      { type: 'tool_result', index: 0, tool_use_id: 'app', is_error: false, omitted: true, html_omitted: true },
+    ])
+    expect(block).toHaveProperty('content', content)
+  })
+
   it('drops large payloads, keeps small scalars and reports what it removed', () => {
     const result = compactMessageBody([
       { type: 'thinking', index: 0, content: 'r'.repeat(1000) },

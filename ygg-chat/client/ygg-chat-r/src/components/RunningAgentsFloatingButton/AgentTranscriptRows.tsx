@@ -23,7 +23,7 @@ export const AgentTranscriptRows = memo(function AgentTranscriptRows({ rows, idP
       {row.summarised ? <SummarisedMessage id={id} className='w-full' {...themeProps} /> :
         row.watcherCompletion ? <WatcherCompletionNotice id={id} className='w-full' content={row.content} {...themeProps} /> :
         <ChatMessage id={id} role={row.role} content={row.content} contentBlocks={row.blocks}
-          width='w-full' showInlineActions={false} readOnly keepTextOutsideGroups groupToolReasoningRuns={grouped}
+          width='w-full' showInlineActions={false} readOnly groupToolReasoningRuns={grouped}
           userSurfaceColor={userSurfaceColor} {...themeProps} />}
     </div>
   })}</>

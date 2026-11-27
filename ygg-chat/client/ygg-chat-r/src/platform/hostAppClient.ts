@@ -1,6 +1,5 @@
 import { buildLocalApiUrl } from '../utils/api'
 import { newClientId } from '../helpers/clientId'
-import { isFullAccessEnabled } from '../helpers/fullAccessSettings'
 
 export interface HostAppContext { toolName?: string | null; rootPath?: string | null; mode?: 'plan' | 'execute' }
 let runtimeContext: () => HostAppContext = () => ({})
@@ -15,7 +14,8 @@ export function createHostAppClient(getContext: () => HostAppContext) {
   let tail: Promise<unknown> = Promise.resolve()
   const call = async (method: string, params: Record<string, unknown>, requestId: string) => {
     const context = getContext()
-    const launch = { ...context, fullAccess: isFullAccessEnabled() }
+    // App frames have no trusted chat lineage. A branch's Full Access opt-in must not grant it here.
+    const launch = { ...context, fullAccess: false }
     const key = JSON.stringify(launch)
     if (disposed) throw new Error('App view closed')
     if (!['fs.readFile', 'fs.stat'].includes(method)) {

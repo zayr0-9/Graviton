@@ -29,7 +29,7 @@ vi.mock('../MermaidDiagram', () => ({
   prepareMermaidMarkdown: (markdown: string) => markdown,
 }))
 vi.mock('../TextArea/TextArea', () => ({ TextArea: () => null }))
-vi.mock('./ToolCallGroupCard', () => ({ ToolCallGroupCard: () => <div>tool-card</div> }))
+vi.mock('./ToolCallGroupCard', () => ({ ToolCallGroupCard: ({ group }: { group: { name?: string } }) => <div>tool-card:{group.name}</div> }))
 vi.mock('./HookActivityCard', () => ({ HookActivityCard: () => null }))
 vi.mock('./ContextInjectionCard', () => ({ ContextInjectionCard: () => null }))
 vi.mock('../MarkdownLink/MarkdownLink', () => ({ MarkdownLink: () => null, markdownUrlTransform: (url: string) => url }))
@@ -37,7 +37,7 @@ vi.mock('../MarkdownLink/MarkdownLink', () => ({ MarkdownLink: () => null, markd
 import { ChatMessage } from './ChatMessage'
 
 const theme = createDefaultCustomChatTheme()
-const render = (props: { contentBlocks?: ContentBlock[]; streamEvents?: StreamEvent[] }) =>
+const render = (props: { contentBlocks?: ContentBlock[]; streamEvents?: StreamEvent[]; groupToolReasoningRuns?: boolean; isDarkMode?: boolean }) =>
   renderToStaticMarkup(<ChatMessage id='a1' role='assistant' content='' width='w-full'
     customTheme={theme} customThemeEnabled={false} isDarkMode={false} {...props} />)
 
@@ -84,5 +84,24 @@ describe('ChatMessage reasoning visibility', () => {
     ] as StreamEvent[] })
     expect(html).not.toContain('Secret plan')
     expect(html).toContain('Streaming answer')
+  })
+})
+
+describe('ChatMessage custom app grouping', () => {
+  const blocks: ContentBlock[] = [
+    { type: 'tool_use', id: 'work', name: 'read_file', input: {}, index: 0 },
+    { type: 'tool_use', id: 'app', name: 'custom_app', input: {}, index: 1 },
+    { type: 'tool_result', tool_use_id: 'app', content: { html: '<p>App</p>' }, is_error: false, index: 2 },
+  ]
+
+  it.each([false, true])('keeps the saved app visible while ordinary work is collapsed (dark: %s)', isDarkMode => {
+    const grouped = render({ contentBlocks: blocks, groupToolReasoningRuns: true, isDarkMode })
+    expect(grouped).toContain('data-agent-steps')
+    expect(grouped).toContain('tool-card:custom_app')
+    expect(grouped).not.toContain('tool-card:read_file')
+    const ungrouped = render({ contentBlocks: blocks, groupToolReasoningRuns: false, isDarkMode })
+    expect(ungrouped).not.toContain('data-agent-steps')
+    expect(ungrouped).toContain('tool-card:custom_app')
+    expect(ungrouped).toContain('tool-card:read_file')
   })
 })

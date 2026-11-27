@@ -1,3 +1,5 @@
+import { extractHtmlFromToolResult } from '../../../../../shared/toolResultHtml.js'
+
 /**
  * Compacts the content blocks of a message that is on the selected branch but outside the
  * renderer's initial window. The row keeps its topology, prose, usage, thinking preview and
@@ -59,6 +61,9 @@ export function compactMessageBody(blocks: unknown): CompactedMessageBody | null
       else { dropped = true; omittedChars += serializedLength(value) }
     }
     if (!dropped) return block
+    if (block.type === 'tool_result' && !('content' in out) && extractHtmlFromToolResult(block.content)) {
+      out.html_omitted = true
+    }
     changed = true
     return { ...out, omitted: true }
   })

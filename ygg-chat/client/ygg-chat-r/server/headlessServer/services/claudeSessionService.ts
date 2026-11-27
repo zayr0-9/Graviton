@@ -742,7 +742,8 @@ export class ClaudeSessionService {
         modelName: request.modelName, content: pending.summary,
         contentBlocks: [{ type: 'text', content: pending.summary, index: 0 }], statisticsKind: 'compaction_summary',
         meta: { kind: 'compaction_summary', state: 'committed', version: 1, trigger: pending.trigger,
-          compactionId: randomUUID(), operationMode: control.mode, claudePlanMode: planState.active, claude: { sessionId: activeSession, checkpoint: false } } })
+          compactionId: randomUUID(), operationMode: control.mode, claudePlanMode: planState.active,
+          claudeUltracode: request.claudeUltracode === true, claude: { sessionId: activeSession, checkpoint: false } } })
       parent = compactionSummary.id
       finalMessage = null; lastUuid = null; turnEntries = []
       compactionActive = false
@@ -1349,11 +1350,12 @@ export class ClaudeSessionService {
     // left) still reaches the final row, where a mode row would displace the resumable checkpoint.
     // Plan mode too, so the composer restores it per branch and an approved plan reads as off.
     const runMeta = () => ({ ...(this.deps.broker ? { toolAutoApprove: this.deps.broker.isAutoApproveAll(request.streamId!) } : {}),
-      operationMode: control.mode, claudePlanMode: planState.active, ...permissionMeta() })
+      operationMode: control.mode, claudePlanMode: planState.active, claudeUltracode: request.claudeUltracode === true, ...permissionMeta() })
     const persist = (content: string, blocks: any[], uuid?: string, partial = false) => {
       const row = sink.persistAssistantMessage({ conversationId: request.conversationId, parentId: parent,
         modelName: request.modelName, content, contentBlocks: blocks,
-        meta: { operationMode: control.mode, claudePlanMode: planState.active, ...permissionMeta(), claude: { sessionId: activeSession, messageUuid: uuid ?? null, checkpoint: false, partial } } })
+        meta: { operationMode: control.mode, claudePlanMode: planState.active, claudeUltracode: request.claudeUltracode === true,
+          ...permissionMeta(), claude: { sessionId: activeSession, messageUuid: uuid ?? null, checkpoint: false, partial } } })
       parent = row.id
       finalMessage = row
       if (uuid && activeSession) this.deps.sessions.record(row.id, activeSession, uuid, cwd, false)

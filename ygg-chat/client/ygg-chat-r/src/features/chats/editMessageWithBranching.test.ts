@@ -238,6 +238,50 @@ describe('editMessageWithBranching live source resolution', () => {
   })
 })
 
+describe('branch-scoped Full Access and Ultracode requests', () => {
+  it('sends Full Access only on the selected lineage, not on a parallel sibling or an explicit historical fork', async () => {
+    const { dispatch, state } = setup([message('root'), { ...message('a', 'root'), lineage_id: 'a' }, { ...message('b', 'root'), lineage_id: 'b' }], [])
+    dispatch(chatSliceActions.lineageSelected({ conversationId: 'c1', lineageId: 'a', path: ['root', 'a'], focus: 'a' }))
+    dispatch(chatSliceActions.branchFullAccessSelected(true))
+    const send = (parent: string, branchPath: string[], lineageId?: string, isBranch = false) => dispatch(sendMessage({
+      conversationId: 'c1', parent, branchPath, lineageId, isBranch, repeatNum: 1, think: false,
+      input: { content: 'inspect', modelOverride: 'test' },
+    }))
+    await send('a', ['root', 'a'], 'a')
+    await send('b', ['root', 'b'], 'b')
+    await send('root', ['root', 'a'], 'a', true)
+    await send('b', ['root', 'b'])
+    await send('b', ['root', 'b'], 'a')
+    const requests = vi.mocked(runServerChatLoop).mock.calls.map(([params]) => params.request)
+    expect(requests[0]).toMatchObject({ lineageId: 'a', fullAccess: true, fullAccessNotificationId: expect.any(String) })
+    expect(requests[1]).toMatchObject({ lineageId: 'b', fullAccess: false })
+    expect(requests[2]).toMatchObject({ parentId: 'root', isBranch: true, fullAccess: false })
+    expect(requests[3]).toMatchObject({ parentId: 'b', fullAccess: false })
+    expect(requests[4]).toMatchObject({ parentId: 'b', fullAccess: false })
+    expect(state.chat.conversation.currentLineageId).toBe('a')
+  })
+
+  it.each(['lmstudio', 'Claude Code'])('captures %s editor choices before closing the editor', async provider => {
+    const { dispatch, state, fork } = setup([message('u1')], [])
+    state.chat = { ...state.chat, providerState: { ...state.chat.providerState, currentProvider: provider } }
+    dispatch(chatSliceActions.editingBranchSet(true))
+    dispatch(chatSliceActions.branchEditMessageSelected('u1'))
+    if (provider === 'Claude Code') dispatch(chatSliceActions.claudeUltracodeSet(true))
+    else dispatch(chatSliceActions.branchFullAccessSelected(true))
+    const pending = fork()
+    dispatch(chatSliceActions.editingBranchSet(false))
+    expect((await pending).meta.requestStatus).toBe('fulfilled')
+    const { request, fullAccessSourceKey } = vi.mocked(runServerChatLoop).mock.calls[0][0]
+    if (provider === 'Claude Code') expect(request).toMatchObject({ claudeUltracode: true, fullAccess: false })
+    else {
+      expect(request).toMatchObject({ fullAccess: true, fullAccessNotificationId: expect.any(String) })
+      expect(fullAccessSourceKey).toBeNull()
+    }
+    expect(state.chat.composition.branchEditModes).toBeUndefined()
+    expect(state.chat.branchFullAccessChoices).toEqual({})
+  })
+})
+
 describe('branch-scoped Fast mode requests', () => {
   it.each([true, false])('captures isolated edit mode choices (Fast: %s) before the editor closes', async enabled => {
     const { dispatch, state } = setup([{ ...message('u1'), meta: { fastMode: !enabled } }], [])

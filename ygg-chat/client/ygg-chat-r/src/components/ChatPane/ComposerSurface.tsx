@@ -82,6 +82,8 @@ type ComposerSurfaceProps = {
   surfaceClassName: string
   /** Stroke color/width for the outline shared by body and tab. */
   strokeClassName: string
+  /** Optional context meter drawn along the existing outline instead of as a fill. */
+  outlineProgress?: { percent: number; color: string }
   /** Layout of the body content (padding). */
   className?: string
   children: React.ReactNode
@@ -92,7 +94,7 @@ type ComposerSurfaceProps = {
  * so overlapping translucent pieces cannot darken the join or blur differently.
  * The tab sits above the body (`bottom-full`) and never changes the body's measured height.
  */
-export function ComposerSurface({ tab, surfaceClassName, strokeClassName, className = '', children }: ComposerSurfaceProps) {
+export function ComposerSurface({ tab, surfaceClassName, strokeClassName, outlineProgress, className = '', children }: ComposerSurfaceProps) {
   const bodyRef = useRef<HTMLDivElement | null>(null)
   const tabRef = useRef<HTMLDivElement | null>(null)
   const reduceMotion = useReducedMotion()
@@ -149,11 +151,26 @@ export function ComposerSurface({ tab, surfaceClassName, strokeClassName, classN
         style={{ top: layerTop, height: layerHeight, maskImage, WebkitMaskImage: maskImage, ...MASK_LAYOUT_STYLE }}
       />
       <motion.svg
-        aria-hidden='true'
+        aria-hidden={outlineProgress ? undefined : true}
+        role={outlineProgress ? 'meter' : undefined}
+        aria-label={outlineProgress ? 'Context usage' : undefined}
+        aria-valuemin={outlineProgress ? 0 : undefined}
+        aria-valuemax={outlineProgress ? 100 : undefined}
+        aria-valuenow={outlineProgress?.percent}
         className='pointer-events-none absolute inset-x-0 -z-10 w-full overflow-visible'
         style={{ top: layerTop, height: layerHeight }}
       >
         <motion.path d={strokePath} fill='none' className={`transition-[stroke] duration-300 ${strokeClassName}`} />
+        {outlineProgress && outlineProgress.percent > 0 && (
+          <motion.path
+            d={strokePath}
+            pathLength={1}
+            strokeDasharray={`${outlineProgress.percent / 100} 1`}
+            fill='none'
+            stroke={outlineProgress.color}
+            strokeWidth={2}
+          />
+        )}
       </motion.svg>
       {showTab && (
         <motion.div

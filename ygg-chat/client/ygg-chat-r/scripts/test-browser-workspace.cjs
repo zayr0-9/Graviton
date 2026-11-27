@@ -28,6 +28,19 @@ if (!process.versions.electron) {
     const publish = event => { projector.apply(event); const frame = { ...event, seq: ++seq }; frames.push(frame); for (const res of subscribers) res.write(`data: ${JSON.stringify(frame)}\n\n`) }
     const queue = () => ({ streamId: run?.streamId ?? 'pending', conversationId: 'c1', lineageId: null, revision: queueRevision, items: queued ? [queued] : [] })
     const row = (id, role, content, parent_id) => ({ id, conversation_id: 'c1', role, content, parent_id, children_ids: [], revision: 1, model_name: 'glm-5.1', created_at: now, content_blocks: [{ type: 'text', content }] })
+    const groupedStepsOnly = process.argv.includes('--grouped-agent-steps')
+    const persistedSteps = (parent = 'base', prefix = '') => {
+      const step = (id, name, index) => ({ type: 'tool_use', id, name, input: {}, index })
+      const settled = (id, index) => ({ type: 'tool_result', tool_use_id: id, content: 'ok', is_error: false, index })
+      const thought = (content, index) => ({ type: 'thinking', content, index })
+      return [
+        { ...row(`${prefix}first`, 'assistant', '', parent), content_blocks: [step(`${prefix}first`, 'read_file', 0), settled(`${prefix}first`, 1)] },
+        { ...row(`${prefix}mixed`, 'assistant', '', `${prefix}first`), content_blocks: [thought('Before the prose', 1),
+          { type: 'text', content: 'Checking.', index: 2 }, step(`${prefix}todo`, 'todo_list', 3),
+          { type: 'responses_output_items', items: [{ type: 'message', role: 'assistant', content: [{ text: 'Checking.' }] }], index: 4 }, settled(`${prefix}todo`, 5)] },
+        { ...row(`${prefix}partial`, 'assistant', '', `${prefix}mixed`), content_blocks: [thought('After the tool', 0)] },
+      ]
+    }
     host.get('/api/host/runtime', (_req, res) => res.json({ protocol: 1, epoch, hostId: 'fixture-host', auth, capabilities: { browserUi: true, sharedRuns: false } }))
     host.get('/api/host/auth/status', (_req, res) => res.json(auth))
     host.get('/api/host/auth/events', (_req, res) => { res.type('text/event-stream'); res.write(`data: ${JSON.stringify(auth)}\n\n`) })
@@ -51,6 +64,30 @@ if (!process.versions.electron) {
     const branchSmoke = process.argv.includes('--branch-loading')
     if (branchSmoke) rows = [row('base', 'user', 'Common ancestor', null), row('left', 'assistant', 'Remember this branch', 'base'),
       { ...row('right', 'assistant', 'Other fork content', 'base'), created_at: new Date(Date.now() + 5000).toISOString() }]
+    const compactContextOnly = process.argv.includes('--compact-context')
+    if (compactContextOnly) {
+      conversation.system_prompt = 'test '.repeat(108800) // 85% of GLM's 128k context window.
+      rows = [row('context', 'assistant', 'Context fixture', null)]
+    }
+    const inlineAppsOnly = process.argv.includes('--inline-apps')
+    if (inlineAppsOnly) {
+      const toolUse = (id, name) => ({ type: 'tool_use', id, name, input: {}, index: 0 })
+      const toolResult = (id, content) => ({ type: 'tool_result', tool_use_id: id, content, is_error: false, index: 1 })
+      rows = [row('base', 'user', 'Show me the app', null)]
+      for (let i = 0; i < 3; i++) {
+        const id = `work-${i}`
+        rows.push({ ...row(id, 'assistant', '', rows.at(-1).id), content_blocks: [toolUse(id, 'read_file'), toolResult(id, { count: i })] })
+      }
+      rows.push({ ...row('app', 'assistant', '', rows.at(-1).id), content_blocks: [
+        toolUse('html', 'custom_app'), toolResult('html', { html: '<h1>Fixture app</h1>' }),
+        { ...toolUse('json', 'mcp__demo__lookup'), index: 2 }, { ...toolResult('json', { available: true }), index: 3 },
+      ] })
+    }
+    if (groupedStepsOnly) {
+      rows = [row('base', 'user', 'Fixture prompt', null), ...persistedSteps(),
+        { ...row('error', 'assistant', '', 'partial'), content_blocks: [{ type: 'error', index: 0, excludeFromContext: true,
+          envelope: { code: 'stream_interrupted', userMessage: 'Fixture failure', recoverability: 'retryable' } }] }]
+    }
     const snapshotQueries = []
     host.get(['/api/app/conversations/c1/messages/tree', '/api/gw/conversations/c1/messages/tree'], (req, res) => {
       snapshotQueries.push({ ...req.query })
@@ -108,11 +145,13 @@ if (!process.versions.electron) {
         }
         return
       }
-      const receipt = { status: 'accepted', epoch, operationId: body.operationId, conversationId: 'c1', streamId: body.streamId, lineageId: null, parentId: null, disposition: 'started' }
+      const parentId = groupedStepsOnly ? rows.at(-1).id : null
+      const receipt = { status: 'accepted', epoch, operationId: body.operationId, conversationId: 'c1', streamId: body.streamId, lineageId: null, parentId, disposition: 'started' }
       receipts.set(body.operationId, receipt); res.json(receipt)
-      rows = [row('u1', 'user', body.content, null)]
-      publish({ type: 'started', operation: 'send', conversationId: 'c1', parentId: null, provider: 'zai', modelName: 'glm-5.1', streamId: body.streamId })
-      publish({ type: 'user_message_persisted', message: rows[0] })
+      rows.push(row('u1', 'user', body.content, parentId))
+      publish({ type: 'started', operation: 'send', conversationId: 'c1', parentId, provider: 'zai', modelName: 'glm-5.1', streamId: body.streamId })
+      publish({ type: 'user_message_persisted', message: rows.at(-1) })
+      if (groupedStepsOnly) return
       publish({ type: 'chunk', part: 'text', delta: 'Synthetic reply in progress' })
       publish({ type: 'permission_required', streamId: body.streamId, toolCallId: 'tc1', toolName: 'bash', toolInput: { command: 'echo fixture', description: 'Synthetic only' } })
     })
@@ -155,11 +194,13 @@ if (!process.versions.electron) {
     }
     const highlightedFilesOnly = process.argv.includes('--highlighted-files')
     const documentsOnly = process.argv.includes('--documents')
-    for (let i = 0; i < (highlightedFilesOnly || documentsOnly ? 1 : 2); i++) {
+    for (let i = 0; i < (highlightedFilesOnly || documentsOnly || inlineAppsOnly || compactContextOnly || groupedStepsOnly ? 1 : 2); i++) {
       const window = new BrowserWindow({ show: false, width: i ? 390 : 1280, height: i ? 844 : 900, useContentSize: true, webPreferences: { contextIsolation: true, nodeIntegration: false, partition: `workspace-fixture-${i}` } }); windows.push(window)
       window.webContents.on('console-message', details => { if (details.level === 'error') console.error('Renderer:', details.message) })
       await window.loadURL(origin + '/blank')
       await window.webContents.executeJavaScript(`localStorage.setItem('currentProvider','Z.AI / GLM')`)
+      if (inlineAppsOnly || groupedStepsOnly) await window.webContents.executeJavaScript(`localStorage.setItem('chat:groupToolReasoningRuns','true')`)
+      if (compactContextOnly) await window.webContents.executeJavaScript(`localStorage.setItem('chat:heimdallVisible','false')`)
       const firstSnapshot = snapshotQueries.length
       await window.loadURL(origin + '/#/chat/p1/c1' + (branchSmoke && i === 1 ? '#left' : ''))
       await wait(window, `!!document.querySelector('textarea[placeholder="Type your message..."]')`, 'Composer missing')
@@ -168,6 +209,151 @@ if (!process.versions.electron) {
         if (!snapshotQueries.slice(firstSnapshot).length || snapshotQueries.slice(firstSnapshot).some(q => q.scope !== 'branch')) throw new Error('Phone fetched a full conversation on entry')
       }
       if (await window.webContents.executeJavaScript('!!window.electronAPI')) throw new Error('Unexpected preload')
+    }
+    if (compactContextOnly) {
+      const win = windows[0]
+      const meter = `document.querySelector('svg[role="meter"][aria-label="Context usage"]')`
+      const expandedTint = `document.querySelector('.composer-controls-left').style.backgroundImage`
+      await wait(win, `!${meter} && ${expandedTint}.includes('linear-gradient')`, 'Missing expanded fill or unexpected outline')
+      win.setContentSize(390, 844)
+      await wait(win, `(() => {
+        const svg = ${meter}, [track, progress] = svg?.querySelectorAll('path') ?? [];
+        const percent = Number(svg?.getAttribute('aria-valuenow'));
+        return percent >= 85 && percent < 86 && track.getTotalLength() > 0 &&
+          progress.getAttribute('d') === track.getAttribute('d') && progress.getAttribute('pathLength') === '1' &&
+          Math.abs(parseFloat(getComputedStyle(progress).strokeDasharray) - percent / 100) < 0.00001 &&
+          getComputedStyle(progress).fill === 'none' && getComputedStyle(svg).pointerEvents === 'none';
+      })()`, 'Compact meter did not trace the composer outline at the expected percentage').catch(async error => {
+        const state = await win.webContents.executeJavaScript(`(${meter})?.outerHTML`)
+        throw new Error(`${error.message}\nMeter: ${state}`)
+      })
+      const checkStroke = (color, mode) => wait(win, `(() => {
+        const stroke = getComputedStyle((${meter}).lastElementChild).stroke;
+        if (stroke !== '${color}') return false;
+        const ctx = document.createElement('canvas').getContext('2d');
+        const luminance = color => {
+          ctx.fillStyle = color; ctx.fillRect(0, 0, 1, 1);
+          return [0.2126, 0.7152, 0.0722].reduce((sum, weight, i) => {
+            const value = ctx.getImageData(0, 0, 1, 1).data[i] / 255;
+            return sum + weight * (value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4);
+          }, 0);
+        };
+        const levels = [luminance(stroke), luminance(getComputedStyle(document.documentElement).backgroundColor)].sort((a, b) => a - b);
+        return (levels[1] + 0.05) / (levels[0] + 0.05) >= 3;
+      })()`, 'Incorrect outline color or insufficient contrast in ' + mode)
+      for (const dark of [false, true]) {
+        await win.webContents.executeJavaScript(`document.documentElement.classList.toggle('dark', ${dark})`)
+        await checkStroke(dark ? 'rgb(251, 191, 36)' : 'rgb(180, 83, 9)', dark ? 'default dark' : 'default light')
+      }
+      await win.webContents.executeJavaScript(`localStorage.setItem('chat:customThemeEnabled','true');localStorage.setItem('chat:customTheme',JSON.stringify({colors:{chatProgressBarFill:{light:'#17448a',dark:'#99eeff'}}}));window.dispatchEvent(new Event('chatCustomThemeChange'))`)
+      await checkStroke('rgb(153, 238, 255)', 'custom dark')
+      await win.webContents.executeJavaScript(`document.documentElement.classList.remove('dark')`)
+      await checkStroke('rgb(23, 68, 138)', 'custom light')
+      await win.webContents.executeJavaScript(`window.dispatchEvent(new CustomEvent('chatUi:tokenUsageVisibilityChange', {detail:false}))`)
+      await wait(win, `!${meter}`, 'Disabling token usage did not hide the outline meter')
+      console.log('PASS compact context outline, proportional stroke, expanded fill, light/dark and custom colors, and preference toggle')
+      exit = 0; return
+    }
+    if (inlineAppsOnly) {
+      const win = windows[0]
+      const viewer = '#message-app [aria-label="Open tool output viewer"]'
+      await wait(win, `!!document.querySelector('#message-app iframe[title="HTML Preview"]') && !!document.querySelector('[data-agent-steps] button[aria-expanded="false"]')`, 'The app did not stay inline next to collapsed steps')
+      const headless = await win.webContents.executeJavaScript(`(() => {
+        const card = [...document.querySelectorAll('#message-app [data-chat-block="tool"]')].find(card => card.textContent.includes('mcp__demo__lookup'));
+        return !!card && !card.querySelector('[aria-label="Load app"]');
+      })()`)
+      if (!headless) throw new Error('JSON-only MCP calls should have no Load app control')
+      for (const dark of [false, true]) {
+        await win.webContents.executeJavaScript(`document.documentElement.classList.toggle('dark', ${dark})`)
+        const minimumContrast = `(function () {
+          const button = document.querySelector(${JSON.stringify(viewer)});
+          const css = getComputedStyle(button);
+          const expected = css.getPropertyValue('${dark ? '--color-neutral-300' : '--color-neutral-600'}').trim();
+          const ctx = document.createElement('canvas').getContext('2d', { colorSpace: 'srgb' });
+          const pixel = color => {
+            ctx.clearRect(0, 0, 1, 1); ctx.fillStyle = color; ctx.fillRect(0, 0, 1, 1);
+            return ctx.getImageData(0, 0, 1, 1).data;
+          };
+          const foreground = pixel(css.color), fill = pixel(css.backgroundColor), canvas = pixel(getComputedStyle(document.body).backgroundColor);
+          const background = [0, 1, 2].map(i => (fill[i] * fill[3] + canvas[i] * (255 - fill[3])) / 255);
+          const luminance = rgb => [0.2126, 0.7152, 0.0722].reduce((sum, weight, i) => {
+            const value = rgb[i] / 255;
+            return sum + weight * (value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4);
+          }, 0);
+          const levels = [luminance(foreground), luminance(background)].sort((a, b) => a - b);
+          return !!expected && pixel(expected).every((channel, i) => channel === foreground[i]) && (levels[1] + 0.05) / (levels[0] + 0.05) >= 4.5;
+        })()`
+        await wait(win, minimumContrast, `Viewer lost its text palette or contrast in ${dark ? 'dark' : 'light'} mode`)
+      }
+      await win.webContents.executeJavaScript(`window.dispatchEvent(new CustomEvent('groupToolReasoningRunsChange', {detail:false}))`)
+      await wait(win, `!!document.querySelector('#message-app iframe[title="HTML Preview"]') && !document.querySelector('[data-agent-steps]')`, 'The app did not stay inline when grouping was turned off')
+      await click(win, viewer)
+      await wait(win, `!!document.querySelector('[role="dialog"][aria-label="HTML tool viewer"]') && !!document.querySelector('[aria-label="Favorite tool output"]')`, 'The custom app Viewer did not open the registered result')
+      console.log('PASS inline custom app outside Agent steps, Viewer opens, JSON-only MCP controls, and light/dark viewer contrast')
+      exit = 0; return
+    }
+    if (groupedStepsOnly) {
+      const win = windows[0]
+      await wait(win, `(() => {
+        const groups = [...document.querySelectorAll('[data-agent-steps]')];
+        const prose = [...document.querySelectorAll('.chat-markdown')].filter(node => node.textContent === 'Checking.');
+        return groups.length === 2 && prose.length === 1 && !prose[0].closest('[data-agent-steps]') &&
+          (groups[0].compareDocumentPosition(prose[0]) & Node.DOCUMENT_POSITION_FOLLOWING) &&
+          (prose[0].compareDocumentPosition(groups[1]) & Node.DOCUMENT_POSITION_FOLLOWING) &&
+          groups.every(group => group.textContent.includes('1 completed')) && document.body.innerText.includes('Fixture failure');
+      })()`, 'Mixed stored steps did not form exactly two groups around one visible paragraph')
+      await win.webContents.executeJavaScript(`[...document.querySelectorAll('[data-agent-steps] button[aria-expanded="false"]')].forEach(button => button.click())`)
+      await wait(win, `(() => {
+        const [before, after] = document.querySelectorAll('[data-agent-steps]');
+        return before?.innerText.includes('Before the prose') && before.innerText.includes('read_file') &&
+          after?.innerText.includes('todo_list') && after.innerText.includes('After the tool');
+      })()`, 'Expanded history lost reasoning or tools at a persisted message boundary')
+      for (const dark of [false, true]) {
+        await win.webContents.executeJavaScript(`document.documentElement.classList.toggle('dark', ${dark})`)
+        await wait(win, `(() => {
+          const ctx = document.createElement('canvas').getContext('2d', { colorSpace: 'srgb' });
+          const luminance = color => {
+            ctx.clearRect(0, 0, 1, 1); ctx.fillStyle = color; ctx.fillRect(0, 0, 1, 1);
+            return [0.2126, 0.7152, 0.0722].reduce((sum, weight, i) => {
+              const v = ctx.getImageData(0, 0, 1, 1).data[i] / 255;
+              return sum + weight * (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
+            }, 0);
+          };
+          const bg = luminance(getComputedStyle(document.documentElement).backgroundColor);
+          const labels = [...document.querySelectorAll('[data-agent-steps] button[aria-expanded] span')].filter(el => el.textContent === 'Agent steps');
+          return labels.length === 2 && labels.every(el => {
+            const fg = luminance(getComputedStyle(el).color);
+            return (Math.max(fg, bg) + 0.05) / (Math.min(fg, bg) + 0.05) >= 4.5;
+          });
+        })()`, 'Agent steps label contrast in ' + (dark ? 'dark' : 'light') + ' mode')
+      }
+      await win.webContents.executeJavaScript(`window.dispatchEvent(new CustomEvent('groupToolReasoningRunsChange', {detail:false}))`)
+      await wait(win, `!document.querySelector('[data-agent-steps]') && document.body.innerText.includes('Checking.') && document.body.innerText.includes('todo_list')`, 'Disabling grouping hid transcript blocks')
+      console.log('PASS saved mixed reasoning/text/tools group across rows, light/dark label contrast, ungrouped transcript')
+      await win.webContents.executeJavaScript(`window.dispatchEvent(new CustomEvent('groupToolReasoningRunsChange', {detail:true}))`)
+      // Replay the same production-shaped transcript, including a live continuation after
+      // the mixed row persists. No second disclosure may appear at that handoff.
+      await fill(win, 'Fixture prompt for a new run')
+      await click(win, 'button[title="Send message"]')
+      const deadline = Date.now() + 10000
+      while ((!run || !subscribers.size) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50))
+      if (!run || !subscribers.size) throw new Error('Missing grouped-steps live stream')
+      const firstGroup = `document.getElementById('message-group-live-first')`
+      const lastGroup = `document.getElementById('message-group-live-mixed:2')`
+      for (const [turn, message] of persistedSteps('u1', 'live-').slice(0, 2).entries()) {
+        publish({ type: 'tool_loop', status: 'turn_started', turn: turn + 1 })
+        rows.push(message); publish({ type: 'assistant_message_persisted', message })
+      }
+      await wait(win, `!!${firstGroup} && !!${lastGroup}`, 'The two new persisted groups are missing')
+      const groupCount = await win.webContents.executeJavaScript(`document.querySelectorAll('[data-agent-steps]').length`)
+      publish({ type: 'tool_loop', status: 'turn_started', turn: 3 })
+      publish({ type: 'chunk', part: 'reasoning', delta: 'Live continuation' })
+      await win.webContents.executeJavaScript(`${lastGroup}.querySelector('button').click()`)
+      await wait(win, `${lastGroup}.innerText.includes('Live continuation') && document.querySelectorAll('[data-agent-steps]').length === ${groupCount}`, 'Live reasoning did not attach to the prior tool')
+      publish({ type: 'chunk', part: 'text', delta: 'Done.' })
+      await wait(win, `document.querySelector('[data-live-streaming-tail]')?.innerText.includes('Done.') && !${lastGroup}.innerText.includes('Done.')`, 'Streamed short text did not stay outside the group')
+      console.log('PASS live reasoning attaches to the persisted tool group and short streamed text stays outside')
+      exit = 0; return
     }
     if (branchSmoke) {
       const phone = windows[1]

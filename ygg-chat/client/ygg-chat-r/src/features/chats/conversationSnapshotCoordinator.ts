@@ -163,8 +163,12 @@ export async function coordinateConversationSnapshot({
       deletedMessageIds: deletedMessages.get(normalizedId),
     })
     if (fetched.retained) messages.sort((a, b) => a.created_at.localeCompare(b.created_at))
+    // A branch read whose every retained sibling is already cached at the same revision
+    // yields the whole graph, so Heimdall can open without a full read.
+    const complete = fetched.retained != null && cachedSiblings.length === retained.size
     const data: ConversationMessagesTreeData = {
       ...fetched,
+      retained: complete ? undefined : fetched.retained,
       messages,
       tree: buildConversationTree(messages),
     }

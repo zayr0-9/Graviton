@@ -1,16 +1,19 @@
 import { createSlice, current, PayloadAction } from '@reduxjs/toolkit'
 import { composerApprovalHandoff, composerProvider, loadBranchToolApprovalDrafts, resolveComposerToolApproval, saveBranchToolApprovalDrafts } from './branchToolApproval'
 import { loadBranchFastModeDrafts, saveBranchFastModeDrafts } from './branchFastMode'
+import { composerFullAccessTarget, type FullAccessSubmission } from './branchFullAccess'
+import { loadClaudeUltracodeDrafts, saveClaudeUltracodeDrafts } from './branchUltracode'
+import { newClientId } from '../../helpers/clientId'
 import { loadBranchReasoningDrafts, saveBranchReasoningDrafts } from './branchReasoning'
 import type { ReasoningLevel } from '../../../../../shared/reasoningLevel'
 import { loadClaudePlanModeDrafts, saveClaudePlanModeDrafts, withClaudePlanModeDraft } from './branchPlanMode'
 import { loadClaudeAutoModeDrafts, saveClaudeAutoModeDrafts, withClaudeAutoModeDraft } from './branchClaudeAutoMode'
-import { branchModelKey, loadBranchModelDrafts, saveBranchModelDrafts, type BranchModelSelection } from './branchModelSelection'
+import { branchModelKey, branchSettingsTarget, lineageSettingsKey, loadBranchModelDrafts, saveBranchModelDrafts, type BranchModelSelection } from './branchModelSelection'
 import { normalizeChatErrorEnvelope } from '../../../../../shared/chatErrors'
 import providersList from '../../../../../shared/providers.json'
 import { ConversationId, MessageId } from '../../../../../shared/types'
 import type { HeadlessBackgroundTask } from '../../../../../shared/headlessApi'
-import { type ClaudeToolApproval, loadClaudeToolApprovalDefault, loadClaudeUltracode, loadDefaultToolAutoApprove, saveClaudeUltracode } from '../../helpers/toolApprovalSettingsStorage'
+import { type ClaudeToolApproval, loadClaudeToolApprovalDefault, loadDefaultToolAutoApprove } from '../../helpers/toolApprovalSettingsStorage'
 import { parseId } from '../../utils/helpers'
 import { isStreamContinuationTail } from './streamContinuationTail'
 import { canFollowSelectedTip } from './followSelectedTip'
@@ -280,7 +283,8 @@ const makeInitialState = (): ChatState => {
     planClarificationRequestsByStream: {},
     toolAutoApprove: loadDefaultToolAutoApprove(),
     ...claudeToolApprovalState(loadClaudeToolApprovalDefault()),
-    claudeUltracode: loadClaudeUltracode(),
+    claudeUltracodeDrafts: loadClaudeUltracodeDrafts(),
+    branchFullAccessChoices: {},
     claudePlanModeDrafts: loadClaudePlanModeDrafts(),
     claudeAutoModeDrafts: loadClaudeAutoModeDrafts(),
     operationMode: 'plan',
@@ -2029,8 +2033,61 @@ export const chatSlice = createSlice({
     },
 
     claudeUltracodeSet: (state, action: PayloadAction<boolean>) => {
-      state.claudeUltracode = action.payload
-      saveClaudeUltracode(action.payload)
+      if (state.selection?.status === 'pending' || state.selection?.status === 'error') return
+      if (state.composition.editingBranch) {
+        state.composition.branchEditModes ??= {}
+        state.composition.branchEditModes.claudeUltracode = action.payload
+        return
+      }
+      const { key, mismatch } = branchSettingsTarget(state)
+      if (key == null || mismatch) return
+      state.claudeUltracodeDrafts ??= {}
+      state.claudeUltracodeDrafts[key] = action.payload
+      saveClaudeUltracodeDrafts(state.claudeUltracodeDrafts)
+    },
+
+    branchFullAccessSelected: {
+      prepare(enabled: boolean) {
+        return { payload: { fullAccess: enabled, fullAccessNotificationId: enabled ? newClientId() : undefined } }
+      },
+      reducer(state, action: PayloadAction<FullAccessSubmission>) {
+        if (state.selection?.status === 'pending' || state.selection?.status === 'error' ||
+          state.conversation.currentConversationId == null || isClaudeProvider(composerProvider(state))) return
+        if (state.composition.editingBranch) {
+          state.composition.branchEditModes ??= {}
+          state.composition.branchEditModes.fullAccess = action.payload
+          return
+        }
+        const key = composerFullAccessTarget(state)
+        if (key == null) return
+        state.branchFullAccessChoices ??= {}
+        state.branchFullAccessChoices[key] = action.payload
+      },
+    },
+
+    // A first send, provider handoff or edit can acquire a new lineage. Only move the
+    // exact submitted opt-in; a toggle/navigation while the request was in flight must win.
+    branchFullAccessRunStarted: (state, action: PayloadAction<{
+      conversationId: string; lineageId: string; sourceKey: string | null; requestId: string
+    }>) => {
+      const { conversationId, lineageId, sourceKey, requestId } = action.payload
+      const key = lineageSettingsKey(conversationId, lineageId)
+      state.branchFullAccessChoices ??= {}
+      if (sourceKey !== null) {
+        if (sourceKey === key || state.branchFullAccessChoices[sourceKey]?.fullAccessNotificationId !== requestId) return
+        delete state.branchFullAccessChoices[sourceKey]
+      }
+      state.branchFullAccessChoices[key] ??= { fullAccess: true, fullAccessNotificationId: requestId }
+    },
+
+    branchFullAccessNoticePersisted: (state, action: PayloadAction<string>) => {
+      // Request IDs are unique to an opt-in. Late acknowledgements cannot clear another choice.
+      for (const access of Object.values(state.branchFullAccessChoices ?? {})) {
+        if (access.fullAccessNotificationId === action.payload) {
+          delete access.fullAccessNotificationId
+          break
+        }
+      }
     },
 
     // Plan mode belongs to the branch: the choice is kept at the selected tip (or the edit being
@@ -2316,6 +2373,7 @@ export const chatSlice = createSlice({
       next.operationModeUpgradeRequestsByStream = state.operationModeUpgradeRequestsByStream
       next.planClarificationRequestsByStream = state.planClarificationRequestsByStream
       next.messageQueues = state.messageQueues
+      next.branchFullAccessChoices = state.branchFullAccessChoices
       next.operationModeChanges = state.operationModeChanges
       next.errorNotices = state.errorNotices
       next.composition.sending = state.composition.sending
