@@ -16,6 +16,7 @@
  * - attachmentsBase64 is turn-1 only (sent once on the initial request).
  */
 
+import { isReasoningLevel, type ReasoningLevel } from '../../../../../shared/reasoningLevel'
 import { newClientId } from '../../helpers/clientId'
 import { isClaudeProvider } from '../../../../../shared/claudeProvider'
 import type { ContextDirectorySettings } from '../../../../../shared/contextDirectories'
@@ -38,6 +39,7 @@ export interface BuildServerLoopRequestParams {
   provider: string
   modelName?: string
   userId?: string | null
+  userDisplayName?: string
   /** send: post-compaction parent; branch: parentId; edit: originalMessage.parent_id. */
   parentId?: string | null
   /** branch: the message branched FROM; edit: the message being edited. Required for those ops. */
@@ -52,6 +54,8 @@ export interface BuildServerLoopRequestParams {
   planModeVerbosity?: 'concise' | 'normal' | 'detailed'
   think?: boolean
   reasoningConfig?: unknown
+  /** Branch-chosen level, recorded as meta.reasoningLevel; independent of what the model supports. */
+  reasoningLevel?: ReasoningLevel
   /** Persisted user preference for reasoning effort in child subagents. */
   subagentReasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh'
   imageConfig?: unknown
@@ -216,6 +220,8 @@ export function buildServerLoopRequest(operation: ServerLoopOperation, params: B
   if (params.operationModePrompt != null) body.operationModePrompt = params.operationModePrompt
   if (params.agentModePrompt != null) body.agentModePrompt = params.agentModePrompt
   if (params.subagentModePrompt != null) body.subagentModePrompt = params.subagentModePrompt
+  const userDisplayName = params.userDisplayName?.trim()
+  if (userDisplayName) body.userDisplayName = userDisplayName
 
   // Send the tools array whenever the caller provided one (even []), so an
   // all-disabled set is respected; omit only when tools were not provided.
@@ -225,6 +231,7 @@ export function buildServerLoopRequest(operation: ServerLoopOperation, params: B
   // reach the body and the lmstudio/zai request stays byte-for-byte unchanged.
   if (typeof params.temperature === 'number') body.temperature = params.temperature
   if (params.serviceTier !== undefined) body.serviceTier = params.serviceTier
+  if (isReasoningLevel(params.reasoningLevel)) body.reasoningLevel = params.reasoningLevel
   // OAuth credentials are resolved exclusively by the server.
 
   // Auto-compaction / context settings: forward only-when-set (server keeps its default when

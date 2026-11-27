@@ -1,6 +1,7 @@
 import { isClaudeProvider } from '../../../../../shared/claudeProvider'
 import { resolveComposerToolApproval } from '../../features/chats/branchToolApproval'
 import { newClientId } from '../../helpers/clientId'
+import { readChatDisplayName } from '../../helpers/chatDisplayName'
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useConversationRunStatistics } from '../../hooks/useConversationRunStatistics'
 import { deriveRunStatistics, placeRunFooters } from '../../features/chats/runStatistics'
@@ -52,6 +53,8 @@ import {
 import { StreamingThinkingIndicator } from '../StreamingThinkingIndicator/StreamingThinkingIndicator'
 import { BackgroundTasksIndicator } from '../StreamingThinkingIndicator/BackgroundTasksIndicator'
 import { ToolPermissionDialog } from '../ToolPermissionDialog/ToolPermissionDialog'
+import { useTranscriptRevisions } from '../../hooks/useTranscriptRevisions'
+import { parseTranscriptRevisionRequest } from '../../../../../shared/transcriptRevision'
 import { ConversationLinkRootProvider } from '../MarkdownLink/markdownLinkRoot'
 import {
   getThemeModeColor,
@@ -125,6 +128,8 @@ export function ParallelChatPane({
 
   const [path, setPath] = useState<MessageId[]>(target.path)
   const [lineageId, setLineageId] = useState<LineageId | null>(target.lineageId ?? null)
+  const transcriptLineageId = lineageId ?? messages.find(message => message.id === path.at(-1))?.lineage_id
+  const transcriptRevisions = useTranscriptRevisions(target.conversationId, transcriptLineageId)
   const toolAutoApprove = useAppSelector(state => resolveComposerToolApproval({
     ...state.chat,
     conversation: { ...state.chat.conversation, currentConversationId: target.conversationId, currentPath: path, currentLineageId: lineageId },
@@ -134,6 +139,8 @@ export function ParallelChatPane({
   const providers = { ...providerState, currentProvider: branchSelection?.provider ?? providerState.currentProvider }
   const selectedModel = useSelectedModel(providers.currentProvider, branchSelection?.model)
   const [hasDraft, setHasDraft] = useState(false)
+  const [fileInsertionPending, setFileInsertionPending] = useState(false)
+  const [composerNotice, setComposerNotice] = useState<string | null>(null)
   const [pendingStreamId, setPendingStreamId] = useState<string | null>(null)
   const [optimisticMessage, setOptimisticMessage] = useState<{
     id: string
@@ -179,9 +186,10 @@ export function ParallelChatPane({
   const [queueSubmitting, setQueueSubmitting] = useState(false)
   const queueSubmittingRef = useRef(false)
   const queue = useAppSelector(state => streamId ? state.chat.messageQueues?.[streamId] : undefined)
-  const canSend = hasDraft && !queueSubmitting
+  const canSend = hasDraft && !queueSubmitting && !fileInsertionPending
   useEffect(() => {
     if (streamActive && streamId) void dispatch(loadMessageQueue({ conversationId: target.conversationId, streamId }))
+    else setComposerNotice(null)
   }, [dispatch, streamActive, streamId, target.conversationId])
   useEffect(() => {
     const anchor = effectiveStream?.currentBranchAnchorMessageId
@@ -194,7 +202,7 @@ export function ParallelChatPane({
   }, [effectiveStream?.currentBranchAnchorMessageId, messages])
 
   const permissionRequest = useAppSelector(state =>
-    streamId ? (state.chat.toolPermissionRequestsByStream[streamId] ?? null) : null
+    streamId ? (state.chat.transcriptRevisionRequestsByStream?.[streamId] ?? state.chat.toolPermissionRequestsByStream[streamId] ?? null) : null
   )
   const operationModeUpgradeRequest = useAppSelector(state =>
     streamId ? (state.chat.operationModeUpgradeRequestsByStream[streamId] ?? null) : null
@@ -233,16 +241,21 @@ export function ParallelChatPane({
   const updateDraft = useCallback((next: ChatInputUpdater) => inputControllerRef.current?.setValue(next), [])
 
   const handleSend = useCallback(() => {
+    if (inputControllerRef.current?.isFileInsertionPending()) return
     const rawContent = inputControllerRef.current?.getValue() ?? ''
     const content = rawContent.trim()
     if (!content || queueSubmittingRef.current) return
     if (streamActive && streamId) {
+      if (parseTranscriptRevisionRequest(content)) {
+        setComposerNotice('Wait for the current reply to finish before sending /revise.')
+        return
+      }
       queueSubmittingRef.current = true
       setQueueSubmitting(true)
       recordSentMessage(rawContent)
       inputControllerRef.current?.clear()
       void dispatch(enqueueUserMessage({ conversationId: target.conversationId, streamId, content,
-        requestId: newClientId(), includeGlobalComposerContext: false, updatePath: false })).unwrap()
+        requestId: newClientId(), userDisplayName: readChatDisplayName(), includeGlobalComposerContext: false, updatePath: false })).unwrap()
         .catch(error => {
           console.error('Failed to queue parallel message:', error)
         })
@@ -271,9 +284,11 @@ export function ParallelChatPane({
         repeatNum: 1,
         think,
         reasoningConfig: think ? reasoningConfig : undefined,
+        // Recorded on the branch so the primary composer shows the level this pane used.
+        reasoningLevel: think ? reasoningConfig.effort : 'off',
         operationMode,
         streamId: nextStreamId,
-        lineageId,
+        lineageId: parseTranscriptRevisionRequest(content) ? transcriptLineageId : lineageId,
         branchPath: path,
         streamType: 'branch',
         updatePath: false,
@@ -296,7 +311,7 @@ export function ParallelChatPane({
       .finally(() => {
         if (targetGenerationRef.current === sendGeneration) setPendingStreamId(null)
       })
-  }, [dispatch, lineageId, messages, operationMode, path, reasoningConfig, streamActive, streamId, target.conversationId, target.messageId, think, providers.currentProvider])
+  }, [dispatch, lineageId, messages, operationMode, path, reasoningConfig, streamActive, streamId, target.conversationId, target.messageId, think, providers.currentProvider, transcriptLineageId])
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
     userScrolledRef.current = false
@@ -379,8 +394,9 @@ export function ParallelChatPane({
       {!operationModeUpgradeRequest && permissionRequest && (
         <ToolPermissionDialog
           toolCall={permissionRequest.toolCall}
-          onGrant={() => dispatch(respondToToolPermission({ allowed: true, streamId: permissionRequest.streamId }))}
-          onDeny={() => dispatch(respondToToolPermission({ allowed: false, streamId: permissionRequest.streamId }))}
+          transcriptRevision={permissionRequest.transcriptRevision}
+          onGrant={() => dispatch(respondToToolPermission({ allowed: true, streamId: permissionRequest.streamId, toolCallId: permissionRequest.toolCallId }))}
+          onDeny={() => dispatch(respondToToolPermission({ allowed: false, streamId: permissionRequest.streamId, toolCallId: permissionRequest.toolCallId }))}
           onAllowAll={() => dispatch(respondToToolPermissionAndEnableAll(permissionRequest.streamId))}
         />
       )}
@@ -396,16 +412,20 @@ export function ParallelChatPane({
       {queue && <QueuedMessages items={queue.items}
         onRestore={content => updateDraft(previous => previous ? `${content}\n\n${previous}` : content)}
         onCancel={requestId => dispatch(cancelQueuedMessage({ conversationId: target.conversationId, streamId: queue.streamId, requestId })).unwrap()} />}
+      {composerNotice && <p role='status' className='px-2 py-1 text-xs'>{composerNotice}</p>}
       <ChatInputController
         ref={inputControllerRef}
         conversationId={target.conversationId}
         initialValue=''
         onHasTextChange={setHasDraft}
+        fileInsertionScope={JSON.stringify([target.conversationId, target.messageId, target.lineageId, target.path])}
+        onFileInsertionPendingChange={setFileInsertionPending}
         onSubmit={handleSend}
         onBlurPersist={() => undefined}
         fallbackFileSearchRoot={null}
         enableImageAttachments={false}
         enableFileMentions={false}
+        slashCommands={['revise']}
         imageDraftTarget={{ kind: 'composer' }}
         fontSizeOffset={fontSizeOffset}
         autoFocus={false}
@@ -448,6 +468,8 @@ export function ParallelChatPane({
             role={message.role}
             content={message.content}
             contentBlocks={message.content_blocks}
+            transcriptRevision={transcriptRevisions.byMessage.get(String(message.id))}
+            onUndoTranscriptRevision={transcriptRevisions.undo}
             timestamp={message.created_at}
             modelName={message.model_name}
             artifacts={message.artifacts}

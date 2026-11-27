@@ -12,6 +12,7 @@ type State = {
   usage: any
   outputItems: any[]
   responseItemsAdded: any[]
+  streamedOutput: Map<string, { index: number; item: any }>
   eventCounts: Map<string, number>
   itemPhases: Map<string, string>
   itemText: Map<string, string>
@@ -34,6 +35,7 @@ export function createCodexResponseParseState(options: CodexResponseParseOptions
     usage: undefined,
     outputItems: [],
     responseItemsAdded: [],
+    streamedOutput: new Map(),
     eventCounts: new Map(),
     itemPhases: new Map(),
     itemText: new Map(),
@@ -161,12 +163,14 @@ export function processCodexResponsePayload(payload: any, state: State, eventHin
         const toolKey = `tool:${item.call_id || item.id}`
         if (!state.displayBlocks.has(toolKey)) state.displayBlocks.set(toolKey, { type: 'pending' })
       }
+      rememberStreamedOutput(item, payload.output_index, state)
       rememberItemPhase(payload.item, state)
       if (payload.item) state.responseItemsAdded.push(payload.item)
       break
     }
     case 'response.output_item.done': {
       const item = enrichMessageItemWithStreamedText(payload.item || payload.output_item || payload, state)
+      rememberStreamedOutput(item, payload.output_index, state)
       rememberItemPhase(item, state)
       if (item) state.responseItemsAdded.push(item)
       if (isHostedToolOutputItem(item)) state.outputItems.push(item)
@@ -176,7 +180,7 @@ export function processCodexResponsePayload(payload: any, state: State, eventHin
     case 'response.completed':
     case 'response.done':
       state.providerStopReason = eventType
-      captureCompletedResponseMetadata(payload.response, state)
+      captureCompletedResponseMetadata(payload.response ?? {}, state)
       collectResponseOutput(payload.response, state)
       break
     case 'response.failed':
@@ -234,17 +238,33 @@ function enrichMessageItemWithStreamedText(item: any, state: State): any {
   if (!item || typeof item !== 'object') return item
   if (item.type !== 'message' && item.type !== 'output_message') return item
   const id = typeof item.id === 'string' ? item.id : ''
+  const phase = id && !item.phase ? state.itemPhases.get(id) : undefined
+  if (phase) item = { ...item, phase }
   const streamedText = id ? state.itemText.get(id) || '' : ''
   if (!streamedText || outputTextFromItem(item).trim()) return item
   return { ...item, content: [{ type: 'output_text', text: streamedText }] }
+}
+
+// A completion may contain usage but no output array. Retain the item positions
+// announced by the stream; done events need not arrive in that same order.
+function rememberStreamedOutput(item: any, outputIndex: number | undefined, state: State): void {
+  if (!item) return
+  const index = outputIndex ?? item.output_index
+  const key = item.id || item.call_id || (index != null ? `output-${index}` : undefined)
+  if (!key) return
+  state.streamedOutput.set(key, { index: index ?? state.streamedOutput.get(key)?.index ?? state.streamedOutput.size, item })
 }
 
 function captureCompletedResponseMetadata(response: any, state: State): void {
   if (!response || typeof response !== 'object') return
   if (typeof response.id === 'string') state.responseId = response.id
   if (response.usage !== undefined) state.usage = response.usage
-  if (Array.isArray(response.output))
+  if (Array.isArray(response.output) && response.output.length) {
     state.outputItems = response.output.map((item: any) => enrichMessageItemWithStreamedText(item, state))
+  } else if (state.streamedOutput.size) {
+    state.outputItems = [...state.streamedOutput.values()].sort((a, b) => a.index - b.index)
+      .map(({ item }) => enrichMessageItemWithStreamedText(item, state))
+  }
 }
 
 function collectResponseOutput(response: any, state: State): void {

@@ -29,6 +29,8 @@ import { registerSubagentRoutes } from './routes/subagentRoutes.js'
 import { registerTestHarnessRoutes } from './routes/testHarnessRoutes.js'
 import { registerGatewayRoutes } from './routes/gatewayRoutes.js'
 import { registerLineageRoutes } from './routes/lineageRoutes.js'
+import { registerTranscriptRevisionRoutes } from './routes/transcriptRevisionRoutes.js'
+import { registerClaudeHookRoutes } from './routes/claudeHookRoutes.js'
 import { registerClaudeMcpRoutes } from './routes/claudeMcpRoutes.js'
 import { ClaudeMcpControlService } from './services/claudeMcpControl.js'
 import { claudeWarmConfigFromEnv } from './services/claudeWarmProcess.js'
@@ -42,6 +44,13 @@ import { claudeBridge } from '../tools/claudeBridge.js'
 import { withToolAccess } from '../toolAccessContext.js'
 import { createWatchExecutor, watchService } from './services/watchService.js'
 import { createMultiCallDispatchExecutor } from './services/multiCallExecutor.js'
+import {
+  HEAVY_COMMAND_MIN_RUN_MS,
+  HeavyCommandGate,
+  heavyCommandGate,
+  isHeavyShellCommand,
+  resolveHeavyCommandWorkspace,
+} from './services/heavyCommandGate.js'
 import { createReplDispatchExecutor } from './services/replExecutor.js'
 import { createContextStatusExecutor } from './services/contextStatusTool.js'
 import { createOperationModeSwitchExecutor } from './services/operationModeSwitchTool.js'
@@ -80,6 +89,7 @@ const HEADLESS_RUNTIME_BUILTIN_TOOL_NAMES = new Set([
   'fetch_notes',
   'fetch_chats',
   'context_status',
+  'revise_transcript',
   'switch_mode',
   'read_file',
   'read_file_continuation',
@@ -140,7 +150,7 @@ const resolveDefaultInferenceTools = (): InferenceToolDefinition[] => {
 
 // Delegation tools are always excluded (no nested subagents or external reviewers).
 // switch_mode too: a child inherits its parent's mode and has no live mode control.
-const SUBAGENT_EXCLUDED_TOOL_NAMES = new Set(['subagent', 'subagent_manager', 'claude_bridge', 'switch_mode'])
+const SUBAGENT_EXCLUDED_TOOL_NAMES = new Set(['subagent', 'subagent_manager', 'claude_bridge', 'switch_mode', 'revise_transcript'])
 
 // These orchestration tools are always exposed to a child, including when a
 // parent supplies an explicit tool whitelist.
@@ -187,7 +197,11 @@ const sleep = (ms: number): Promise<void> =>
     setTimeout(resolve, ms)
   })
 
-const createOrchestratorToolExecutor = (toolOrchestrator: OrchestratorLike): ToolExecutor => async (toolCall, context) => {
+export const createOrchestratorToolExecutor = (
+  toolOrchestrator: Pick<OrchestratorLike, 'submit' | 'getJob' | 'cancel'>,
+  gate: HeavyCommandGate = heavyCommandGate
+): ToolExecutor => async (toolCall, context) => {
+  const budgetStartedAt = Date.now()
   const requestedTimeout = context.timeoutMs
   const timeoutMs = typeof requestedTimeout === 'number' && Number.isFinite(requestedTimeout) && requestedTimeout > 0
     ? Math.max(1_000, Math.min(requestedTimeout, 600_000))
@@ -213,9 +227,36 @@ const createOrchestratorToolExecutor = (toolOrchestrator: OrchestratorLike): Too
     throw abortError
   }
 
+  // Builds, type checks and test runners in one workspace run one at a time
+  // (parallel multi_call batches and concurrent runs included). The wait
+  // spends the caller's tool budget, not the shell's own timeout.
+  const isShell = toolCall.name === 'bash' || toolCall.name === 'powershell'
+  const release = isShell && isHeavyShellCommand(parsedArguments.command)
+    ? await gate.acquire(
+        resolveHeavyCommandWorkspace(parsedArguments.command, parsedArguments.cwd, context.rootPath),
+        parsedArguments.command,
+        { signal, waitUntilMs: budgetStartedAt + timeoutMs - HEAVY_COMMAND_MIN_RUN_MS }
+      )
+    : undefined
+  try {
+    return await pollOrchestratorJob(toolOrchestrator, toolCall, context, parsedArguments, timeoutMs, budgetStartedAt)
+  } finally {
+    release?.()
+  }
+}
+
+async function pollOrchestratorJob(
+  toolOrchestrator: Pick<OrchestratorLike, 'submit' | 'getJob' | 'cancel'>,
+  toolCall: Parameters<ToolExecutor>[0],
+  context: Parameters<ToolExecutor>[1],
+  parsedArguments: Record<string, any>,
+  timeoutMs: number,
+  budgetStartedAt: number
+): Promise<unknown> {
+  const signal = context.signal
   const job = toolOrchestrator.submit(toolCall.name, parsedArguments, {
     timeoutMs,
-    deadlineMs: Date.now() + timeoutMs,
+    deadlineMs: budgetStartedAt + timeoutMs,
     rootPath: context.rootPath ?? null,
     fullAccess: context.fullAccess === true,
     additionalRoots: context.additionalRoots ?? [],
@@ -226,7 +267,7 @@ const createOrchestratorToolExecutor = (toolOrchestrator: OrchestratorLike): Too
     toolCallId: toolCall.id ?? null,
   })
 
-  const startedAt = Date.now()
+  const startedAt = budgetStartedAt
   while (true) {
     // Cancel the in-flight job promptly when the run is aborted.
     if (signal?.aborted) {
@@ -347,9 +388,11 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
   registerCapabilityRoutes(app, { getDefaultTools: resolveDefaultInferenceTools })
   registerEphemeralGenerateRoutes(app, { tokenStore })
   registerLineageRoutes(app, deps)
+  registerTranscriptRevisionRoutes(app, deps)
   const claudeMcpControl = new ClaudeMcpControlService({ preferences: () => readHostExecutionPreferences().values.claudeMcp })
   activeClaudeMcpControls.add(claudeMcpControl)
   registerClaudeMcpRoutes(app, { control: claudeMcpControl })
+  registerClaudeHookRoutes(app, deps)
 
   // /api/gw/*: the renderer's local data gateway (facade over /api/app/*).
   registerGatewayRoutes(app, { db: deps.db, statements: deps.statements })
@@ -434,16 +477,19 @@ export function registerHeadlessServerRoutes(app: Express, deps: HeadlessServerR
     // Phase 3: in-process chat hooks (fires only when a request sets hooksEnabled).
     hookRunner: runHookRequest,
     claudeNativeMcp: () => readHostExecutionPreferences().values.claudeMcp,
+    allowClaudeNativeHooks: () => readHostExecutionPreferences().values.allowClaudeNativeHooks,
     // Claude CLIs stay open between turns of a branch (GRAVITON_CLAUDE_WARM_IDLE_MS=0 turns it off).
     claudeWarm: claudeWarmConfigFromEnv(),
     // Graviton tools reach Claude as the `graviton` MCP server, following Settings → Tools live.
     claudeGravitonToolStates: () => readHostExecutionPreferences().values.tools,
   })
   activeOrchestrators.add(chatOrchestrator)
-  const stopToolSettingsWatch = onHostExecutionPreferencesSaved(domains => {
+  const stopExecutionSettingsWatch = onHostExecutionPreferencesSaved(domains => {
     if (domains.includes('tools')) chatOrchestrator.gravitonToolsChanged()
+    if (domains.includes('allowClaudeNativeHooks')) void chatOrchestrator.disposeClaudeSessions().catch(error =>
+      console.warn('[ClaudeSession] could not close parked sessions after hook settings changed', error instanceof Error ? error.message : error))
   })
-  reaperStops.add(stopToolSettingsWatch)
+  reaperStops.add(stopExecutionSettingsWatch)
   // Synchronously releases stale 'running' Claude branches, then checkpoints their heads.
   void chatOrchestrator.recoverInterruptedClaudeBranches().catch(error =>
     console.warn('[ClaudeSession] interrupted branch recovery failed', error instanceof Error ? error.message : error))

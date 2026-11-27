@@ -91,6 +91,15 @@ describe('preview user message surface', () => {
     } } as any]
   }
 
+  it('right-aligns user bubbles while keeping assistant rows full width', () => {
+    withRequest()
+    const entries = capture.byStreamId.main.entries
+    entries.push({ key: 'reply', message: { ...entries[0].message!, id: 'reply', role: 'assistant', content: 'Done' } })
+    const html = render()
+    expect(html).toMatch(/<div class="ml-auto w-fit min-w-0 max-w-\[90%\][^"]*"><i data-role="user"/)
+    expect(html).toContain('<div class="min-w-0"><i data-role="assistant"')
+  })
+
   it('tints user rows with the default pill colour when no custom theme is on', () => {
     withRequest()
     expect(render()).toContain('data-role="user" data-surface="color-mix(in srgb, currentColor 7%, transparent)"')

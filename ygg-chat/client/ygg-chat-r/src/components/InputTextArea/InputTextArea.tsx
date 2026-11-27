@@ -22,6 +22,8 @@ import { readLocalMentionFile } from '../../utils/readLocalMentionFile'
 import { rankFileMatches } from '../../../shared/fileMatchRanking'
 import { CHAT_NORMAL_TEXT_SIZE_CLASS, getChatFontSizeOffsetStyle } from '../ChatMessage/chatMessageShared'
 import { getPastedImageFiles } from '../../helpers/clipboardImages'
+import { getTransferredFiles, isImageFile } from '../../features/fileInsertion/fileInsertion'
+import { useFileInsertion, type InputFileInsertionHandle } from '../../features/fileInsertion/useFileInsertion'
 
 type textAreaState = 'default' | 'error' | 'disabled'
 // Accept any Tailwind width/max-width class combination (e.g. "w-full max-w-3xl").
@@ -62,6 +64,10 @@ interface TextAreaProps {
   selectedIdeContextItems?: Array<{ id: string; label: string }>
   fallbackFileSearchRoot?: string | null
   enableImageAttachments?: boolean
+  enableFileInsertion?: boolean
+  fileInsertionScope?: string
+  onFileInsertionPendingChange?: (pending: boolean) => void
+  fileInsertionRef?: React.Ref<InputFileInsertionHandle>
   enableFileMentions?: boolean
   imageDraftTarget?: ImageDraftTarget
   fontSizeOffset?: number
@@ -173,6 +179,10 @@ export const InputTextArea: React.FC<TextAreaProps> = ({
   selectedIdeContextItems = [],
   fallbackFileSearchRoot = null,
   enableImageAttachments = false,
+  enableFileInsertion = false,
+  fileInsertionScope,
+  onFileInsertionPendingChange,
+  fileInsertionRef,
   enableFileMentions = true,
   imageDraftTarget = { kind: 'composer' },
   fontSizeOffset = 0,
@@ -297,12 +307,9 @@ export const InputTextArea: React.FC<TextAreaProps> = ({
   const [filteredSlashCommands, setFilteredSlashCommands] = useState<string[]>([])
   const [activeSlashCommand, setActiveSlashCommand] = useState<{ start: number; term: string } | null>(null)
 
-  const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+  const applyInputChange = (newValue: string, cursorPos: number) => {
     if (state === 'disabled') return
-    const newValue = e.target.value
     onChange?.(newValue)
-
-    const cursorPos = e.target.selectionStart ?? newValue.length
 
     // Check for slash commands first (must start at position 0)
     if (slashCommands && slashCommands.length > 0) {
@@ -413,6 +420,23 @@ export const InputTextArea: React.FC<TextAreaProps> = ({
     onKeyDown?.(e)
   }
 
+  const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) =>
+    applyInputChange(e.target.value, e.target.selectionStart ?? e.target.value.length)
+
+  const fileInsertion = useFileInsertion({
+    inputRef: textareaRef,
+    value,
+    onChange: onChange ? applyInputChange : undefined,
+    enabled: enableFileInsertion && state !== 'disabled',
+    scope: fileInsertionScope,
+  })
+  const { insertFiles, isPending: isFileInsertionPending, pending: fileInsertionPending } = fileInsertion
+  React.useImperativeHandle(fileInsertionRef, () => ({ insertFiles, isPending: isFileInsertionPending }), [insertFiles, isFileInsertionPending])
+  React.useLayoutEffect(() => {
+    onFileInsertionPendingChange?.(fileInsertionPending)
+  }, [fileInsertionPending, onFileInsertionPendingChange])
+  React.useLayoutEffect(() => () => onFileInsertionPendingChange?.(false), [onFileInsertionPendingChange])
+
   const handleDragEnter = (e: React.DragEvent<HTMLTextAreaElement>) => {
     e.preventDefault()
     e.stopPropagation()
@@ -435,18 +459,23 @@ export const InputTextArea: React.FC<TextAreaProps> = ({
     e.preventDefault()
     e.stopPropagation()
     setDragOver(false)
-    if (state === 'disabled' || !enableImageAttachments) return
-    const images = Array.from(e.dataTransfer?.files || []).filter(file => file.type.startsWith('image/'))
-    if (images.length) void dispatch(prepareImageFiles(images, imageDraftTarget))
+    if (state === 'disabled') return
+    const files = getTransferredFiles(e.dataTransfer)
+    if (enableImageAttachments) {
+      const images = files.filter(isImageFile)
+      if (images.length) void dispatch(prepareImageFiles(images, imageDraftTarget))
+    }
+    insertFiles(files.filter(file => !isImageFile(file)))
   }
 
   const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
     onPaste?.(e)
-    if (e.defaultPrevented || state === 'disabled' || !enableImageAttachments) return
-    const images = getPastedImageFiles(e.clipboardData)
-    if (!images.length) return
-    e.preventDefault()
-    void dispatch(prepareImageFiles(images, imageDraftTarget))
+    if (e.defaultPrevented || state === 'disabled') return
+    const files = enableFileInsertion ? getTransferredFiles(e.clipboardData) : []
+    const images = enableImageAttachments ? getPastedImageFiles(e.clipboardData) : []
+    const handled = insertFiles(files.filter(file => !isImageFile(file)))
+    if (handled || images.length) e.preventDefault()
+    if (images.length) void dispatch(prepareImageFiles(images, imageDraftTarget))
   }
 
   const handleFileSelection = (file: MentionableFileOption) => {
@@ -1047,6 +1076,19 @@ export const InputTextArea: React.FC<TextAreaProps> = ({
           </span>
         )}
       </div>
+
+      {enableFileInsertion && (fileInsertionPending || fileInsertion.errors.length > 0) && (
+        <div role='status' className='px-3 py-1 text-xs text-stone-700 dark:text-stone-300'
+          style={customThemeEnabled ? {
+            color: getThemeModeColor(customTheme.colors.toolJobsPrimaryText, isDarkMode),
+          } : undefined}>
+          {fileInsertionPending && <span>Reading files… </span>}
+          {fileInsertion.errors.map((error, index) => <div key={index}>{error}</div>)}
+          <button type='button' className='underline focus-visible:outline' onClick={fileInsertionPending ? fileInsertion.cancel : fileInsertion.dismiss}>
+            {fileInsertionPending ? 'Cancel import' : 'Dismiss'}
+          </button>
+        </div>
+      )}
 
       {/* Image draft previews (hidden while editing a branch) */}
       {enableImageAttachments && imageDraftTargetMatches && (preparation.imagePreparationPending > 0 || preparation.imagePreparationError) && (

@@ -5,7 +5,7 @@ import { LineageRepo } from '../persistence/lineageRepo.js'
 interface LineageRouteRepo {
   reconcileLegacyConversation(conversationId: string): unknown
   list(conversationId: string): unknown[]
-  getDetail(conversationId: string, lineageId: string): unknown | null
+  getDetail(conversationId: string, lineageId: string, idsOnly?: boolean): unknown | null
   listRecent(projectId: string, limit: number, userId?: string | null): unknown[]
 }
 
@@ -45,7 +45,7 @@ export function registerLineageRoutes(app: Express, deps: RegisterLineageRoutesD
     if (!owns(conversation, requestedUserId(req))) return sendError(res, 404, 'Conversation not found')
 
     repo.reconcileLegacyConversation(req.params.conversationId)
-    const detail = repo.getDetail(req.params.conversationId, req.params.lineageId)
+    const detail = repo.getDetail(req.params.conversationId, req.params.lineageId, req.query.idsOnly === 'true')
     if (!detail) return sendError(res, 404, 'Lineage not found')
     res.json(detail)
   })

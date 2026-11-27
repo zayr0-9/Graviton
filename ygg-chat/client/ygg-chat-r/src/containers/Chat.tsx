@@ -1,12 +1,15 @@
 import { selectHostFolder } from '../platform/hostPathPicker'
 import { newClientId } from '../helpers/clientId'
-import { isBrowserClient, isHostClient, isNativeShell } from '../platform/clientCapabilities'
+import { isBrowserClient, isHostClient, isNativeShell, supportsBranchSnapshots } from '../platform/clientCapabilities'
 import { ConversationOpeningOverlay } from '../components/ChatPane/ConversationOpeningOverlay'
 import { useModelSwitchConfirmation } from '../hooks/useModelSwitchConfirmation'
 import { ModelSwitchDialog } from '../components/ModelSelectControl/ModelSwitchDialog'
 import { isClaudeProvider, isClaudeTranscriptMessage } from '../../../../shared/claudeProvider'
 import { isCleanStartBranchEdit, isProviderHandoffEdit, resolveComposerModelSelection, resolveComposerClaudeLock, resolveSummaryContinuation } from '../features/chats/branchModelSelection'
 import { resolveBranchFastMode } from '../features/chats/branchFastMode'
+import { resolveComposerFullAccess, resolveRunFullAccess, restrictedAccess, type FullAccessSubmission } from '../features/chats/branchFullAccess'
+import { resolveBranchUltracode, resolveEditUltracode } from '../features/chats/branchUltracode'
+import { resolveBranchReasoning } from '../features/chats/branchReasoning'
 import { resolveBranchPlanMode } from '../features/chats/branchPlanMode'
 import { resolveBranchClaudeAutoMode } from '../features/chats/branchClaudeAutoMode'
 import { resolveComposerToolApproval } from '../features/chats/branchToolApproval'
@@ -70,7 +73,8 @@ import { isWatcherCompletionMessage, WatcherCompletionNotice } from '../componen
 import { ImageAttachmentNotice, isImageAttachmentInfoMessage } from '../components/ChatMessage/ImageAttachmentNotice'
 import { prepareImageFiles, waitForImagePreparation } from '../features/chats/imagePreparation'
 import { hasAcceptedImageAttachments } from '../features/chats/acceptedImageAttachments'
-import { isExcludedFromProcessRunGrouping } from '../components/ChatMessage/chatMessageShared'
+import { normalizeAssistantDisplayBlocks } from '../components/ChatMessage/chatMessageShared'
+import { projectPersistedAgentRows, type MessageRenderRow } from '../components/ChatMessage/persistedAgentRows'
 import {
   ChatInputController,
   type ChatInputControllerHandle,
@@ -111,7 +115,6 @@ import { getCompactionPresentationScope, isCompactionVisibleFor, type Compaction
 import {
   abortGeneration,
   cancelPlanClarification,
-  blobToDataURL,
   chatSliceActions,
   compactBranch,
   abortCompaction,
@@ -120,7 +123,6 @@ import {
   fetchConversationStreamUndo,
   initializeUserAndConversation,
   Message,
-  resolveAttachmentUrl,
   respondToPlanClarification,
   respondToOperationModeUpgrade,
   respondToToolPermission,
@@ -164,6 +166,8 @@ import { QueuedMessages } from '../components/ChatMessage/QueuedMessages'
 import { OperationModeNotice } from '../components/ChatMessage/OperationModeNotice'
 import { claudeModeNoticesByMessageId } from '../features/chats/claudeModeNotices'
 import { parsePlanCommand } from '../features/chats/planCommand'
+import { useTranscriptRevisions } from '../hooks/useTranscriptRevisions'
+import { parseTranscriptRevisionRequest } from '../../../../shared/transcriptRevision'
 import { FullAccessNotice } from '../components/ChatMessage/FullAccessNotice'
 import { isFullAccessNotification, isRunSettingsNotification } from '../../../../shared/accessNotifications'
 import { SummaryBranchMessage } from '../components/ChatMessage/SummaryBranchMessage'
@@ -181,7 +185,7 @@ import { isContextInjectionMessage, parseMessageMeta } from '../../../../shared/
 import { ContextInjectionCard, type ContextInjectionCardEntry } from '../components/ChatMessage/ContextInjectionCard'
 import { AgentSteps } from '../components/ChatMessage/AgentSteps'
 import { MessageActivity } from '../components/ChatMessage/MessageActivity'
-import { getAgentProgress, splitLiveAgentEvents, hasTrailingAgentProse, canAttachLiveAgentGroup, buildStreamRenderItems, resolveTrailingStatusGroupKey, resolveActivityIndicatorOwner } from '../components/ChatMessage/agentActivity'
+import { getAgentProgress, splitLiveAgentEvents, canAttachLiveAgentGroup, buildStreamRenderItems, resolveTrailingStatusGroupKey, resolveActivityIndicatorOwner } from '../components/ChatMessage/agentActivity'
 import {
   chatErrorRowHeight,
   DEFAULT_ROOT_FONT_SIZE,
@@ -191,6 +195,7 @@ import {
 } from '../components/ChatMessage/estimateMessageHeight'
 import {
   extractBranchFileMutations,
+  indexWorkspaceMutationTurns,
   type WorkspaceMutationOperation,
 } from '../features/chats/workspaceMutationTracking'
 import {
@@ -243,8 +248,7 @@ import {
   ProviderSettings,
   resolveProviderContextLength,
 } from '../helpers/providerSettingsStorage'
-import { useSyncExternalStore } from 'react'
-import { isFullAccessEnabled, setFullAccessEnabled, subscribeFullAccess } from '../helpers/fullAccessSettings'
+import { readChatDisplayName } from '../helpers/chatDisplayName'
 import { handleChatToggleShortcut, loadModelShortcutSlots } from '../helpers/chatKeyboardShortcuts'
 import { useCommandBlocker, useCommands } from '../keyboard/KeyboardProvider'
 import {
@@ -252,6 +256,13 @@ import {
   TOOL_OUTPUT_TRUNCATION_CHANGE_EVENT,
   TOOL_OUTPUT_TRUNCATION_ENABLED_KEY,
 } from '../helpers/toolOutputTruncation'
+import {
+  hasReasoningContent,
+  useHideReasoningBlocks,
+  withoutReasoningBlocks,
+  withoutReasoningEvents,
+} from '../helpers/hideReasoningSettings'
+import { useHighlightedTurnFiles } from '../helpers/highlightedTurnFilesSettings'
 import { useAppDispatch, useAppSelector } from '../hooks/redux'
 import { useAuth } from '../hooks/useAuth'
 import { useIdeContext } from '../hooks/useIdeContext'
@@ -274,33 +285,16 @@ import { chatSelectionScrollHandled, isPendingViewStreamOwned, type PendingViewS
 import { executeToolAndWait } from '../utils/executeToolAndWait'
 import { getHookRunsRenderSignature } from '../components/ChatMessage/hookActivityState'
 import { parseId } from '../utils/helpers'
-import { extractTextFromPdf } from '../utils/pdfUtils'
+import { getFileInsertionAccept, isImageFile, mapOutsideFileInsertions } from '../features/fileInsertion/fileInsertion'
 import { addFileMentionLookupKeys } from '../../shared/fileMatchRanking'
 import { extractLatestTodoList } from '../features/chats/todoListTracking'
+import { hydrateMessageBodies } from '../features/chats/messageBodyHydration'
 import { ConversationLinkRootProvider } from '../components/MarkdownLink/markdownLinkRoot'
 
 type ParsedMessageData = {
   toolCalls?: ToolCall[]
   contentBlocks?: ContentBlock[]
 }
-
-type MessageRenderRow =
-  | {
-      kind: 'message'
-      id: MessageId
-      message: Message
-    }
-  | {
-      kind: 'process_group'
-      id: MessageId
-      anchorMessageId: MessageId
-      memberMessageIds: MessageId[]
-      messages: Message[]
-      toolCount: number
-      reasoningCount: number
-      leadingMessageId?: MessageId
-      bridgedMessageId?: MessageId
-    }
 
 type VirtualRenderRow =
   | { kind: 'run_stats'; key: string; statistics: RunStatisticsFooterData }
@@ -394,6 +388,7 @@ const NO_BACKGROUND_TASKS: NonNullable<StreamState['backgroundTasks']> = []
 const COMPOSER_SLASH_COMMANDS = [
   'status-openai',
   'compact',
+  'revise',
   'bench on',
   'bench off',
   'bench status',
@@ -402,7 +397,6 @@ const COMPOSER_SLASH_COMMANDS = [
   'theme-demo on',
   'theme-demo off',
 ]
-const CROSS_MESSAGE_PROCESS_GROUP_MIN_MESSAGES = 1
 const DERIVED_RENDER_CACHE_LIMIT = 40
 const ACTION_POPOVER_SELECT_DROPDOWN_Z_INDEX = 100001
 const BENCH_MAX_SAMPLES = 3000
@@ -734,15 +728,6 @@ const parseThemeDemoAction = (command: string): ThemeDemoAction | null => {
   return match[1] as ThemeDemoAction
 }
 
-const isLikelyProcessAnnotationText = (text: string): boolean => {
-  const trimmed = text.trim()
-  if (!trimmed) return true
-  if (trimmed.startsWith('```')) return false
-
-  const normalized = trimmed.replace(/[*_`>#-]/g, ' ')
-  const words = normalized.split(/\s+/).filter(Boolean)
-  return words.length <= 14
-}
 
 const countReasoningEntriesInResponsesOutputItems = (items: unknown): number => {
   if (!Array.isArray(items)) return 0
@@ -858,62 +843,6 @@ const splitInstructionSetIntoEntries = (content: string, files: string[], reason
   return files.map(file => ({ path: file, label: 'instruction file', text: content, reason }))
 }
 
-const parseToolArgumentsForGrouping = (value: unknown): Record<string, any> | null => {
-  if (value == null || typeof value === 'object') return value as Record<string, any> | null
-  if (typeof value !== 'string') return null
-
-  try {
-    const parsed = JSON.parse(value)
-    return parsed && typeof parsed === 'object' ? (parsed as Record<string, any>) : null
-  } catch {
-    return null
-  }
-}
-
-const getExcludedGroupingToolIds = (parsed: ParsedMessageData): Set<string> => {
-  const excludedIds = new Set<string>()
-
-  for (const toolCall of parsed.toolCalls ?? []) {
-    if (isExcludedFromProcessRunGrouping(toolCall.name, parseToolArgumentsForGrouping(toolCall.arguments))) {
-      excludedIds.add(String(toolCall.id))
-    }
-  }
-
-  for (const block of parsed.contentBlocks ?? []) {
-    if (block.type === 'tool_use' && isExcludedFromProcessRunGrouping(block.name, block.input)) {
-      excludedIds.add(String(block.id))
-      continue
-    }
-
-    const record = block as unknown as Record<string, any>
-    if (record.type !== 'responses_output_items' || !Array.isArray(record.items)) continue
-    for (const item of record.items) {
-      if (!item || item.type !== 'function_call') continue
-      if (isExcludedFromProcessRunGrouping(item.name, parseToolArgumentsForGrouping(item.arguments))) {
-        excludedIds.add(String(item.call_id || item.id || ''))
-      }
-    }
-  }
-
-  excludedIds.delete('')
-  return excludedIds
-}
-
-const hasExcludedGroupingTool = (parsed: ParsedMessageData): boolean => getExcludedGroupingToolIds(parsed).size > 0
-
-const isProcessContentBlock = (block: ContentBlock): boolean => {
-  if (
-    block.type === 'thinking' ||
-    block.type === 'tool_use' ||
-    block.type === 'tool_result' ||
-    block.type === 'reasoning_details'
-  ) {
-    return true
-  }
-
-  return getResponsesOutputReasoningCount(block) > 0
-}
-
 const parseMessageDataForRender = (msg: Message): ParsedMessageData => {
   let toolCalls: ToolCall[] | undefined
   if (msg.tool_calls) {
@@ -1010,6 +939,24 @@ const parseMessageDataForRender = (msg: Message): ParsedMessageData => {
   return { toolCalls: hasToolUseBlocks ? undefined : toolCalls, contentBlocks }
 }
 
+/**
+ * Whether an assistant row still draws anything once its reasoning is hidden. `parsed` is the
+ * original payload and `layout` the reasoning-free view of it. Mirrors ChatMessage: the `content`
+ * string is drawn only for a row that has no blocks at all.
+ */
+const drawsWithoutReasoning = (msg: Message, parsed: ParsedMessageData, layout: ParsedMessageData): boolean => {
+  if (msg.hook_runs?.length || layout.toolCalls?.length || (Array.isArray(msg.artifacts) && msg.artifacts.length > 0)) {
+    return true
+  }
+  if (!parsed.contentBlocks?.length) return typeof msg.content === 'string' && msg.content.trim().length > 0
+  return normalizeAssistantDisplayBlocks(parsed.contentBlocks).some(block => {
+    if (!block) return false
+    if (block.type === 'text') return typeof block.content === 'string' && block.content.trim().length > 0
+    if (block.type === 'image') return Boolean(block.url)
+    return block.type === 'tool_use' || block.type === 'tool_result' || block.type === 'error' || block.type === 'context_injection'
+  })
+}
+
 
 function Chat() {
   const dispatch = useAppDispatch()
@@ -1027,6 +974,7 @@ function Chat() {
   // Keep high-frequency keystrokes inside the input controller to avoid rerendering Chat.
   const inputControllerRef = useRef<ChatInputControllerHandle | null>(null)
   const [hasLocalInput, setHasLocalInput] = useState(false)
+  const [fileInsertionPending, setFileInsertionPending] = useState(false)
   const [addedIdeContexts, setAddedIdeContexts] = useState<AddedIdeContext[]>([])
   const chatSelection = useChatSelection()
   const selection = useAppSelector(state => state.chat.selection)
@@ -1091,10 +1039,12 @@ function Chat() {
 
   const [chatReasoningSettings, setChatReasoningSettings] = useState(() => loadChatReasoningSettings())
 
-  // Reasoning configuration (effort level for extended thinking models)
-  const [reasoningConfig, setReasoningConfig] = useState<ReasoningConfig>(() => ({
-    effort: chatReasoningSettings.defaultReasoningEffort,
-  }))
+  // Reasoning level follows the selected branch like its model and provider: an edit-session
+  // choice, else the branch's draft or recorded level, else the Settings default.
+  const branchReasoningLevel = useAppSelector(state =>
+    (state.chat.composition.editingBranch ? state.chat.composition.branchEditModes?.reasoningLevel : undefined)
+      ?? resolveBranchReasoning(state.chat, chatReasoningSettings)
+  )
   const fastServiceTierEnabled = useAppSelector(state =>
     (state.chat.composition.editingBranch ? state.chat.composition.branchEditModes?.fastMode : undefined)
       ?? resolveBranchFastMode(state.chat)
@@ -1336,7 +1286,7 @@ function Chat() {
   const canStopCompaction = isCurrentBranchCompacting
   const toolCallPermissionRequest = useAppSelector(state =>
     streamState.id
-      ? (state.chat.toolPermissionRequestsByStream[streamState.id] ?? null)
+      ? (state.chat.transcriptRevisionRequestsByStream?.[streamState.id] ?? state.chat.toolPermissionRequestsByStream[streamState.id] ?? null)
       : null
   )
   const operationModeUpgradeRequest = useAppSelector(state =>
@@ -1355,7 +1305,9 @@ function Chat() {
     (state.chat.composition.editingBranch ? state.chat.composition.branchEditModes?.claudeAutoMode : undefined)
       ?? resolveBranchClaudeAutoMode(state.chat)
   )
-  const claudeUltracode = useAppSelector(state => state.chat.claudeUltracode === true)
+  const claudeUltracode = useAppSelector(({ chat }) => isClaudeSession && (chat.composition.editingBranch
+    ? resolveEditUltracode(chat, chat.conversation.currentConversationId, chat.composition.branchEditMessageId)
+    : resolveBranchUltracode(chat)))
   // Per branch: follows the selected branch as the user navigates (resolveBranchPlanMode).
   const claudePlanMode = useAppSelector(state =>
     (state.chat.composition.editingBranch ? state.chat.composition.branchEditModes?.claudePlanMode : undefined)
@@ -1370,8 +1322,15 @@ function Chat() {
     return state.chat.operationModeChanges?.[operationModeChangeKey(currentConversationId, streamState.id)]
   })
   const modeLineageId = useAppSelector(state => state.chat.conversation.currentLineageId)
+  const transcriptLineageId = useAppSelector(state => modeLineageId ??
+    state.chat.conversation.messages.find(message => message.id === selectedPath.at(-1))?.lineage_id ?? null)
+  const transcriptRevisions = useTranscriptRevisions(conversationIdFromUrl, transcriptLineageId)
+  // One toggle per original message, including when Agent steps splits its prose into several rows.
+  const [originalTranscriptRevisionIds, setOriginalTranscriptRevisionIds] = useState<Set<number>>(() => new Set())
   const [queueSubmitting, setQueueSubmitting] = useState(false)
-  const queueRetryRef = useRef<{ streamId: string; content: string; requestId: string } | null>(null)
+  const queueAccessChoice = useAppSelector(({ chat }) => currentConversationId != null && streamState.id
+    ? resolveRunFullAccess(chat, String(currentConversationId), streamState.id) : restrictedAccess)
+  const queueRetryRef = useRef<{ streamId: string; content: string; requestId: string; userDisplayName: string; accessChoice: FullAccessSubmission } | null>(null)
   const queueSubmittingRef = useRef(false)
   const [lastQueueStreamId, setLastQueueStreamId] = useState<string | null>(null)
   const queueStreamId = streamState.active ? streamState.id : lastQueueStreamId
@@ -1568,7 +1527,7 @@ function Chat() {
     useState<StreamingThinkingIndicatorPlacement>(getStoredStreamingThinkingIndicatorPlacement)
   // Tool jobs modal state
   const [jobsModalOpen, setJobsModalOpen] = useState(false)
-  const fullAccessEnabled = useSyncExternalStore(subscribeFullAccess, isFullAccessEnabled)
+  const fullAccessEnabled = useAppSelector(({ chat }) => resolveComposerFullAccess(chat).fullAccess)
   // OpenRouter cloud-sign-in required modal state
   // OpenAI ChatGPT login modal state
   const [openaiLoginModalOpen, setOpenaiLoginModalOpen] = useState(false)
@@ -2093,12 +2052,12 @@ function Chat() {
       // Replace mentions in the message.
       // Regex: Matches @ followed by alphanumeric, dot (.), underscore (_), slash (/), dash (-).
       const mentionRegex = /@([A-Za-z0-9._\/-]+)/g // 'g' flag for global replacement.
-      return message.replace(mentionRegex, (full: string, mName: string) => {
+      return mapOutsideFileInsertions(message, text => text.replace(mentionRegex, (full: string, mName: string) => {
         // For each match: Look up full path by captured name (mName).
         // If found, replace with path; otherwise, keep original.
         const path = nameToPath.get(mName)
         return path != null ? path : full
-      })
+      }))
     },
     [selectedFilesForChat] // Dependency array: Re-creates if selectedFilesForChat changes.
   )
@@ -2296,10 +2255,8 @@ function Chat() {
   const runFooters = useMemo(() => deriveRunStatistics(conversationMessages, selectedPath, conversationRuns,
     currentConversationId == null ? null : String(currentConversationId), modeLineageId),
     [conversationMessages, selectedPath, conversationRuns, currentConversationId, modeLineageId])
-  const runFootersByAnchor = useMemo(() => placeRunFooters(runFooters, selectedPath, renderableMessages.map(m => String(m.id))),
-    [runFooters, selectedPath, renderableMessages])
-  const runBoundarySignature = [...runFootersByAnchor.keys()].join('|')
 
+  const hideReasoningBlocks = useHideReasoningBlocks()
   const [groupToolReasoningRuns, setGroupToolReasoningRuns] = useState<boolean>(() => {
     try {
       const stored = localStorage.getItem('chat:groupToolReasoningRuns')
@@ -2330,7 +2287,7 @@ function Chat() {
           const thinkingHash = hashStringForRenderCache(msg.thinking_block ?? '')
           const noteHash = hashStringForRenderCache(`${msg.note ?? ''}:${msg.note_color ?? ''}`)
           const hookRunsHash = hashStringForRenderCache(getHookRunsRenderSignature(msg.hook_runs))
-          return `${msg.id}:${msg.role}:${updatedAt}:a${artifactCount}:c${contentHash}:b${contentBlocksHash}:t${toolCallsHash}:r${thinkingHash}:n${noteHash}:h${hookRunsHash}`
+          return `${msg.id}:${msg.role}:${updatedAt}:a${artifactCount}:c${contentHash}:b${contentBlocksHash}:t${toolCallsHash}:r${thinkingHash}:n${noteHash}:h${hookRunsHash}:v${msg.revision ?? ''}:o${Boolean(msg.body_omitted)}:m${hashUnknownForRenderCache(msg.meta)}`
         })
         .join('|'),
     [renderableMessages]
@@ -2351,12 +2308,55 @@ function Chat() {
     return parsedById
   }, [renderableMessages, renderableMessagesSignature])
 
+  // Hidden reasoning is presentation only. Rows still hand ChatMessage the original blocks (an
+  // assistant edit round-trips its thinking), and ChatMessage skips the reasoning itself. Grouping
+  // and row-height estimates read this reasoning-free view so they match what is drawn.
+  const layoutMessageDataById = useMemo(() => {
+    if (!hideReasoningBlocks) return parsedMessageDataById
+    const layoutById = new Map<MessageId, ParsedMessageData>()
+    for (const [id, parsed] of parsedMessageDataById) {
+      const contentBlocks = withoutReasoningBlocks(parsed.contentBlocks)
+      layoutById.set(id, contentBlocks === parsed.contentBlocks ? parsed : { ...parsed, contentBlocks })
+    }
+    return layoutById
+  }, [hideReasoningBlocks, parsedMessageDataById])
+
+  // Assistant rows that held only reasoning draw nothing once it is hidden. Kept in the list they
+  // would add empty virtual rows and, no longer counting as agent work, split "Agent steps" groups.
+  const reasoningOnlyMessageIds = useMemo(() => {
+    const ids = new Set<string>()
+    if (!hideReasoningBlocks) return ids
+    for (const msg of renderableMessages) {
+      if (msg.role !== 'assistant' && msg.role !== 'ex_agent') continue
+      const parsed = parsedMessageDataById.get(msg.id) ?? EMPTY_PARSED_MESSAGE_DATA
+      const hadReasoning = hasReasoningContent(parsed.contentBlocks) ||
+        (typeof msg.thinking_block === 'string' && msg.thinking_block.trim().length > 0)
+      if (!hadReasoning) continue
+      const layout = layoutMessageDataById.get(msg.id) ?? EMPTY_PARSED_MESSAGE_DATA
+      if (!drawsWithoutReasoning(msg, parsed, layout)) ids.add(String(msg.id))
+    }
+    return ids
+  }, [hideReasoningBlocks, renderableMessages, parsedMessageDataById, layoutMessageDataById])
+
+  // The messages that get transcript rows. Equal to renderableMessages unless reasoning is hidden.
+  const rowMessages = useMemo(
+    () => reasoningOnlyMessageIds.size === 0
+      ? renderableMessages
+      : renderableMessages.filter(msg => !reasoningOnlyMessageIds.has(String(msg.id))),
+    [renderableMessages, reasoningOnlyMessageIds]
+  )
+
+  // Anchored to drawn rows: a footer whose run ends on a hidden row moves to the row before it.
+  const runFootersByAnchor = useMemo(() => placeRunFooters(runFooters, selectedPath, rowMessages.map(m => String(m.id))),
+    [runFooters, selectedPath, rowMessages])
+  const runBoundarySignature = [...runFootersByAnchor.keys()].join('|')
+
   const messageRenderRows = useMemo<MessageRenderRow[]>(() => {
     const deriveStart = typeof performance !== 'undefined' ? performance.now() : Date.now()
     const debugProcessGrouping =
       typeof window !== 'undefined' && window.localStorage.getItem('chat:debugProcessGrouping') === 'true'
 
-    const rowsCacheKey = `${groupToolReasoningRuns ? 'grouped' : 'plain'}|${renderableMessagesSignature}|${runBoundarySignature}`
+    const rowsCacheKey = `${groupToolReasoningRuns ? 'grouped' : 'plain'}|${hideReasoningBlocks ? 'no-reasoning' : 'reasoning'}|${renderableMessagesSignature}|${runBoundarySignature}`
     if (!debugProcessGrouping) {
       const cachedRows = messageRenderRowsCacheRef.current.get(rowsCacheKey)
       if (cachedRows) {
@@ -2368,258 +2368,19 @@ function Chat() {
       }
     }
 
-    const hasResponsesOutputItems = (parsed: ParsedMessageData): boolean =>
-      Array.isArray(parsed.contentBlocks)
-        ? parsed.contentBlocks.some(
-            block => (block as unknown as Record<string, unknown>).type === 'responses_output_items'
-          )
-        : false
+    const rows = groupToolReasoningRuns
+      ? projectPersistedAgentRows(rowMessages,
+          message => parsedMessageDataById.get(message.id)?.contentBlocks,
+          message => isCommittedCompaction(message) || isRunSettingsNotification(message) ||
+            isImageAttachmentInfoMessage(message) || isContextInjectionMessage(message) ||
+            isWatcherCompletionMessage(message) || (message.role === 'ex_agent' && Boolean(message.artifacts?.length)),
+          id => runFootersByAnchor.has(id),
+          hideReasoningBlocks)
+      : rowMessages.map(message => ({ kind: 'message' as const, id: message.id, message, footerAnchor: message.id }))
 
-    const hasSubstantialTextOrImage = (msg: Message, parsed: ParsedMessageData): boolean => {
-      if (hasTrailingAgentProse(parsed.contentBlocks ?? [])) return true
-      if (!parsed.contentBlocks?.some(block => block.type === 'text') && msg.content?.trim()) return true
-      if (
-        typeof msg.content === 'string' &&
-        msg.content.trim().length > 0 &&
-        !isLikelyProcessAnnotationText(msg.content)
-      ) {
-        return true
-      }
-
-      if (Array.isArray(parsed.contentBlocks)) {
-        return parsed.contentBlocks.some(block => {
-          if (block.type === 'text') {
-            return (
-              typeof block.content === 'string' &&
-              block.content.trim().length > 0 &&
-              !isLikelyProcessAnnotationText(block.content)
-            )
-          }
-          if (block.type === 'image') {
-            return Boolean(block.url)
-          }
-          // Context is projected below the collapsed history, so it no longer splits a run.
-          if (block.type === 'context_injection') return false
-          // Errors must remain visible outside process groups.
-          if (block.type === 'error') return true
-
-          const responseTexts = getResponsesOutputAssistantTexts(block)
-          return responseTexts.some(text => text.trim().length > 0 && !isLikelyProcessAnnotationText(text))
-        })
-      }
-
-      return false
-    }
-
-    const hasProcessSignal = (msg: Message, parsed: ParsedMessageData): boolean => {
-      const hasThinking = typeof msg.thinking_block === 'string' && msg.thinking_block.trim().length > 0
-      const hasToolCalls = Array.isArray(parsed.toolCalls) && parsed.toolCalls.length > 0
-      const hasProcessBlocks = Array.isArray(parsed.contentBlocks)
-        ? parsed.contentBlocks.some(block => isProcessContentBlock(block))
-        : false
-
-      return hasThinking || hasToolCalls || hasProcessBlocks
-    }
-
-    const countToolSignals = (parsed: ParsedMessageData): number => {
-      const parsedToolCalls = Array.isArray(parsed.toolCalls) ? parsed.toolCalls.length : 0
-      if (parsedToolCalls > 0) return parsedToolCalls
-
-      return Array.isArray(parsed.contentBlocks)
-        ? parsed.contentBlocks.filter(block => block.type === 'tool_use').length
-        : 0
-    }
-
-    const countReasoningSignals = (msg: Message, parsed: ParsedMessageData): number => {
-      if (!Array.isArray(parsed.contentBlocks) || parsed.contentBlocks.length === 0) {
-        return typeof msg.thinking_block === 'string' && msg.thinking_block.trim().length > 0 ? 1 : 0
-      }
-
-      const thinkingBlockCount = parsed.contentBlocks.filter(block => block.type === 'thinking').length
-      if (thinkingBlockCount > 0) {
-        return thinkingBlockCount
-      }
-
-      const responsesOutputReasoningCount = parsed.contentBlocks.reduce(
-        (count, block) => count + getResponsesOutputReasoningCount(block),
-        0
-      )
-
-      if (responsesOutputReasoningCount > 0) return responsesOutputReasoningCount
-
-      return typeof msg.thinking_block === 'string' && msg.thinking_block.trim().length > 0 ? 1 : 0
-    }
-
-    const isProcessOnlyAssistantStep = (msg: Message): boolean => {
-      if (isCommittedCompaction(msg)) return false
-      if (msg.role !== 'assistant' && msg.role !== 'ex_agent') {
-        return false
-      }
-
-      const parsed = parsedMessageDataById.get(msg.id) ?? EMPTY_PARSED_MESSAGE_DATA
-      if (!hasProcessSignal(msg, parsed) && !msg.hook_runs?.length && !parsed.contentBlocks?.some(block => block.type === 'context_injection')) {
-        return false
-      }
-
-      if (hasSubstantialTextOrImage(msg, parsed) || hasExcludedGroupingTool(parsed)) {
-        return false
-      }
-
-      return true
-    }
-
-    // Intro prose that only hands off to tools (reasoning/text, then tool calls, no prose after).
-    // The prose keeps its row; its process blocks open the following run so the turn reads as one group.
-    const leadsIntoProcessRun = (messageIndex: number): boolean => {
-      const msg = renderableMessages[messageIndex]
-      if (!msg || (msg.role !== 'assistant' && msg.role !== 'ex_agent') || isCommittedCompaction(msg)) return false
-      if (runFootersByAnchor.has(String(msg.id))) return false
-      const next = renderableMessages[messageIndex + 1]
-      if (!next || !isProcessOnlyAssistantStep(next)) return false
-
-      const parsed = parsedMessageDataById.get(msg.id) ?? EMPTY_PARSED_MESSAGE_DATA
-      const blocks = parsed.contentBlocks
-      if (!blocks?.length || hasResponsesOutputItems(parsed) || hasExcludedGroupingTool(parsed)) return false
-      const firstTool = blocks.findIndex(block => block.type === 'tool_use' || block.type === 'tool_result')
-      if (firstTool < 0) return false
-      const isProse = (block: ContentBlock) => block.type === 'text' && block.content.trim().length > 0
-      return blocks.slice(0, firstTool).some(isProse) && blocks.every((block, blockIndex) =>
-        isProcessContentBlock(block) || block.type === 'context_injection' || (block.type === 'text' && (blockIndex < firstTool || !isProse(block))))
-    }
-
-    if (!groupToolReasoningRuns) {
-      const plainRows = renderableMessages.map(msg => ({
-        kind: 'message' as const,
-        id: msg.id,
-        message: msg,
-      }))
-
-      if (!debugProcessGrouping) {
-        setLimitedCacheEntry(messageRenderRowsCacheRef.current, rowsCacheKey, plainRows)
-      }
-
-      const deriveEnd = typeof performance !== 'undefined' ? performance.now() : Date.now()
-      virtualizationMetricsRef.current = {
-        lastRowDeriveMs: Math.max(0, deriveEnd - deriveStart),
-        lastRenderRowsCount: plainRows.length,
-      }
-      return plainRows
-    }
-
-    const rows: MessageRenderRow[] = []
-    let index = 0
-
-    while (index < renderableMessages.length) {
-      const msg = renderableMessages[index]
-      if (!msg) {
-        index += 1
-        continue
-      }
-
-      if (!isProcessOnlyAssistantStep(msg)) {
-        rows.push({
-          kind: 'message',
-          id: msg.id,
-          message: msg,
-        })
-        index += 1
-        continue
-      }
-
-      const runMessages: Message[] = []
-      let cursor = index
-      while (cursor < renderableMessages.length) {
-        const candidate = renderableMessages[cursor]
-        if (!candidate || !isProcessOnlyAssistantStep(candidate)) {
-          break
-        }
-        runMessages.push(candidate)
-        cursor += 1
-        if (runFootersByAnchor.has(String(candidate.id))) break
-      }
-
-      if (runMessages.length >= CROSS_MESSAGE_PROCESS_GROUP_MIN_MESSAGES) {
-        const memberMessageIds = runMessages.map(message => message.id)
-
-        const leadingMessage = index > 0 && leadsIntoProcessRun(index - 1) ? renderableMessages[index - 1] : undefined
-        const leadingMessageId = leadingMessage?.id
-
-        let toolCount = 0
-        let reasoningCount = 0
-        for (const message of leadingMessage ? [leadingMessage, ...runMessages] : runMessages) {
-          const parsed = parsedMessageDataById.get(message.id) ?? EMPTY_PARSED_MESSAGE_DATA
-          toolCount += countToolSignals(parsed)
-          reasoningCount += countReasoningSignals(message, parsed)
-        }
-
-        let bridgedMessageId: MessageId | undefined
-        const trailingCandidate = renderableMessages[cursor]
-        // A message that opens the next run is not also bridged back into this one.
-        if (!runFootersByAnchor.has(String(runMessages[runMessages.length - 1]?.id)) && !leadsIntoProcessRun(cursor) &&
-            trailingCandidate && (trailingCandidate.role === 'assistant' || trailingCandidate.role === 'ex_agent')) {
-          const trailingParsed = parsedMessageDataById.get(trailingCandidate.id) ?? EMPTY_PARSED_MESSAGE_DATA
-          const trailingHasProcessSignal = hasProcessSignal(trailingCandidate, trailingParsed)
-          const trailingHasSubstantialContent = hasSubstantialTextOrImage(trailingCandidate, trailingParsed)
-          const trailingUsesOrderedResponsesItems = hasResponsesOutputItems(trailingParsed)
-
-          if (
-            trailingHasProcessSignal &&
-            trailingHasSubstantialContent &&
-            !trailingUsesOrderedResponsesItems &&
-            !hasExcludedGroupingTool(trailingParsed)
-          ) {
-            bridgedMessageId = trailingCandidate.id
-            toolCount += countToolSignals(trailingParsed)
-            reasoningCount += countReasoningSignals(trailingCandidate, trailingParsed)
-          }
-        }
-
-        if (debugProcessGrouping) {
-          console.debug('[Chat] Grouping process-only message run', {
-            count: runMessages.length,
-            toolCount,
-            reasoningCount,
-            messageIds: memberMessageIds,
-            leadingMessageId,
-            bridgedMessageId,
-          })
-        }
-
-        rows.push({
-          kind: 'process_group',
-          // Keep group identity stable while new process messages append to the run.
-          // If this key changes (e.g. first-last id), expanded state is lost and the group collapses.
-          id: memberMessageIds[0],
-          anchorMessageId: memberMessageIds[0],
-          memberMessageIds,
-          messages: runMessages,
-          toolCount,
-          reasoningCount,
-          leadingMessageId,
-          bridgedMessageId,
-        })
-      } else {
-        if (debugProcessGrouping && runMessages.length > 0) {
-          console.debug('[Chat] Process-only run below grouping threshold', {
-            count: runMessages.length,
-            threshold: CROSS_MESSAGE_PROCESS_GROUP_MIN_MESSAGES,
-            messageIds: runMessages.map(message => message.id),
-          })
-        }
-
-        for (const runMessage of runMessages) {
-          rows.push({
-            kind: 'message',
-            id: runMessage.id,
-            message: runMessage,
-          })
-        }
-      }
-
-      index = cursor
-    }
-
-    if (!debugProcessGrouping) {
+    if (debugProcessGrouping) {
+      console.debug('[Chat] Derived transcript rows', rows.map(row => ({ id: row.id, kind: row.kind })))
+    } else {
       setLimitedCacheEntry(messageRenderRowsCacheRef.current, rowsCacheKey, rows)
     }
 
@@ -2630,30 +2391,23 @@ function Chat() {
     }
 
     return rows
-  }, [renderableMessages, renderableMessagesSignature, groupToolReasoningRuns, parsedMessageDataById, runBoundarySignature, runFootersByAnchor])
-
-  // Rows whose process blocks are drawn inside an adjacent group (leading intro or trailing answer).
-  const bridgedProcessMessageIds = useMemo(() => new Set(messageRenderRows.flatMap(row =>
-    row.kind === 'process_group'
-      ? [row.leadingMessageId, row.bridgedMessageId].filter(id => id != null).map(String)
-      : [])), [messageRenderRows])
-
-  const messageById = useMemo(() => {
-    const map = new Map<string, Message>()
-    for (const msg of renderableMessages) {
-      map.set(String(msg.id), msg)
-    }
-    return map
-  }, [renderableMessages])
+  }, [rowMessages, renderableMessagesSignature, groupToolReasoningRuns, parsedMessageDataById, hideReasoningBlocks, runBoundarySignature, runFootersByAnchor])
 
   const messageRowIndexByMessageId = useMemo(() => {
     const rowIndexByMessageId = new Map<string, number>()
 
     let virtualIndex = 0
-    for (const row of messageRenderRows) {
-      const ids = row.kind === 'message' ? [row.message.id] : row.memberMessageIds
-      for (const id of ids) rowIndexByMessageId.set(String(id), virtualIndex)
-      virtualIndex += 1 + (runFootersByAnchor.get(String(ids[ids.length - 1]))?.length ?? 0)
+    for (const item of interleaveRunFooters(messageRenderRows, runFootersByAnchor)) {
+      if (item.kind === 'transcript') {
+        const row = item.row
+        if (row.kind === 'message') {
+          if (!rowIndexByMessageId.has(row.message.id) || row.showMessageExtras !== false) rowIndexByMessageId.set(row.message.id, virtualIndex)
+        } else {
+          // Prefer the actual prose row for mixed messages; process-only IDs still resolve here.
+          for (const id of row.memberMessageIds) if (!rowIndexByMessageId.has(id)) rowIndexByMessageId.set(id, virtualIndex)
+        }
+      }
+      virtualIndex++
     }
     return rowIndexByMessageId
   }, [messageRenderRows, runFootersByAnchor])
@@ -2695,9 +2449,21 @@ function Chat() {
   const findMessageRowIndex = useCallback(
     (targetId: MessageId | null | undefined): number => {
       if (targetId == null) return -1
-      return messageRowIndexByMessageId.get(String(targetId)) ?? -1
+      const rowIndex = messageRowIndexByMessageId.get(String(targetId))
+      if (rowIndex != null) return rowIndex
+      // A reasoning-only message has no row while reasoning is hidden: focus the row that
+      // continues its turn, or the one before it at the end of the branch.
+      if (!reasoningOnlyMessageIds.has(String(targetId))) return -1
+      const position = renderableMessages.findIndex(message => String(message.id) === String(targetId))
+      for (const step of [1, -1]) {
+        for (let index = position + step; index >= 0 && index < renderableMessages.length; index += step) {
+          const nearby = messageRowIndexByMessageId.get(String(renderableMessages[index].id))
+          if (nearby != null) return nearby
+        }
+      }
+      return -1
     },
-    [messageRowIndexByMessageId]
+    [messageRowIndexByMessageId, reasoningOnlyMessageIds, renderableMessages]
   )
 
   // Trailing scroll room is provided by the in-flow bottom sentinel (see the message list render),
@@ -2818,8 +2584,13 @@ function Chat() {
     : null
   const showThinkingIndicator = !backgroundTasksView?.idle
   const hasStreamingText = Boolean(streamState.buffer?.trim())
+  // With reasoning hidden, a run that has only thought so far has nothing to draw yet.
+  const liveStreamEvents = useMemo(
+    () => (hideReasoningBlocks ? withoutReasoningEvents(streamState.events) : streamState.events),
+    [hideReasoningBlocks, streamState.events]
+  )
   const hasProcessStreamingContent =
-    Boolean(streamState.thinkingBuffer) || streamState.toolCalls.length > 0 || streamState.events.length > 0
+    (!hideReasoningBlocks && Boolean(streamState.thinkingBuffer)) || streamState.toolCalls.length > 0 || liveStreamEvents.length > 0
   // R4: `streamState.error` deliberately does NOT keep the live row alive. The failure is drawn
   // by the message list and nowhere else — tier 1 when the server persisted a row carrying the
   // ErrorBlock, tier 2 (`chat_error`) when it could not. A stream that died before its first
@@ -2830,13 +2601,13 @@ function Chat() {
   // New server-owned generations have no live message ID until persistence.
   const isStreamingMessageAlreadyRendered = isStreamMessageAlreadyRendered(streamState, messageRowIndexByMessageId)
   const showStreamingMessage = !compactionActive && !isStreamingMessageAlreadyRendered && hasStreamingMessageContent
-  const liveAgentEvents = useMemo(() => splitLiveAgentEvents(streamState.events), [streamState.events])
+  const liveAgentEvents = useMemo(() => splitLiveAgentEvents(liveStreamEvents), [liveStreamEvents])
   const trailingAgentRow = messageRenderRows[messageRenderRows.length - 1]
   const liveAgentGroupId = canAttachLiveAgentGroup({
     enabled: groupToolReasoningRuns, active: streamLifecycleActive, compacting: compactionActive,
     optimistic: showOptimisticMessage || showOptimisticBranchMessage, trailing: trailingAgentRow,
     anchor: streamState.lastCompletedMessageId ?? streamState.branchAnchorMessageId,
-    boundaryAfter: trailingAgentRow?.kind === 'process_group' && runFootersByAnchor.has(String(trailingAgentRow.memberMessageIds[trailingAgentRow.memberMessageIds.length - 1])),
+    boundaryAfter: Boolean(trailingAgentRow?.footerAnchor),
   }) ? String(trailingAgentRow.id) : null
   const [liveExplainSurface, setLiveExplainSurface] = useState<LiveExplainSurface | null>(null)
   const liveExplainSourceRef = useRef<LiveExplainSource | null>(null)
@@ -2860,7 +2631,7 @@ function Chat() {
   const liveExplainSourceReady = liveExplainSourceRef.current?.messageId != null && conversationMessages.some(
     message => String(message.id) === String(liveExplainSourceRef.current?.messageId)
   )
-  const visibleLiveEvents = liveAgentGroupId ? liveAgentEvents.outside : streamState.events
+  const visibleLiveEvents = liveAgentGroupId ? liveAgentEvents.outside : liveStreamEvents
   const showStandaloneStreamingMessage = showStreamingMessage && (!liveAgentGroupId || visibleLiveEvents.length > 0)
   const showLiveStreamingTail = showStandaloneStreamingMessage && hasStreamingText && liveExplainSurface !== 'virtual'
   // Any streamed prose (commentary or answer) uses a live tail OUTSIDE TanStack Virtual as an
@@ -2906,25 +2677,20 @@ function Chat() {
   const persistedErrorIdentityKeys = useMemo(() => {
     const keys = new Set<string>()
 
-    for (const row of messageRenderRows) {
-      const rowMessages = row.kind === 'message' ? [row.message] : row.messages
-      for (const rowMessage of rowMessages) {
-        const parsed = parsedMessageDataById.get(rowMessage.id)
-        if (!Array.isArray(parsed?.contentBlocks)) continue
-        for (const block of parsed.contentBlocks) {
-          if (block.type === 'error') keys.add(chatErrorIdentityKey(block.envelope))
-        }
+    for (const message of rowMessages) {
+      for (const block of parsedMessageDataById.get(message.id)?.contentBlocks ?? []) {
+        if (block.type === 'error') keys.add(chatErrorIdentityKey(block.envelope))
       }
     }
 
     return keys
-  }, [messageRenderRows, parsedMessageDataById])
+  }, [rowMessages, parsedMessageDataById])
 
   const virtualRows = useMemo<VirtualRenderRow[]>(() => {
     const rows: VirtualRenderRow[] = interleaveRunFooters(messageRenderRows, runFootersByAnchor).map(item => {
       if (item.kind === 'run_stats') return { ...item, key: `run-stats-${item.statistics.streamId}` }
       const row = item.row
-      return { kind: 'message_row', key: row.kind === 'message' ? `message-${row.message.id}` : `group-${row.id}`, row }
+      return { kind: 'message_row', key: row.kind === 'message' ? `message-${row.id}` : `group-${row.id}`, row }
     })
 
     if (showOptimisticMessage && optimisticMessage) {
@@ -3209,15 +2975,11 @@ function Chat() {
       // Before the first measurement a typical desktop pane width is a better guess than 0.
       const containerWidth = messagesContainerWidth || 720
 
-      const estimateForMessage = (message: Message) => {
+      const estimateForMessage = (message: Message, projection?: Extract<MessageRenderRow, { kind: 'message' }>) => {
         // Summaries draw only an h-8 notice with py-1, regardless of payload size.
         if (isCommittedCompaction(message) || isWatcherCompletionMessage(message) || isImageAttachmentInfoMessage(message)) return smallChromeRowHeight(rootFontSize)
         if (isRunSettingsNotification(message)) return 32
-        const parsedBlocks = (parsedMessageDataById.get(message.id) ?? EMPTY_PARSED_MESSAGE_DATA).contentBlocks
-        // Bridged rows draw only their prose; their process blocks belong to the adjacent group.
-        const blocks = bridgedProcessMessageIds.has(String(message.id))
-          ? parsedBlocks?.filter(block => !isProcessContentBlock(block) && block.type !== 'context_injection')
-          : parsedBlocks
+        const blocks = projection?.displayBlocks ?? layoutMessageDataById.get(message.id)?.contentBlocks
         // Mirrors `hasContent && canBranchMessage` in ChatMessage, which gates the actions row.
         const hasText = typeof message.content === 'string' && message.content.trim().length > 0
         const hasBlockContent =
@@ -3237,13 +2999,13 @@ function Chat() {
           containerWidth,
           rootFontSize,
           fontSizeOffset,
-          groupToolReasoningRuns,
+          groupToolReasoningRuns: groupToolReasoningRuns && !projection?.displayBlocks,
           artifactCount: Array.isArray(message.artifacts) ? message.artifacts.length : 0,
           hasAcceptedImages: hasAcceptedImageAttachments(message),
-          showsActionsRow: (hasText || hasBlockContent) && canBranch,
+          showsActionsRow: (hasText || hasBlockContent) && canBranch && projection?.showMessageExtras !== false,
           messageId: message.id,
           isMcpAppTool,
-          hookRunCount: message.hook_runs?.length ?? 0,
+          hookRunCount: projection?.hookRunsAttached || projection?.showMessageExtras === false ? 0 : message.hook_runs?.length ?? 0,
         })
       }
 
@@ -3252,13 +3014,12 @@ function Chat() {
           return 36
         case 'message_row':
           return row.row.kind === 'process_group'
-            ? processGroupRowHeight(rootFontSize) + row.row.messages.reduce((height, message) => {
-                const blocks = parsedMessageDataById.get(message.id)?.contentBlocks ?? []
+            ? processGroupRowHeight(rootFontSize) + row.row.fragments.reduce((height, { message, blocks, ownsHooks }) => {
                 const cards = blocks.filter((block, index) => block.type === 'context_injection' &&
                   (blocks[index - 1]?.type !== 'context_injection' || (blocks[index - 1] as any).tool_use_id !== block.tool_use_id)).length
-                return height + (cards + (message.hook_runs?.length ? 1 : 0)) * 2 * rootFontSize
+                return height + (cards + (ownsHooks && message.hook_runs?.length ? 1 : 0)) * 2 * rootFontSize
               }, 0)
-            : estimateForMessage(row.row.message)
+            : estimateForMessage(row.row.message, row.row)
         case 'optimistic_message':
         case 'optimistic_branch_message':
           return estimateForMessage(row.message)
@@ -3276,13 +3037,12 @@ function Chat() {
     },
     [
       virtualRows,
-      parsedMessageDataById,
+      layoutMessageDataById,
       messagesContainerWidth,
       rootFontSize,
       fontSizeOffset,
       groupToolReasoningRuns,
       isMcpAppTool,
-      bridgedProcessMessageIds,
     ]
   )
 
@@ -3313,6 +3073,26 @@ function Chat() {
       baseRows: virtualizationMetricsRef.current.lastRenderRowsCount,
     })
   }, [virtualRows.length, renderableMessagesSignature])
+
+  // A branch read ships rows outside its window without their large block payloads. They
+  // hydrate as they enter the rendered range (overscan included), so scrolling up fetches
+  // only what is about to be shown; in-flight ids are deduplicated by the thunk.
+  const hydrationItems = virtualizer.getVirtualItems()
+  const hydrationStart = hydrationItems[0]?.index ?? -1
+  const hydrationEnd = hydrationItems[hydrationItems.length - 1]?.index ?? -1
+  useEffect(() => {
+    if (hydrationStart < 0 || currentConversationId == null) return
+    const pending: string[] = []
+    for (let index = hydrationStart; index <= hydrationEnd; index++) {
+      const row = virtualRows[index]
+      if (row?.kind !== 'message_row') continue
+      const members = row.row.kind === 'message' ? [row.row.message] : row.row.fragments.map(part => part.message)
+      for (const message of members) if (message.body_omitted) pending.push(String(message.id))
+    }
+    if (pending.length === 0) return
+    const timer = setTimeout(() => { void dispatch(hydrateMessageBodies({ conversationId: currentConversationId, messageIds: pending })) }, 40)
+    return () => clearTimeout(timer)
+  }, [hydrationStart, hydrationEnd, virtualRows, currentConversationId, dispatch])
 
   const scrollToMessageRowIndex = useCallback(
     (targetIndex: number, align: 'start' | 'center' | 'end' | 'auto' = 'start'): boolean => {
@@ -3521,6 +3301,11 @@ function Chat() {
   const selectModelMutation = useSelectModel()
   const selectedModel = useSelectedModel(providers.currentProvider, branchModelSelection?.model)
   const models = modelsData?.models || []
+  // A model without thinking never receives it, but the branch keeps its level for the next model that has it.
+  const think = Boolean(selectedModel?.thinking) && branchReasoningLevel !== 'off'
+  const reasoningConfig = useMemo<ReasoningConfig>(() => ({
+    effort: branchReasoningLevel === 'off' ? chatReasoningSettings.defaultReasoningEffort : branchReasoningLevel,
+  }), [branchReasoningLevel, chatReasoningSettings.defaultReasoningEffort])
 
   // Helper to check if selected model can use image generation controls.
   // OpenAI ChatGPT uses the hosted Responses image_generation tool, so image controls can be shown
@@ -3673,6 +3458,16 @@ function Chat() {
     return null
   }, [currentConversationId, projectConversations, currentConversation, idsMatch])
 
+  const [parallelPane, setParallelPane] = useState<ParallelChatPaneTarget | null>(null)
+  const [heimdallVisible, setHeimdallVisible] = useState(() => {
+    const defaultValue = typeof window === 'undefined' || window.innerWidth >= 768
+    try {
+      const stored = window.localStorage.getItem('chat:heimdallVisible')
+      return stored === null ? defaultValue : stored === 'true'
+    } catch { return defaultValue }
+  })
+  // Heimdall's search/transfer and parallel panes need canonical sibling bodies.
+  const branchOnly = supportsBranchSnapshots && !heimdallVisible && !parallelPane
   // Persisted snapshots only enter Redux through the generation-gated coordinator.
   // Cached query data is never projected directly, so Settings -> Back cannot clobber
   // the same-conversation live SSE projection before the route-entry fetch completes.
@@ -3684,7 +3479,8 @@ function Chat() {
     isCurrentError: isCurrentSnapshotError,
     isFetching: isSnapshotFetching,
     refresh: refreshConversationSnapshot,
-  } = useConversationSnapshotCoordinator(conversationIdFromUrl)
+  } = useConversationSnapshotCoordinator(conversationIdFromUrl, branchOnly)
+  const graphPending = supportsBranchSnapshots && (!conversationData || conversationData.retained != null)
 
   const handleHookRunsUpdated = useCallback(
     (messageId: string, runs: HookRunRecord[]) => {
@@ -3805,55 +3601,6 @@ function Chat() {
     }
   }, [conversationIdFromUrl, dispatch, queryClient, snapshotConversationId])
 
-  // Run post-acceptance side effects. Messages/tree were already installed atomically by
-  // the coordinator; this effect only hydrates attachments.
-  useEffect(() => {
-    if (
-      !conversationIdFromUrl ||
-      !isConversationDataFetched ||
-      !conversationData ||
-      acceptedConversationId !== String(conversationIdFromUrl)
-    ) return
-
-    const fetchedMessages = conversationData.messages
-    if (fetchedMessages.length === 0) return
-
-    // Process attachments from React Query response
-    // This converts attachment URLs to base64 artifacts for display in ChatMessage
-    fetchedMessages.forEach(msg => {
-      const includedAttachments = (msg as any).attachments
-      if (includedAttachments && Array.isArray(includedAttachments) && includedAttachments.length > 0) {
-        // Dispatch attachment metadata immediately
-        dispatch(
-          chatSliceActions.attachmentsSetForMessage({
-            messageId: msg.id,
-            attachments: includedAttachments,
-          })
-        )
-
-        // Fetch and convert binaries to base64 asynchronously (don't await, let it run in background)
-        Promise.all(
-          includedAttachments.map(async (a: any) => {
-            const url = resolveAttachmentUrl(a.url, a.storage_path || a.file_path, a.id)
-            if (!url) return null
-            try {
-              const res = await fetch(url)
-              if (!res.ok) return null
-              const blob = await res.blob()
-              return await blobToDataURL(blob)
-            } catch {
-              return null
-            }
-          })
-        ).then(dataUrls => {
-          const validUrls = dataUrls.filter((x): x is string => Boolean(x))
-          if (validUrls.length > 0) {
-            dispatch(chatSliceActions.messageArtifactsSet({ messageId: msg.id, artifacts: validUrls }))
-          }
-        })
-      }
-    })
-  }, [acceptedConversationId, conversationData, conversationIdFromUrl, dispatch, isConversationDataFetched])
 
   // Sync React Query conversations to Redux to ensure system_prompt and conversation_context are available
   // This fixes the issue where refreshing the page doesn't load context and system prompt from query cache
@@ -3889,25 +3636,9 @@ function Chat() {
     }
   })
   const [isParallelResizing, setIsParallelResizing] = useState(false)
-  // Session-only secondary transcript. It intentionally resets with this route container.
-  const [parallelPane, setParallelPane] = useState<ParallelChatPaneTarget | null>(null)
   const [activeChatPane, setActiveChatPane] = useState<'primary' | 'parallel'>('primary')
   const [settingsOpen, setSettingsOpen] = useState(false)
   useCommandBlocker(settingsOpen)
-  const [think, setThink] = useState<boolean>(chatReasoningSettings.defaultThinkingEnabled)
-  const [heimdallVisible, setHeimdallVisible] = useState<boolean>(() => {
-    try {
-      const stored = typeof window !== 'undefined' ? window.localStorage.getItem('chat:heimdallVisible') : null
-      // Check if on mobile (< 768px) to set appropriate default
-      const isMobileDevice = typeof window !== 'undefined' && window.innerWidth < 768
-      const defaultValue = isMobileDevice ? false : true
-      return stored !== null ? stored === 'true' : defaultValue
-    } catch {
-      // Fallback: check if mobile
-      const isMobileDevice = typeof window !== 'undefined' && window.innerWidth < 768
-      return isMobileDevice ? false : true
-    }
-  })
 
   const [treeFocusRequest, setTreeFocusRequest] = useState(0)
   useCommands([{
@@ -4941,29 +4672,6 @@ function Chat() {
       window.removeEventListener(CHAT_REASONING_SETTINGS_CHANGE_EVENT, handleReasoningSettingsChange as EventListener)
   }, [])
 
-  // Apply default thinking/effort only when model capability is known.
-  // This prevents races where selectedModel is not yet loaded on first render.
-  useEffect(() => {
-    if (!selectedModel) return
-
-    if (!selectedModel.thinking) {
-      setThink(false)
-      return
-    }
-
-    setThink(chatReasoningSettings.defaultThinkingEnabled)
-    setReasoningConfig(prev =>
-      prev.effort === chatReasoningSettings.defaultReasoningEffort
-        ? prev
-        : { ...prev, effort: chatReasoningSettings.defaultReasoningEffort }
-    )
-  }, [
-    selectedModel?.name,
-    selectedModel?.thinking,
-    chatReasoningSettings.defaultThinkingEnabled,
-    chatReasoningSettings.defaultReasoningEffort,
-  ])
-
   // Set the default provider when none (or a no-longer-listed one) is selected.
   useEffect(() => {
     const allowedProviders = providers.providers.map(p => p.name)
@@ -5189,8 +4897,8 @@ function Chat() {
     queueSubmitting,
   })
   // Input queued behind a Claude /compact waits for its summary, then continues in a successor run.
-  const canQueueLocal = canQueueAvailable
-  const canSendLocal = canSendImmediately || canQueueLocal
+  const canQueueLocal = canQueueAvailable && !fileInsertionPending
+  const canSendLocal = !fileInsertionPending && (canSendImmediately || canQueueLocal)
 
   /**
    * Re-run generation from the last user message on the current branch.
@@ -5232,6 +4940,7 @@ function Chat() {
           retrigger: true,
           imageConfig: isImageGenerationModel ? imageConfig : undefined,
           reasoningConfig: think ? reasoningConfig : undefined,
+          reasoningLevel: branchReasoningLevel,
           serviceTier: openAIServiceTier,
           cwd: ccCwd || undefined,
           operationMode,
@@ -5280,6 +4989,7 @@ function Chat() {
       openAIServiceTier,
       operationMode,
       reasoningConfig,
+      branchReasoningLevel,
       recordLocalChatError,
       think,
       withPendingCwdAnnouncement,
@@ -5323,6 +5033,12 @@ function Chat() {
       }
 
       if (canQueueLocal && currentConversationId && streamState.id) {
+        if (parseTranscriptRevisionRequest(localInputValue)) {
+          recordLocalChatError(new Error('Wait for the current reply to finish before sending /revise.'), {
+            phase: 'open', conversationId: currentConversationId, streamId: streamState.id,
+          })
+          return
+        }
         if (queueSubmittingRef.current) return
         queueSubmittingRef.current = true
         setQueueSubmitting(true)
@@ -5330,7 +5046,7 @@ function Chat() {
           appendIdeContextToMessage(replaceFileMentionsWithPath(localInputValue)))
         const retry = queueRetryRef.current
         const queuedSubmission = retry?.streamId === streamState.id && retry.content === content
-          ? retry : { streamId: streamState.id, content, requestId: newClientId() }
+          ? retry : { streamId: streamState.id, content, requestId: newClientId(), userDisplayName: readChatDisplayName(), accessChoice: queueAccessChoice }
         queueRetryRef.current = queuedSubmission
         recordSentMessage(localInputValue)
         clearLocalInput()
@@ -5421,15 +5137,16 @@ function Chat() {
                   conversationId: currentConversationId,
                   input: inputToSend,
                   parent: parentForSend,
-                  repeatNum: value,
+                  repeatNum: parseTranscriptRevisionRequest(localInputValue) ? 1 : value,
                   think: think,
                   imageConfig: isImageGenerationModel ? imageConfig : undefined,
                   reasoningConfig: think ? reasoningConfig : undefined,
+                  reasoningLevel: branchReasoningLevel,
                   serviceTier: openAIServiceTier,
                   cwd: ccCwd || undefined,
                   operationMode,
                   selectionRevision: selection.revision,
-                  lineageId: modeLineageId,
+                  lineageId: parseTranscriptRevisionRequest(localInputValue) ? transcriptLineageId : modeLineageId,
                   branchPath: selectedPath,
                   streamId,
                 })
@@ -5472,9 +5189,11 @@ function Chat() {
     [
       canSendImmediately,
       canQueueLocal,
+      queueAccessChoice,
       selection.revision,
       selection.fallbackRevision,
       modeLineageId,
+      transcriptLineageId,
       streamState.active,
       streamState.id,
       currentConversationId,
@@ -5505,6 +5224,7 @@ function Chat() {
       isImageGenerationModel,
       imageConfig,
       reasoningConfig,
+      branchReasoningLevel,
       openAIServiceTier,
       operationMode,
       withPendingCwdAnnouncement,
@@ -5525,12 +5245,12 @@ function Chat() {
   preparedSendRef.current = handlePreparedSend
   const imageSubmitPendingRef = useRef(false)
   const handleSend = useCallback(async (value: number) => {
-    if (imageSubmitPendingRef.current) return
+    if (imageSubmitPendingRef.current || inputControllerRef.current?.isFileInsertionPending()) return
     imageSubmitPendingRef.current = true
     const revision = selectionRevisionRef.current
     try {
       await dispatch(waitForImagePreparation({ kind: 'composer' }))
-      if (selectionRevisionRef.current === revision) preparedSendRef.current(value)
+      if (selectionRevisionRef.current === revision && !inputControllerRef.current?.isFileInsertionPending()) preparedSendRef.current(value)
     } catch (error) {
       recordLocalChatError(error, { phase: 'preflight', conversationId: currentConversationId })
     } finally {
@@ -5720,6 +5440,8 @@ function Chat() {
           newContent: contentWithCwdAnnouncement,
           modelOverride: selectedModel?.name,
           think: think,
+          reasoningConfig: think ? reasoningConfig : undefined,
+          reasoningLevel: branchReasoningLevel,
           serviceTier: openAIServiceTier,
           cwd: ccCwd || undefined,
           operationMode,
@@ -5758,6 +5480,8 @@ function Chat() {
       currentConversationId,
       selectedModel?.name,
       think,
+      reasoningConfig,
+      branchReasoningLevel,
       openAIServiceTier,
       operationMode,
       ccCwd,
@@ -5867,6 +5591,7 @@ function Chat() {
           think: think,
           imageConfig: isImageGenerationModel ? imageConfig : undefined,
           reasoningConfig: think ? reasoningConfig : undefined,
+          reasoningLevel: branchReasoningLevel,
           serviceTier: openAIServiceTier,
           cwd: ccCwd || undefined,
           operationMode,
@@ -5916,6 +5641,7 @@ function Chat() {
       isImageGenerationModel,
       imageConfig,
       reasoningConfig,
+      branchReasoningLevel,
       openAIServiceTier,
       operationMode,
       withPendingCwdAnnouncement,
@@ -6325,6 +6051,7 @@ function Chat() {
   )
 
   const handleComposerSubmit = useCallback(() => {
+    if (inputControllerRef.current?.isFileInsertionPending()) return
     const content = getLocalInput().trim()
     if (content.startsWith('/')) {
       void (async () => {
@@ -6352,42 +6079,22 @@ function Chat() {
   )
 
   const handleAttachmentInputChange = useCallback(
-    async (e: React.ChangeEvent<HTMLInputElement>) => {
-      const files = Array.from(e.target.files || [])
-      if (files.length === 0) return
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const files = Array.from(e.target.files ?? [])
+      e.target.value = ''
+      const imageFiles = files.filter(isImageFile)
+      const documents = files.filter(file => !isImageFile(file))
 
-      const pdfFiles = files.filter(file => file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf'))
-      const imageFiles = files.filter(file => file.type.startsWith('image/'))
-
-      // Register image preparation before awaiting unrelated PDF extraction.
+      // Keep images on the existing attachment path, including mixed selections.
       if (imageFiles.length) {
         const target: ImageDraftTarget = activeBranchEditingMessageId != null
           ? { kind: 'branch', messageId: parseId(activeBranchEditingMessageId) } : { kind: 'composer' }
         void dispatch(prepareImageFiles(imageFiles, target))
       }
 
-      if (pdfFiles.length > 0) {
-        try {
-          const pdfTexts = await Promise.all(
-            pdfFiles.map(async file => {
-              const text = await extractTextFromPdf(file)
-              return `[Pdf Content for ${file.name}]:\n${text}`
-            })
-          )
-          updateLocalInput(prev => {
-            const prefix = prev ? `${prev}\n\n` : ''
-            return prefix + '```\n' + pdfTexts + '\n``` \n\n'
-          })
-          focusLocalInput()
-        } catch (err) {
-          console.error('Failed to extract PDF text(s)', err)
-        }
-      }
-
-
-      e.target.value = ''
+      if (inputControllerRef.current?.insertFiles(documents)) focusLocalInput()
     },
-    [dispatch, activeBranchEditingMessageId, updateLocalInput, focusLocalInput]
+    [dispatch, activeBranchEditingMessageId, focusLocalInput]
   )
 
   // Touch browsers may never deliver an image-only clipboard to the textarea's paste event,
@@ -6447,11 +6154,25 @@ function Chat() {
   // Extract the most recent direct or multi_call-nested todo_list result from the current branch.
   const latestTodoList = useMemo(() => extractLatestTodoList(displayMessages), [displayMessages])
 
-  const branchFileMutationData = useMemo(() => extractBranchFileMutations(displayMessages), [displayMessages])
+  const showHighlightedTurnFiles = useHighlightedTurnFiles()
+  const turnsByMessageId = useMemo(() => {
+    if (!showHighlightedTurnFiles) return null
+    // displayMessages can fall back to all rows while the branch isn't resolved.
+    return indexWorkspaceMutationTurns(displayMessages.filter(message => selectedPathStringSet.has(String(message.id))))
+  }, [showHighlightedTurnFiles, displayMessages, selectedPathStringSet])
+  const mutationMessages = showHighlightedTurnFiles
+    ? visibleMessageId != null && String(currentConversationId) === String(conversationIdFromUrl)
+      ? turnsByMessageId?.get(String(visibleMessageId))
+      : undefined
+    : displayMessages
+  const fileMutationSummaries = useMemo(
+    () => mutationMessages ? extractBranchFileMutations(mutationMessages).latestByPath : [],
+    [mutationMessages]
+  )
   const hasLatestTodoList = Boolean(latestTodoList?.items?.length)
-  const hasBranchFileMutations = branchFileMutationData.latestByPath.length > 0
-  const showComposerSummaryPanels = hasLatestTodoList || hasBranchFileMutations
-  const showComposerSummaryPanelsAsRow = hasLatestTodoList && hasBranchFileMutations
+  const hasFileMutations = fileMutationSummaries.length > 0
+  const showComposerSummaryPanels = hasLatestTodoList || hasFileMutations
+  const showComposerSummaryPanelsAsRow = hasLatestTodoList && hasFileMutations
   const composerSummaryPanelClassName = showComposerSummaryPanelsAsRow ? 'min-w-0 flex-1 basis-0' : 'min-w-0 w-full'
   const composerSummaryPanelsCollapsed = showComposerSummaryPanelsAsRow
     ? todoListCollapsed && workspaceMutationsCollapsed
@@ -6476,15 +6197,15 @@ function Chat() {
   }, [effectiveWorkspaceMutationsCollapsed, showComposerSummaryPanelsAsRow])
 
   const handleOpenWorkspaceMutationDiffs = useCallback(() => {
-    const filePaths = branchFileMutationData.latestByPath.map(summary => summary.path)
+    const filePaths = fileMutationSummaries.map(summary => summary.path)
     if (filePaths.length === 0) return
 
     dispatchOpenWorkspaceMutationDiffs({
       filePaths,
       basePath: ccCwd || null,
-      focusPath: branchFileMutationData.latestByPath[0]?.path || null,
+      focusPath: fileMutationSummaries[0]?.path || null,
     })
-  }, [branchFileMutationData.latestByPath, ccCwd])
+  }, [fileMutationSummaries, ccCwd])
   const handleOpenWorkspaceMutationDiffForPath = useCallback(
     (filePath: string) => {
       const normalizedPath = filePath.trim()
@@ -6546,7 +6267,9 @@ function Chat() {
         : totalContextProgress >= 80
           ? isDarkMode
             ? '#fbbf24'
-            : '#f59e0b'
+            : compactComposer
+              ? '#b45309' // The thin outline needs stronger contrast than the expanded tint.
+              : '#f59e0b'
           : isDarkMode
             ? '#60a5fa'
             : '#3b82f6'
@@ -6858,67 +6581,18 @@ function Chat() {
                           const ownsActivity = activityIndicatorOwner.kind === 'agent-steps' && activityIndicatorOwner.groupKey === `persisted:${runId}`
                           const isExpanded = expandedProcessMessageRuns.has(runId) || (liveHere && expandedProcessMessageRuns.has(transientProcessGroupKey))
                           const liveEvents = liveHere && showStreamingMessage ? liveAgentEvents.process : []
-                          const leadingMessage = row.leadingMessageId != null ? messageById.get(String(row.leadingMessageId)) : undefined
-                          const bridgedMessage = row.bridgedMessageId != null ? messageById.get(String(row.bridgedMessageId)) : undefined
-                          const activityMessages = [...(leadingMessage ? [leadingMessage] : []), ...row.messages, ...(bridgedMessage ? [bridgedMessage] : [])]
-                          // Only the process blocks of an adjacent prose row; its text stays in its own row.
-                          const renderBridgedProcess = (sourceMessage: Message | undefined) => {
-                            if (!sourceMessage) return null
-                            const bridgedParsed =
-                              parsedMessageDataById.get(sourceMessage.id) ?? EMPTY_PARSED_MESSAGE_DATA
-                            const bridgedProcessBlocks = Array.isArray(bridgedParsed.contentBlocks)
-                              ? bridgedParsed.contentBlocks.filter(block => isProcessContentBlock(block))
-                              : []
-
-                            const hasThinking =
-                              typeof sourceMessage.thinking_block === 'string' &&
-                              sourceMessage.thinking_block.trim().length > 0
-                            const hasToolCalls =
-                              Array.isArray(bridgedParsed.toolCalls) && bridgedParsed.toolCalls.length > 0
-                            const hasProcessBlocks = bridgedProcessBlocks.length > 0
-
-                            if (!hasThinking && !hasToolCalls && !hasProcessBlocks) {
-                              return null
-                            }
-
-                            return (
-                              <ChatMessage
-                                key={`bridged-process-${sourceMessage.id}`}
-                                id={`${sourceMessage.id}-process`}
-                                role={sourceMessage.role}
-                                content=''
-                                contentBlocks={bridgedProcessBlocks}
-                                timestamp={sourceMessage.created_at}
-                                width='w-full'
-                                modelName={sourceMessage.model_name}
-                                artifacts={sourceMessage.artifacts}
-                                fontSizeOffset={fontSizeOffset}
-                                groupToolReasoningRuns={false}
-                                truncateToolOutput={truncateToolOutput}
-                                customTheme={customTheme}
-                                customThemeEnabled={customThemeEnabled}
-                                isDarkMode={isDarkMode}
-                                onOpenToolHtmlModal={openToolHtmlModal}
-                                onOpenSubagentTranscript={openSubagentTranscript}
-                                onChatErrorAction={handlePersistedChatErrorAction}
-                                onHookRunsUpdated={handleHookRunsUpdated}
-                                onHookRunsSettled={handleHookRunsSettled}
-                              />
-                            )
-                          }
-                          const groupedBlocks = activityMessages.flatMap(message => parsedMessageDataById.get(message.id)?.contentBlocks ?? [])
-                          const groupedHooks = activityMessages.flatMap(message => message.hook_runs ?? [])
+                          const groupedBlocks = row.fragments.flatMap(fragment => fragment.blocks)
+                          const groupedHooks = row.fragments.flatMap(({ message, ownsHooks }) => ownsHooks ? message.hook_runs ?? [] : [])
                           const progress = getAgentProgress(groupedBlocks, liveEvents, groupedHooks, liveHere)
                           // Hook-owned work can outlive a model run; retain its existing local
                           // status when there is no run-level indicator to duplicate.
                           const showGroupStatus = ownsActivity || (!showGenerationLoadingAnimation && progress.active)
-                          const summary = progress.toolCount ? `${progress.completed} completed${progress.active && progress.pending ? ` · ${progress.pending} pending` : ''}` : row.toolCount ? `${row.toolCount} tools` : undefined
+                          const summary = progress.toolCount ? `${progress.completed} completed${progress.active && progress.pending ? ` · ${progress.pending} pending` : ''}` : undefined
                           let toolOffset = 0
-                          const activity = activityMessages.map(message => {
-                            const blocks = parsedMessageDataById.get(message.id)?.contentBlocks ?? []
+                          const activity = row.fragments.map(({ key, message, blocks, ownsHooks }) => {
                             const offset = toolOffset
                             toolOffset += blocks.filter(block => block.type === 'tool_use').length
-                            return <MessageActivity key={message.id} messageId={String(message.id)} blocks={blocks} hooks={message.hook_runs}
+                            return <MessageActivity key={key} messageId={message.id} blocks={blocks} hooks={ownsHooks ? message.hook_runs : undefined}
                               toolOffset={offset} fontSizeOffset={fontSizeOffset} customTheme={customTheme} customThemeEnabled={customThemeEnabled}
                               isDarkMode={isDarkMode} onHookRunsUpdated={handleHookRunsUpdated} onHookRunsSettled={handleHookRunsSettled} />
                           })
@@ -6938,37 +6612,16 @@ function Chat() {
                                   summary={summary} activity={hasActivity ? activity : undefined} status={showGroupStatus ? progress.status : undefined} active={showGroupStatus && progress.active}
                                   style={fontSizeOffset !== 0 ? { fontSize: `calc(1em + ${fontSizeOffset}px)` } : undefined}
                                   history={<div>
-                                    {renderBridgedProcess(leadingMessage)}
-                                    {row.messages.map(groupedMessage => {
-                                      const { contentBlocks } =
-                                        parsedMessageDataById.get(groupedMessage.id) ?? EMPTY_PARSED_MESSAGE_DATA
-                                      return (
-                                        <ChatMessage
-                                          key={groupedMessage.id}
-                                          id={groupedMessage.id.toString()}
-                                          role={groupedMessage.role}
-                                          content={groupedMessage.content}
-                                          contentBlocks={contentBlocks?.filter(block => block.type !== 'context_injection')}
-                                          timestamp={groupedMessage.created_at}
-                                          width='w-full'
-                                          modelName={groupedMessage.model_name}
-                                          artifacts={groupedMessage.artifacts}
-                                          fontSizeOffset={fontSizeOffset}
-                                          groupToolReasoningRuns={false}
-                                          truncateToolOutput={truncateToolOutput}
-                                          customTheme={customTheme}
-                                          customThemeEnabled={customThemeEnabled}
-                                          isDarkMode={isDarkMode}
-                                          onOpenToolHtmlModal={openToolHtmlModal}
-                                          onOpenSubagentTranscript={openSubagentTranscript}
-                                          onChatErrorAction={handlePersistedChatErrorAction}
-                                          onHookRunsUpdated={handleHookRunsUpdated}
-                                          onHookRunsSettled={handleHookRunsSettled}
-                                        />
-                                      )
+                                    {row.fragments.map(({ key, message, blocks }) => {
+                                      const historyBlocks = blocks.filter(block => block.type !== 'context_injection')
+                                      return historyBlocks.length ? (
+                                        <ChatMessage key={key} id={message.id} displayRowId={`history-${key}`} role={message.role}
+                                          content='' displayBlocks={historyBlocks} width='w-full' fontSizeOffset={fontSizeOffset}
+                                          groupToolReasoningRuns={false} truncateToolOutput={truncateToolOutput}
+                                          customTheme={customTheme} customThemeEnabled={customThemeEnabled} isDarkMode={isDarkMode}
+                                          onOpenToolHtmlModal={openToolHtmlModal} onOpenSubagentTranscript={openSubagentTranscript} />
+                                      ) : null
                                     })}
-
-                                    {renderBridgedProcess(bridgedMessage)}
                                     {liveEvents.length > 0 && <ChatMessage id={`streaming-${runId}`} role='assistant' content='' streamEvents={liveEvents}
                                       width='w-full' fontSizeOffset={fontSizeOffset} groupToolReasoningRuns={false} truncateToolOutput={truncateToolOutput}
                                       customTheme={customTheme} customThemeEnabled={customThemeEnabled} isDarkMode={isDarkMode}
@@ -7022,12 +6675,8 @@ function Chat() {
                         }
                         const { contentBlocks } =
                           parsedMessageDataById.get(msg.id) ?? EMPTY_PARSED_MESSAGE_DATA
-                        const isProcessBridgeSourceMessage = bridgedProcessMessageIds.has(String(msg.id))
-
-                        const displayContentBlocks =
-                          isProcessBridgeSourceMessage && Array.isArray(contentBlocks)
-                            ? contentBlocks.filter(block => !isProcessContentBlock(block) && block.type !== 'context_injection')
-                            : contentBlocks
+                        const showMessageExtras = row.showMessageExtras !== false
+                        const transcriptRevision = transcriptRevisions.byMessage.get(msg.id)
                         const assistantContainerClassName = assistantContainerClassByMessageId.get(String(msg.id))
 
                         if (isFullAccessNotification(msg)) {
@@ -7080,7 +6729,7 @@ function Chat() {
                         return (
                           <VirtualizedRowContainer
                             key={renderRow.key}
-                            id={`message-${msg.id}`}
+                            id={`message-${row.id}`}
                             index={virtualRow.index}
                             start={virtualRow.start}
                             measureElement={virtualizer.measureElement}
@@ -7096,14 +6745,27 @@ function Chat() {
                               id={msg.id.toString()}
                               role={msg.role}
                               content={msg.content}
-                              contentBlocks={displayContentBlocks}
-                              hookRuns={isProcessBridgeSourceMessage ? undefined : msg.hook_runs}
+                              contentBlocks={contentBlocks}
+                              displayBlocks={row.displayBlocks}
+                              displayRowId={row.id}
+                              showInlineActions={showMessageExtras}
+                              transcriptRevision={transcriptRevision}
+                              showTranscriptRevisionControls={showMessageExtras}
+                              showOriginalTranscript={transcriptRevision && originalTranscriptRevisionIds.has(transcriptRevision.id)}
+                              onShowOriginalTranscriptChange={transcriptRevision ? showOriginal => setOriginalTranscriptRevisionIds(previous => {
+                                const next = new Set(previous)
+                                if (showOriginal) next.add(transcriptRevision.id)
+                                else next.delete(transcriptRevision.id)
+                                return next
+                              }) : undefined}
+                              onUndoTranscriptRevision={transcriptRevisions.undo}
+                              hookRuns={row.hookRunsAttached || !showMessageExtras ? undefined : msg.hook_runs}
                               timestamp={msg.created_at}
                               width='w-full'
                               modelName={msg.model_name}
                               artifacts={msg.artifacts}
                               fontSizeOffset={fontSizeOffset}
-                              groupToolReasoningRuns={groupToolReasoningRuns}
+                              groupToolReasoningRuns={groupToolReasoningRuns && !row.displayBlocks}
                               truncateToolOutput={truncateToolOutput}
                               customTheme={customTheme}
                               customThemeEnabled={customThemeEnabled}
@@ -7244,6 +6906,9 @@ function Chat() {
             <ComposerSurface
               surfaceClassName='slate-input-wrapper bg-neutral-100/40 dark:bg-neutral-900/40 backdrop-blur-xl'
               strokeClassName={composerStrokeClasses}
+              outlineProgress={compactComposer && showTokenUsageBar
+                ? { percent: totalContextProgress, color: tokenUsageProgressColor }
+                : undefined}
               className={compactComposer ? 'quiet-composer-surface p-1' : 'px-2 pt-3 pb-2'}
               tab={activityIndicatorOwner.kind === 'input-tab' && (showThinkingIndicator || backgroundTasksView) && (
                 <>
@@ -7269,11 +6934,12 @@ function Chat() {
               {!operationModeUpgradeRequest && toolCallPermissionRequest && (
                 <ToolPermissionDialog
                   toolCall={toolCallPermissionRequest.toolCall}
+                  transcriptRevision={toolCallPermissionRequest.transcriptRevision}
                   onGrant={() =>
-                    dispatch(respondToToolPermission({ allowed: true, streamId: toolCallPermissionRequest.streamId }))
+                    dispatch(respondToToolPermission({ allowed: true, streamId: toolCallPermissionRequest.streamId, toolCallId: toolCallPermissionRequest.toolCallId }))
                   }
                   onDeny={() =>
-                    dispatch(respondToToolPermission({ allowed: false, streamId: toolCallPermissionRequest.streamId }))
+                    dispatch(respondToToolPermission({ allowed: false, streamId: toolCallPermissionRequest.streamId, toolCallId: toolCallPermissionRequest.toolCallId }))
                   }
                   onAllowAll={() => dispatch(respondToToolPermissionAndEnableAll(toolCallPermissionRequest.streamId))}
                   onAllowAuto={isClaudeSession ? () =>
@@ -7364,7 +7030,7 @@ function Chat() {
                       </div>
                     </div>
                   )}
-                  {hasBranchFileMutations && (
+                  {hasFileMutations && (
                     <div
                       className={`${composerSummaryPanelClassName} rounded-[16px] bg-neutral-100/80 px-2 py-1 dark:bg-neutral-800/50`}
                     >
@@ -7373,8 +7039,8 @@ function Chat() {
                           <i className='bx bx-file shrink-0 text-base'></i>
                           <span className='truncate text-[12px]'>Modified Files</span>
                           <span className='translate-y-px shrink-0 text-[10px] text-neutral-400 dark:text-neutral-500'>
-                            {branchFileMutationData.latestByPath.length} file
-                            {branchFileMutationData.latestByPath.length === 1 ? '' : 's'}
+                            {fileMutationSummaries.length} file
+                            {fileMutationSummaries.length === 1 ? '' : 's'}
                           </span>
                         </span>
                         <div className='flex shrink-0 items-center gap-2'>
@@ -7408,7 +7074,7 @@ function Chat() {
                         aria-hidden={effectiveWorkspaceMutationsCollapsed}
                       >
                         <ul className='max-h-40 space-y-1 overflow-y-auto pr-1 thin-scrollbar'>
-                          {branchFileMutationData.latestByPath.map(summary => {
+                          {fileMutationSummaries.map(summary => {
                             const latestMutation = summary.latestMutation
                             const fileName = getWorkspaceFileBaseName(summary.path)
                             return (
@@ -7571,6 +7237,8 @@ function Chat() {
                   conversationId={currentConversationId}
                   initialValue={messageInput.content}
                   onHasTextChange={setHasLocalInput}
+                  fileInsertionScope={modelSwitchScope}
+                  onFileInsertionPendingChange={setFileInsertionPending}
                   onSubmit={handleComposerSubmit}
                   onBlurPersist={handleComposerBlurPersist}
                   slashCommands={composerSlashCommands}
@@ -7955,7 +7623,7 @@ function Chat() {
                             </div>
                             <ActionPopoverSwitch
                               label='Ultracode'
-                              disabled={!isClaudeSession}
+                              disabled={!isClaudeSession || currentConversationId == null || selection.status === 'pending' || selection.status === 'error'}
                               checked={isClaudeSession && claudeUltracode}
                               onClick={() => dispatch(chatSliceActions.claudeUltracodeSet(!claudeUltracode))}
                               title={!isClaudeSession ? 'Ultracode is a Claude Code setting'
@@ -7983,13 +7651,13 @@ function Chat() {
                               <span>Full access</span>
                               <ActionPopoverSwitch
                                 label='Full access'
-                                disabled={isClaudeSession}
+                                disabled={isClaudeSession || currentConversationId == null || selection.status === 'pending' || selection.status === 'error'}
                                 checked={!isClaudeSession && fullAccessEnabled}
-                                onClick={() => setFullAccessEnabled(!fullAccessEnabled, currentConversationId)}
-                                title='Allow tools outside the working directory on new runs'
+                                onClick={() => dispatch(chatSliceActions.branchFullAccessSelected(!fullAccessEnabled))}
+                                title='Allow tools outside the working directory on new runs in this branch'
                               />
                             </div>
-                            {fullAccessEnabled && (
+                            {!isClaudeSession && fullAccessEnabled && (
                               <p role='status' className='w-0 min-w-full text-[11px] text-amber-600 dark:text-amber-400'>
                                 Warning: access outside workspace.
                                 <br />
@@ -8062,21 +7730,14 @@ function Chat() {
                     supported={Boolean(selectedModel?.thinking)}
                     level={think || isClaudeSession ? reasoningConfig.effort : 'off'}
                     allowOff={!isClaudeSession}
-                    onLevelChange={level => {
-                      if (level === 'off') {
-                        setThink(false)
-                        return
-                      }
-                      setThink(true)
-                      setReasoningConfig(prev => ({ ...prev, effort: level }))
-                    }}
+                    onLevelChange={level => dispatch(chatSliceActions.branchReasoningSelected(level))}
                   />
                   </ComposerControlSlot>
                   {/* Attachment upload button */}
                   <input
                     ref={attachmentInputRef}
                     type='file'
-                    accept='application/pdf,image/*'
+                    accept={`image/*,${getFileInsertionAccept()}`}
                     multiple
                     onChange={event => { handleAttachmentInputChange(event); closeComposerMenu() }}
                     className='hidden'
@@ -8305,9 +7966,9 @@ function Chat() {
             key={currentConversationId ?? 'none'}
             keyboardFocusRequest={treeFocusRequest}
             onKeyboardFocusHandled={() => setTreeFocusRequest(0)}
-            chatData={heimdallData}
-            loading={loading}
-            error={error}
+            chatData={graphPending ? null : heimdallData}
+            loading={loading || (graphPending && !snapshotError)}
+            error={snapshotError?.message ?? error}
             compactMode={compactMode}
             conversationId={currentConversationId}
             onNodeSelect={handleNodeSelect}
@@ -8360,9 +8021,9 @@ function Chat() {
                     key={currentConversationId ?? 'none'}
                     keyboardFocusRequest={treeFocusRequest}
                     onKeyboardFocusHandled={() => setTreeFocusRequest(0)}
-                    chatData={heimdallData}
-                    loading={loading}
-                    error={error}
+                    chatData={graphPending ? null : heimdallData}
+                    loading={loading || (graphPending && !snapshotError)}
+                    error={snapshotError?.message ?? error}
                     compactMode={compactMode}
                     conversationId={currentConversationId}
                     onNodeSelect={handleNodeSelect}

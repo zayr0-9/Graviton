@@ -29,7 +29,7 @@ export function ChatSelectionProvider({ children }: { children: ReactNode }) {
     getState: () => store.getState().chat,
     dispatch: action => store.dispatch(action),
     loadLineage: (target, signal) => gwApi.get(
-      `/conversations/${encodeURIComponent(target.conversationId)}/lineages/${encodeURIComponent(target.lineageId)}`,
+      `/conversations/${encodeURIComponent(target.conversationId)}/lineages/${encodeURIComponent(target.lineageId)}?idsOnly=true`,
       { signal }
     ),
   }), [store])

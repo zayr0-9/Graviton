@@ -10,7 +10,9 @@ import { HtmlToolsModal } from './components/HtmlToolsModal/HtmlToolsModal'
 import { RunningAgentsFloatingButton } from './components/RunningAgentsFloatingButton'
 import { ChatSelectionProvider, useChatNavigate } from './components/ChatSelection/ChatSelectionProvider'
 import AgentsWindow from './containers/AgentsWindow'
+import AppsWindow from './containers/AppsWindow'
 import { AGENTS_WINDOW_ROUTE, isAgentsWindow } from './platform/agentsWindow'
+import { APPS_WINDOW_ROUTE, isAppsWindow } from './platform/appsWindow'
 import { LiquidGlassSVG } from './components/LiquidGlassSVG'
 import ProtectedRoute from './components/ProtectedRoute'
 import { TitleBar } from './components/TitleBar/TitleBar'
@@ -29,7 +31,7 @@ import IdeContextBootstrap from './IdeContextBootstrap'
 import { KeyboardProvider } from './keyboard/KeyboardProvider'
 import { NavigationCommands } from './keyboard/NavigationCommands'
 
-import { isHostClient } from './platform/clientCapabilities'
+import { isBrowserClient, isHostClient } from './platform/clientCapabilities'
 
 // Hash routing everywhere: Electron loads from file:// and the shared UI is served by the host.
 const Router = HashRouter
@@ -72,14 +74,15 @@ const HtmlToolsShell = ({ enabled }: { enabled: boolean }) => {
   const bootstrappedUserIdRef = useRef<string | null>(null)
 
   useEffect(() => {
-    if (!registry || !enabled || !currentUser || bootstrappedUserIdRef.current === currentUser.id) return
+    if (isBrowserClient || !registry || !enabled || !currentUser || bootstrappedUserIdRef.current === currentUser.id) return
     bootstrappedUserIdRef.current = currentUser.id
     registry.bootstrapFromLocalCache(currentUser.id)
   }, [currentUser, enabled, registry])
 
   useEffect(() => {
     if (!registry || !enabled || !currentUser) return
-    if (!registry.isModalOpen || registry.entries.length > 0) return
+    if (!registry.isModalOpen || (isBrowserClient ? bootstrappedUserIdRef.current === currentUser.id : registry.entries.length > 0)) return
+    if (isBrowserClient) bootstrappedUserIdRef.current = currentUser.id
     registry.bootstrapFromLocalCache(currentUser.id)
   }, [currentUser, enabled, registry])
 
@@ -95,6 +98,11 @@ const HtmlToolsShell = ({ enabled }: { enabled: boolean }) => {
   const isHomepageFullscreen = registry.isHomepageFullscreen
 
   const toggleAppsModal = () => {
+    // Moved to its own window: bring that window forward.
+    if (registry.detached) {
+      registry.openModal()
+      return
+    }
     if (registry.isModalOpen) {
       registry.closeModal()
       return
@@ -110,7 +118,7 @@ const HtmlToolsShell = ({ enabled }: { enabled: boolean }) => {
           notes={notes}
           allConversations={allConversations}
           onOpenApps={toggleAppsModal}
-          appsOpen={registry.isModalOpen}
+          appsOpen={registry.isModalOpen || registry.detached}
           className={isMobile ? 'bottom-32 right-5' : 'bottom-6 right-14'}
         />
       )}
@@ -322,6 +330,25 @@ function App() {
               <Route path='*' element={<Navigate to={AGENTS_WINDOW_ROUTE} replace />} />
             </Routes>
           </AgentsHeaderProvider></HtmlIframeRegistryProvider>
+          <GlobalNotifications />
+        </ChatSelectionProvider>
+      </Router>
+    )
+  }
+
+  // The detached apps window renders only the Task Manager, which owns the app iframes there.
+  if (isAppsWindow()) {
+    return (
+      <Router>
+        <ChatSelectionProvider>
+          <GlobalCustomThemeCssVariables />
+          <VideoBackground />
+          <HtmlIframeRegistryProvider resetKey={resetKey}>
+            <Routes>
+              <Route path={`${APPS_WINDOW_ROUTE}/*`} element={<AppsWindow />} />
+              <Route path='*' element={<Navigate to={APPS_WINDOW_ROUTE} replace />} />
+            </Routes>
+          </HtmlIframeRegistryProvider>
           <GlobalNotifications />
         </ChatSelectionProvider>
       </Router>

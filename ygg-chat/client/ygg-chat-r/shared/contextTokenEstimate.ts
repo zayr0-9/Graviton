@@ -17,6 +17,8 @@ export interface ContextMeterMessage {
   tool_calls?: unknown
   context_usage?: ContextUsage | string | null
   note?: string | null
+  /** Serialised block characters the host dropped from a compacted branch row (see `body_omitted`). */
+  body_omitted_chars?: number
 }
 
 const IMAGE_PAYLOAD_OMITTED_PLACEHOLDER = '[image payload omitted from token estimate]'
@@ -180,8 +182,10 @@ export function calculateBranchContextUsage(params: {
     // Legacy `tool_calls` repeats the blocks' tool calls; count it only for rows without `tool_use` blocks.
     const hasToolUseBlocks = parseMaybeJsonArray(message.content_blocks)?.some(block => block?.type === 'tool_use')
     const legacyToolCalls = hasToolUseBlocks ? 0 : safeEstimateTokenCount(message.tool_calls)
+    // Dropped payloads are tool JSON; four characters per token is the meter's rough rate for it.
+    const omittedBlocks = Math.ceil(Math.max(0, message.body_omitted_chars ?? 0) / 4)
     return total + safeEstimateTokenCount(message.content) +
-      estimateContentBlocksForContext(message.content_blocks) + legacyToolCalls
+      estimateContentBlocksForContext(message.content_blocks) + legacyToolCalls + omittedBlocks
   }, 0)
   const estimatedContextTokens = promptAndContextTokens + messageTokens
   const resolved = resolveContextTokens({

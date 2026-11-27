@@ -64,6 +64,9 @@ import { loadSkillFromDirectory, type DiscoveredSkill } from '../../context/skil
 import { skillRegistry } from '../../skills/skillLoader.js'
 import { tryGetServerConfig } from '../../serverHost.js'
 import { assertModelImageBudget, createModelImageHydrator } from './modelImageHistory.js'
+import { createTranscriptRevisionTool, type TranscriptRevisionTool } from './transcriptRevisionTool.js'
+import { TranscriptRevisionRepo } from '../persistence/transcriptRevisionRepo.js'
+import { parseTranscriptRevisionRequest, TRANSCRIPT_REVISION_TOOL } from '../../../../../shared/transcriptRevision.js'
 
 interface ChatOrchestratorDeps {
   db: any
@@ -85,6 +88,7 @@ interface ChatOrchestratorDeps {
   claudeSessions?: ClaudeSessionService
   /** Host setting for Claude Code's own MCP servers; absent (tests, subagents) keeps Claude's MCP off. */
   claudeNativeMcp?: () => HostClaudeMcpPreferences
+  allowClaudeNativeHooks?: () => boolean
   /** Keep a Claude branch's CLI open between runs; absent (tests, subagents) starts a CLI per run. */
   claudeWarm?: ClaudeWarmConfig | null
   /**
@@ -347,6 +351,7 @@ export function createChatPausingExecutor(deps: {
   signal?: AbortSignal
   hookSession?: ChatHookSession
   modeControl?: OperationModeControl
+  reviseTranscript?: TranscriptRevisionTool
 }): ToolExecutor {
   const { broker, streamId, emit, signal, hookSession, modeControl } = deps
   // Recheck AFTER hooks/permission awaits, immediately before actual dispatch.
@@ -358,6 +363,11 @@ export function createChatPausingExecutor(deps: {
     const sig = context.signal ?? signal
     modeControl?.assertCanDispatch(toolCall)
     const args = parseToolArgs(toolCall.arguments)
+    const isRevision = toolCall.name === TRANSCRIPT_REVISION_TOOL
+    const runRevision = (input: any) => {
+      if (!deps.reviseTranscript) throw new Error('Start a new user turn with /revise followed by your request.')
+      return deps.reviseTranscript(toolCall.id, input, sig)
+    }
     const approvedContext = () => ({ ...context, autoApprove: true, nestedExecutor: context.nestedExecutor ?? execute })
 
     // plan_md clarify is INHERENTLY interactive: the base executor always throws on it
@@ -383,6 +393,7 @@ export function createChatPausingExecutor(deps: {
     // the auto-approve short-circuit (auto-approve only skips permission PROMPTS, not
     // the clarify mechanism).
     if (!hookSession) {
+      if (isRevision) return runRevision(args)
       if (isClarify(toolCall.name, args)) return runClarify(toolCall, args)
       if (broker.isAutoApproveAll(streamId)) return base(toolCall, approvedContext())
       if (shouldBypassPermission(toolCall.name, args)) return base(toolCall, { ...context, nestedExecutor: context.nestedExecutor ?? execute })
@@ -409,11 +420,14 @@ export function createChatPausingExecutor(deps: {
       if (pre.permissionDecision === 'deny') {
         throw new Error(pre.permissionDecisionReason || 'Tool blocked by hook')
       }
+      if (pre.updatedInput) context.assertReplCaptureAllowed?.(effectiveToolCall)
       const effArgs = parseToolArgs(effectiveToolCall.arguments)
       modeControl?.assertCanDispatch(effectiveToolCall)
 
       let result: any
-      if (isClarify(effectiveToolCall.name, effArgs)) {
+      if (isRevision) {
+        result = await runRevision(effArgs)
+      } else if (isClarify(effectiveToolCall.name, effArgs)) {
         // Clarify bypasses the permission prompt (its own interactive channel), but
         // still fires PostToolUse — same as the renderer.
         result = await runClarify(effectiveToolCall, effArgs)
@@ -617,6 +631,10 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
   }
 
   validateExecutionSelection(request: HeadlessMessageRequest): void {
+    if (parseTranscriptRevisionRequest(request.content) && !request.manualCompaction && !request.watcherCompletion &&
+        (request.operation !== 'send' || !request.parentId || !request.lineageId || request.isBranch || request.retrigger)) {
+      throw new Error('Send /revise as a new user message on the existing branch you want to revise.')
+    }
     const sourceId = request.operation === 'send' ? request.parentId : request.messageId ?? request.parentId
     const path = sourceId ? this.conversationRepo.listPathToMessage(request.conversationId, sourceId) : []
     // A second pending send cannot switch a newly accepted Claude run before its first row exists.
@@ -776,6 +794,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     this.getMessageQueue(conversationId, streamId)
     const run = this.inputRuns.get(streamId)!
     if (!submission.requestId || !submission.content.trim()) throw new Error('Message content and request id are required')
+    if (parseTranscriptRevisionRequest(submission.content)) throw new Error('Wait for the current reply to finish before sending /revise.')
     if (run.signal?.aborted) throw new Error('Run stopped; send a new message on the selected branch')
     if (isClaudeProvider(run.request.provider)) {
       // Claude runs always use restricted access (see runMessage), so there is no policy to confirm.
@@ -827,6 +846,8 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     return { ...run.request, operation: 'send', streamId: nextId, lineageId,
       parentId, messageId: null, operationId: null, content: submission.content, manualCompaction: false,
       watcherCompletion: submission.watcherCompletion,
+      // A different client may send the successor; do not inherit the previous sender's display name.
+      userDisplayName: submission.userDisplayName,
       selectedFiles: submission.selectedFiles ?? [],
       fullAccess: run.request.fullAccess === true,
       fullAccessNotificationId: submission.fullAccessNotificationId,
@@ -942,7 +963,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     const gravitonToolStates = deps.claudeGravitonToolStates
     const gravitonExecutor = deps.toolExecutor
     this.claudeSessions = deps.claudeSessions ?? new ClaudeSessionService({ sessions: this.claudeSessionRepo, messages: this.messageRepo, broker: deps.decisionBroker,
-      nativeMcp: deps.claudeNativeMcp, warm: deps.claudeWarm,
+      nativeMcp: deps.claudeNativeMcp, allowNativeHooks: deps.allowClaudeNativeHooks, warm: deps.claudeWarm,
       gravitonTools: gravitonToolStates && gravitonExecutor ? {
         available: () => enabledGravitonTools(this.defaultToolsProvider(), gravitonToolStates()),
         // Graviton's own per-call wrapper, so a Claude run's Graviton calls ask, run hooks and
@@ -973,7 +994,8 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     emit: (event: HeadlessStreamEvent) => void,
     signal?: AbortSignal,
     hookSession?: ChatHookSession,
-    modeControl?: OperationModeControl
+    modeControl?: OperationModeControl,
+    reviseTranscript?: TranscriptRevisionTool,
   ): ToolExecutor {
     return createChatPausingExecutor({
       base: this.toolExecutor!,
@@ -983,6 +1005,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       emit,
       signal,
       hookSession,
+      reviseTranscript,
     })
   }
 
@@ -1192,10 +1215,14 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
         modelSelection: { provider: request.provider, model: request.modelName },
         ...(this.summaryHandoff(request) ? { executionHandoff: { summaryMessageId: this.summaryHandoff(request)!.id } } : {}),
         fastMode: request.serviceTier === 'priority',
+        ...(request.reasoningLevel ? { reasoningLevel: request.reasoningLevel } : {}),
         toolAutoApprove: request.toolAutoApprove !== false,
         // Claude runs never persist mode-notification rows (they would displace the
         // resumable checkpoint), so the turn's mode is recorded on its user row.
-        ...(isClaudeProvider(request.provider) ? { operationMode: request.operationMode === 'plan' ? 'plan' : 'execute' } : {}),
+        ...(isClaudeProvider(request.provider) ? {
+          operationMode: request.operationMode === 'plan' ? 'plan' : 'execute',
+          claudeUltracode: request.claudeUltracode === true,
+        } : {}),
         // Native plan mode too: Chat shows the Plan mode notice where it starts and ends, and the
         // composer restores it per branch. Absent on a Claude row means off.
         ...(isClaudeProvider(request.provider) && request.claudePlanMode === true ? { claudePlanMode: true } : {}),
@@ -1314,8 +1341,15 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     // Continuing from a copied summary runs exactly as Branch from summary (what the desktop composer sends):
     // a new lineage with no stored native session, so an earlier session on the same lineage is never resumed.
     const copiedSummary = this.copiedSummaryForSend(request)
+    if (copiedSummary && parseTranscriptRevisionRequest(request.content)) {
+      throw new Error('Continue from the copied summary before revising a reply on that branch.')
+    }
     if (copiedSummary) request = { ...request, operation: 'branch', messageId: copiedSummary.id, parentId: copiedSummary.id }
     this.validateExecutionSelection(request)
+    // Scope is earned by a new user submission, never by hooks, native/automated output, or queued text.
+    const revisionRequest = request.operation === 'send' && !request.isBranch && !request.retrigger &&
+      !request.manualCompaction && !request.watcherCompletion && request.parentId
+      ? parseTranscriptRevisionRequest(request.content) : null
     if (isClaudeProvider(request.provider)) request = { ...request, fullAccess: false, fullAccessNotificationId: undefined }
     if (request.manualCompaction) {
       if ([...this.inputRuns.values()].some(run => !run.terminal && run.request.conversationId === request.conversationId &&
@@ -1496,7 +1530,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       resolveContextDirectorySettingsFromEnv()
     )
     let contextLoader: ConversationContextLoader | null = null
-    const claudeSlash = claudeRun && !request.manualCompaction ? parseClaudeSlashCommand(request.content) : null
+    const claudeSlash = claudeRun && !request.manualCompaction && !revisionRequest ? parseClaudeSlashCommand(request.content) : null
     if (contextRootPath && (!claudeRun || claudeSlash)) {
       contextLoader = createConversationContextLoader({
         conversationId: request.conversationId,
@@ -1555,7 +1589,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       }
       if (launchInjection && hookSession) await hookSession.runSessionStart('startup')
     }
-    if (contextLoader && startsUserTurn) {
+    if (contextLoader && startsUserTurn && !revisionRequest) {
       try {
         // `/skill args` typed by the user: the rendered body rides on the user message.
         const slash = await contextLoader.expandSlashInvocation(request.content)
@@ -1789,6 +1823,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       onModelResponse: (id: string) => { runResponseIds.add(id) },
       modelSelection: { provider: request.provider, model: request.modelName },
       fastMode: request.serviceTier === 'priority',
+      reasoningLevel: request.reasoningLevel,
       toolAutoApprove: () => this.decisionBroker?.isAutoApproveAll(trackedStreamId!) ?? request.toolAutoApprove !== false,
     }
     // ONE sink instance for the run: the loop's turns and any terminal error row share
@@ -1853,6 +1888,17 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       modelName: request.modelName,
     })
 
+    const revisionAnchor = resolved.userMessage?.parent_id
+    const reviseTranscript = revisionRequest && revisionAnchor && this.decisionBroker && this.toolExecutor &&
+      request.lineageId === lineageId &&
+      this.defaultToolsProvider().some(tool => tool.name === TRANSCRIPT_REVISION_TOOL) &&
+      (claudeRun || !Array.isArray(request.tools) || request.tools.some(tool => tool.name === TRANSCRIPT_REVISION_TOOL))
+      ? createTranscriptRevisionTool({ conversationId: request.conversationId, lineageId,
+          userMessageId: resolved.userMessage.id, anchor: revisionAnchor, streamId: trackedStreamId,
+          messages: this.conversationRepo, lineages: this.lineageRepo, revisions: new TranscriptRevisionRepo(this.db),
+          runById: id => this.statements.getStreamingRunById.get(id), broker: this.decisionBroker, emit })
+      : undefined
+
     if (claudeRun) {
       const sourceId = freshExecution ? null : request.operation === 'edit-branch'
         ? this.requireMessage(request.messageId!, request.conversationId).parent_id ?? null
@@ -1873,7 +1919,8 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       const nativeCommand = turnBlocks.some(block => block.origin === 'claude')
       const rendered = injections.length ? renderInjectionEntries(injections) : ''
       // A native command must lead the prompt for Claude to expand it, so its context follows.
-      const content = !rendered ? userContent : nativeCommand ? `${userContent}\n\n${rendered}` : `${rendered}\n\n${userContent}`
+      const promptContent = revisionRequest ? `Use Graviton’s revise_transcript tool to propose a display-only edit requested by the user. Confirm briefly after approval; do not reproduce the answer.\n\n${parseTranscriptRevisionRequest(userContent) ?? userContent}` : userContent
+      const content = !rendered ? promptContent : nativeCommand ? `${promptContent}\n\n${rendered}` : `${rendered}\n\n${promptContent}`
       const [turnUser] = request.manualCompaction || !turnUserId ? [] : await this.hydrateModelImages(
         [{ role: 'user', id: turnUserId }], turnUserId, request.attachmentsBase64 ?? [])
       // A manual /compact run ends at its summary and never reads its mailbox: entries queued
@@ -1888,7 +1935,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       const finalMessage = await this.claudeSessions.run({ request: { ...request, content, streamId: trackedStreamId }, lineageId, modeControl, planControl: claudePlan,
         images: turnUser?.artifacts ?? [],
         userMessage: resolved.userMessage, parentId: resolved.assistantParentId, sourceMessageId: sourceId ?? null,
-        fork: request.operation !== 'send' || Boolean(request.isBranch), cwd: contextRootPath!, sink, signal, hookSession, nativeCommand,
+        fork: request.operation !== 'send' || Boolean(request.isBranch), cwd: contextRootPath!, sink, signal, hookSession, nativeCommand, reviseTranscript,
         additionalDirectories: parseAdditionalCwds(conversation.additional_cwds), queuedInput,
         bindTasks: control => { inputRun.claudeTasks = control; return () => { inputRun.claudeTasks = undefined } },
         emit: event => { if (event.type === 'assistant_message_persisted') lastPersistedAssistantId = event.message?.id ?? lastPersistedAssistantId; emit(event) } })
@@ -1937,7 +1984,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
     // MCP discovery returns schemas in tool results, never in the model tool list.
     // Keep this run's definitions stable across manager calls and connections.
     const resolvedTools = filterToolsForOperationMode(
-      requestedTools ?? initialDefaultTools,
+      (requestedTools ?? initialDefaultTools).filter(tool => tool.name !== TRANSCRIPT_REVISION_TOOL || reviseTranscript),
       resolvedOperationMode
     )
 
@@ -1958,6 +2005,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
         requestPrompt: request.systemPrompt ?? null,
         projectPrompt: project?.system_prompt ?? null,
         conversationPrompt: conversation?.system_prompt ?? null,
+        userDisplayName: request.userDisplayName,
         planModeVerbosity: request.planModeVerbosity ?? 'concise',
         skillsIndex: contextPromptParts.skillsIndex,
         agentsIndex: contextPromptParts.agentsIndex,
@@ -1997,7 +2045,7 @@ export class ChatOrchestrator implements HeadlessChatOrchestrator {
       providerRouter: this.providerRouter,
       executeTool:
         this.decisionBroker && this.toolExecutor
-          ? this.makePausingExecutor(trackedStreamId, emit, signal, hookSession ?? undefined, modeControl)
+          ? this.makePausingExecutor(trackedStreamId, emit, signal, hookSession ?? undefined, modeControl, reviseTranscript)
           : this.toolExecutor,
       toolInvocationRepo: new ToolInvocationRepo({ statements: this.statements }),
       compactBranch: this.compactBranch,

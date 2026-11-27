@@ -1,0 +1,774 @@
+{
+  "version": 1,
+  "name": "VS Code Dark Modern",
+  "colors": {
+    "chatPanelBg": {
+      "light": "oklch(98.5% 0 0)",
+      "dark": "#1F1F1F"
+    },
+    "chatMessageListBg": {
+      "light": "oklch(98.5% 0 0)",
+      "dark": "#1F1F1F"
+    },
+    "heimdallPanelBg": {
+      "light": "#fafafa",
+      "dark": "#181818"
+    },
+    "conversationToolbarBg": {
+      "light": "rgba(255, 255, 255, 0.8)",
+      "dark": "#181818"
+    },
+    "settingsSolidColorSectionBg": {
+      "light": "rgba(250, 250, 250, 0.7)",
+      "dark": "#181818"
+    },
+    "appBackgroundColor": {
+      "light": "#F7F9FB",
+      "dark": "#181818"
+    },
+    "settingsPaneBodyBg": {
+      "light": "oklch(97% 0 0)",
+      "dark": "#181818"
+    },
+    "settingsCustomThemesCardBg": {
+      "light": "rgba(255, 255, 255, 0.7)",
+      "dark": "#1F1F1F"
+    },
+    "settingsCustomThemesCardBorder": {
+      "light": "rgba(229, 229, 229, 0.9)",
+      "dark": "#303030"
+    },
+    "settingsCustomThemesAccentBg": {
+      "light": "#ede9fe",
+      "dark": "#173652"
+    },
+    "settingsCustomThemesAccentText": {
+      "light": "#7c3aed",
+      "dark": "#75BEFF"
+    },
+    "settingsCustomThemesTitleText": {
+      "light": "#44403c",
+      "dark": "#E0E0E0"
+    },
+    "settingsCustomThemesBodyText": {
+      "light": "#737373",
+      "dark": "#A0A0A0"
+    },
+    "settingsCustomThemesCodeBg": {
+      "light": "rgba(229, 229, 229, 0.7)",
+      "dark": "#181818"
+    },
+    "settingsCustomThemesCodeText": {
+      "light": "#525252",
+      "dark": "#CCCCCC"
+    },
+    "settingsCustomThemesPanelBorder": {
+      "light": "rgba(229, 229, 229, 0.8)",
+      "dark": "#303030"
+    },
+    "settingsCustomThemesInnerCardBg": {
+      "light": "rgba(250, 250, 250, 0.8)",
+      "dark": "#1F1F1F"
+    },
+    "settingsCustomThemesInnerCardBorder": {
+      "light": "#e5e5e5",
+      "dark": "#303030"
+    },
+    "settingsCustomThemesBadgeBg": {
+      "light": "rgba(229, 229, 229, 0.8)",
+      "dark": "#2B2B2B"
+    },
+    "settingsCustomThemesBadgeText": {
+      "light": "#737373",
+      "dark": "#B3B3B3"
+    },
+    "settingsCustomThemesButtonBg": {
+      "light": "#ffffff",
+      "dark": "#2D2D2D"
+    },
+    "settingsCustomThemesButtonBorder": {
+      "light": "#d4d4d4",
+      "dark": "#3C3C3C"
+    },
+    "settingsCustomThemesButtonText": {
+      "light": "#404040",
+      "dark": "#CCCCCC"
+    },
+    "settingsCustomThemesEmptyStateBg": {
+      "light": "rgba(250, 250, 250, 0.8)",
+      "dark": "#1F1F1F"
+    },
+    "settingsCustomThemesEmptyStateBorder": {
+      "light": "#d4d4d4",
+      "dark": "#3C3C3C"
+    },
+    "settingsCustomThemesListBg": {
+      "light": "rgba(250, 250, 250, 0.7)",
+      "dark": "#181818"
+    },
+    "settingsCustomThemesListBorder": {
+      "light": "#e5e5e5",
+      "dark": "#303030"
+    },
+    "settingsCustomThemesListItemTitleText": {
+      "light": "#171717",
+      "dark": "#E0E0E0"
+    },
+    "settingsCustomThemesListItemMetaText": {
+      "light": "#737373",
+      "dark": "#A0A0A0"
+    },
+    "settingsCustomThemesPrimaryButtonBg": {
+      "light": "#3b82f6",
+      "dark": "#0078D4"
+    },
+    "settingsCustomThemesPrimaryButtonText": {
+      "light": "#ffffff",
+      "dark": "#FFFFFF"
+    },
+    "chatInputAreaBorder": {
+      "light": "rgba(194, 65, 12, 0.7)",
+      "dark": "#0078D4"
+    },
+    "chatProgressBarFill": {
+      "light": "#3b82f6",
+      "dark": "#4DAAFC"
+    },
+    "contextCardBg": {
+      "light": "#ede9fe",
+      "dark": "#232D37"
+    },
+    "contextCardHoverBg": {
+      "light": "rgba(229, 229, 229, 0.8)",
+      "dark": "#2A3A4A"
+    },
+    "contextCardTitleText": {
+      "light": "#7c3aed",
+      "dark": "#75BEFF"
+    },
+    "contextCardMetaText": {
+      "light": "#7c3aed",
+      "dark": "#9BCDFB"
+    },
+    "contextCardPathText": {
+      "light": "#44403c",
+      "dark": "#CCCCCC"
+    },
+    "contextCardMutedText": {
+      "light": "#737373",
+      "dark": "#A0A0A0"
+    },
+    "contextCardBadgeBg": {
+      "light": "rgba(229, 229, 229, 0.8)",
+      "dark": "#173652"
+    },
+    "contextCardBadgeText": {
+      "light": "#7c3aed",
+      "dark": "#9BCDFB"
+    },
+    "contextCardCodeBg": {
+      "light": "rgba(229, 229, 229, 0.7)",
+      "dark": "#181818"
+    },
+    "contextCardCodeText": {
+      "light": "#525252",
+      "dark": "#CCCCCC"
+    },
+    "actionPopoverBorder": {
+      "light": "#dbeafe",
+      "dark": "#3C3C3C"
+    },
+    "sendButtonAnimationColor": {
+      "light": "#ffffff",
+      "dark": "#ffffff"
+    },
+    "streamingAnimationColor": {
+      "light": "#ef4444",
+      "dark": "#75BEFF"
+    },
+    "composerToggleActiveBg": {
+      "light": "#fff7ed",
+      "dark": "#173652"
+    },
+    "composerToggleActiveBorder": {
+      "light": "#fdba74",
+      "dark": "#0078D4"
+    },
+    "composerToggleActiveText": {
+      "light": "#c2410c",
+      "dark": "#9BCDFB"
+    },
+    "heimdallNotePillBg": {
+      "light": "#3b82f6",
+      "dark": "#173652"
+    },
+    "heimdallNotePillText": {
+      "light": "#ffffff",
+      "dark": "#9BCDFB"
+    },
+    "heimdallNotePillBorder": {
+      "light": "rgba(0,0,0,0.18)",
+      "dark": "#0078D4"
+    },
+    "heimdallNodeHoverModalBg": {
+      "light": "#fafafa",
+      "dark": "#252526"
+    },
+    "heimdallNodeHoverModalBorder": {
+      "light": "#e7e5e4",
+      "dark": "#3C3C3C"
+    },
+    "heimdallNodeHoverModalText": {
+      "light": "#292524",
+      "dark": "#CCCCCC"
+    },
+    "heimdallNodeHoverModalTitleText": {
+      "light": "#292524",
+      "dark": "#E0E0E0"
+    },
+    "heimdallNoteDialogBg": {
+      "light": "#fafafa",
+      "dark": "#1F1F1F"
+    },
+    "heimdallNoteDialogBorder": {
+      "light": "#e7e5e4",
+      "dark": "#3C3C3C"
+    },
+    "heimdallNoteDialogTitleText": {
+      "light": "#292524",
+      "dark": "#E0E0E0"
+    },
+    "heimdallNoteDialogButtonBg": {
+      "light": "transparent",
+      "dark": "#2D2D2D"
+    },
+    "heimdallNoteDialogButtonBorder": {
+      "light": "#d6d3d1",
+      "dark": "#3C3C3C"
+    },
+    "heimdallNoteDialogButtonText": {
+      "light": "#57534e",
+      "dark": "#CCCCCC"
+    },
+    "heimdallNoteDialogCloseButtonText": {
+      "light": "#a8a29e",
+      "dark": "#A0A0A0"
+    },
+    "ideContextPillBg": {
+      "light": "rgba(219, 234, 254, 0.8)",
+      "dark": "#232D37"
+    },
+    "ideContextPillBorder": {
+      "light": "rgba(96, 165, 250, 0.6)",
+      "dark": "#385571"
+    },
+    "ideContextPillText": {
+      "light": "#111827",
+      "dark": "#CCCCCC"
+    },
+    "ideContextAddButtonBg": {
+      "light": "rgba(219, 234, 254, 0.8)",
+      "dark": "#173652"
+    },
+    "ideContextAddButtonBorder": {
+      "light": "rgba(96, 165, 250, 0.6)",
+      "dark": "#0078D4"
+    },
+    "ideContextAddButtonText": {
+      "light": "#111827",
+      "dark": "#9BCDFB"
+    },
+    "ideContextPreviewBg": {
+      "light": "rgba(245, 245, 245, 0.95)",
+      "dark": "#181818"
+    },
+    "ideContextPreviewBorder": {
+      "light": "rgba(249, 115, 22, 0.35)",
+      "dark": "#3C3C3C"
+    },
+    "ideContextPreviewFileText": {
+      "light": "#7c2d12",
+      "dark": "#75BEFF"
+    },
+    "ideContextPreviewCodeText": {
+      "light": "#7c2d12",
+      "dark": "#CCCCCC"
+    },
+    "ideContextSelectedPillBg": {
+      "light": "rgba(255, 255, 255, 0.85)",
+      "dark": "#173652"
+    },
+    "ideContextSelectedPillBorder": {
+      "light": "rgba(249, 115, 22, 0.35)",
+      "dark": "#385571"
+    },
+    "ideContextSelectedPillText": {
+      "light": "#111827",
+      "dark": "#9BCDFB"
+    },
+    "ideContextClearButtonBorder": {
+      "light": "rgba(163, 163, 163, 0.7)",
+      "dark": "#3C3C3C"
+    },
+    "ideContextClearButtonText": {
+      "light": "#404040",
+      "dark": "#CCCCCC"
+    },
+    "ideContextAddedText": {
+      "light": "#1d4ed8",
+      "dark": "#75BEFF"
+    },
+    "agentsGridStreamingCardBg": {
+      "light": "var(--agents-grid-streaming-bg)",
+      "dark": "#202C38"
+    },
+    "agentsGridIdleCardBg": {
+      "light": "var(--agents-grid-idle-bg)",
+      "dark": "#1F1F1F"
+    },
+    "agentsGridUserMessageBg": {
+      "light": "color-mix(in srgb, currentColor 7%, transparent)",
+      "dark": "#252526"
+    },
+    "toolJobsModalBackdrop": {
+      "light": "rgba(0, 0, 0, 0.6)",
+      "dark": "rgba(0, 0, 0, 0.6)"
+    },
+    "toolJobsModalBg": {
+      "light": "#ffffff",
+      "dark": "#1F1F1F"
+    },
+    "toolJobsModalBorder": {
+      "light": "#e5e5e5",
+      "dark": "#3C3C3C"
+    },
+    "toolJobsPanelBg": {
+      "light": "rgba(250, 250, 250, 0.8)",
+      "dark": "#181818"
+    },
+    "toolJobsPanelBorder": {
+      "light": "#e5e5e5",
+      "dark": "#303030"
+    },
+    "toolJobsPrimaryText": {
+      "light": "#171717",
+      "dark": "#E0E0E0"
+    },
+    "toolJobsSecondaryText": {
+      "light": "#525252",
+      "dark": "#CCCCCC"
+    },
+    "toolJobsMutedText": {
+      "light": "#737373",
+      "dark": "#A0A0A0"
+    },
+    "toolJobsCodeBg": {
+      "light": "#f5f5f5",
+      "dark": "#181818"
+    },
+    "toolJobsCodeText": {
+      "light": "#262626",
+      "dark": "#CCCCCC"
+    },
+    "toolJobsErrorBg": {
+      "light": "rgba(255, 241, 242, 0.85)",
+      "dark": "rgba(127, 29, 29, 0.2)"
+    },
+    "toolJobsErrorBorder": {
+      "light": "#fecdd3",
+      "dark": "#9f1239"
+    },
+    "toolJobsErrorText": {
+      "light": "#be123c",
+      "dark": "#fda4af"
+    },
+    "toolJobsLiveBadgeBg": {
+      "light": "rgba(209, 250, 229, 1)",
+      "dark": "rgba(6, 78, 59, 0.3)"
+    },
+    "toolJobsLiveBadgeText": {
+      "light": "#047857",
+      "dark": "#a7f3d0"
+    },
+    "toolJobsLiveDot": {
+      "light": "#10b981",
+      "dark": "#34d399"
+    },
+    "toolJobsProgressTrack": {
+      "light": "#e5e5e5",
+      "dark": "#303030"
+    },
+    "toolJobsProgressPending": {
+      "light": "#f59e0b",
+      "dark": "#f59e0b"
+    },
+    "toolJobsProgressRunning": {
+      "light": "#3b82f6",
+      "dark": "#4DAAFC"
+    },
+    "toolJobsProgressCompleted": {
+      "light": "#10b981",
+      "dark": "#34d399"
+    },
+    "toolJobsProgressFailed": {
+      "light": "#f43f5e",
+      "dark": "#fb7185"
+    },
+    "toolJobsStatusPendingBg": {
+      "light": "#fef3c7",
+      "dark": "rgba(120, 53, 15, 0.35)"
+    },
+    "toolJobsStatusPendingText": {
+      "light": "#b45309",
+      "dark": "#fde68a"
+    },
+    "toolJobsStatusRunningBg": {
+      "light": "#dbeafe",
+      "dark": "#173652"
+    },
+    "toolJobsStatusRunningText": {
+      "light": "#1d4ed8",
+      "dark": "#9BCDFB"
+    },
+    "toolJobsStatusCompletedBg": {
+      "light": "#d1fae5",
+      "dark": "rgba(6, 78, 59, 0.35)"
+    },
+    "toolJobsStatusCompletedText": {
+      "light": "#047857",
+      "dark": "#a7f3d0"
+    },
+    "toolJobsStatusFailedBg": {
+      "light": "#ffe4e6",
+      "dark": "rgba(136, 19, 55, 0.35)"
+    },
+    "toolJobsStatusFailedText": {
+      "light": "#be123c",
+      "dark": "#fecdd3"
+    },
+    "toolJobsStatusCancelledBg": {
+      "light": "#e5e5e5",
+      "dark": "#2B2B2B"
+    },
+    "toolJobsStatusCancelledText": {
+      "light": "#404040",
+      "dark": "#CCCCCC"
+    },
+    "toolJobsStatusActiveWorkersBg": {
+      "light": "#dbeafe",
+      "dark": "#173652"
+    },
+    "toolJobsStatusActiveWorkersText": {
+      "light": "#1d4ed8",
+      "dark": "#9BCDFB"
+    },
+    "toolPermissionDialogBg": {
+      "light": "rgba(245, 245, 245, 0.85)",
+      "dark": "#1F1F1F"
+    },
+    "toolPermissionDialogBorder": {
+      "light": "rgba(229, 229, 229, 0.9)",
+      "dark": "#3C3C3C"
+    },
+    "toolPermissionDialogTitleText": {
+      "light": "#262626",
+      "dark": "#E0E0E0"
+    },
+    "toolPermissionDialogToolNameText": {
+      "light": "#2563eb",
+      "dark": "#75BEFF"
+    },
+    "toolPermissionDialogBadgeBg": {
+      "light": "#e5e5e5",
+      "dark": "#2B2B2B"
+    },
+    "toolPermissionDialogBadgeText": {
+      "light": "#737373",
+      "dark": "#A0A0A0"
+    },
+    "toolPermissionDialogCommandBg": {
+      "light": "#f5f5f5",
+      "dark": "#181818"
+    },
+    "toolPermissionDialogCommandLabelText": {
+      "light": "#525252",
+      "dark": "#A0A0A0"
+    },
+    "toolPermissionDialogCommandText": {
+      "light": "#1d4ed8",
+      "dark": "#CCCCCC"
+    },
+    "toolPermissionDialogDenyButtonBg": {
+      "light": "#dc2626",
+      "dark": "rgba(127, 29, 29, 0.9)"
+    },
+    "toolPermissionDialogDenyButtonBorder": {
+      "light": "#b91c1c",
+      "dark": "rgba(159, 18, 57, 0.8)"
+    },
+    "toolPermissionDialogDenyButtonText": {
+      "light": "#e5e7eb",
+      "dark": "#e5e7eb"
+    },
+    "toolPermissionDialogAllowButtonBg": {
+      "light": "#e5e5e5",
+      "dark": "#0078D4"
+    },
+    "toolPermissionDialogAllowButtonBorder": {
+      "light": "#d4d4d4",
+      "dark": "#0078D4"
+    },
+    "toolPermissionDialogAllowButtonText": {
+      "light": "#262626",
+      "dark": "#FFFFFF"
+    },
+    "toolPermissionDialogAllowAllButtonBg": {
+      "light": "#e5e5e5",
+      "dark": "#2D2D2D"
+    },
+    "toolPermissionDialogAllowAllButtonBorder": {
+      "light": "#d4d4d4",
+      "dark": "#3C3C3C"
+    },
+    "toolPermissionDialogAllowAllButtonText": {
+      "light": "#1e40af",
+      "dark": "#9BCDFB"
+    },
+    "authModalBackdrop": {
+      "light": "rgba(0, 0, 0, 0.5)",
+      "dark": "rgba(0, 0, 0, 0.5)"
+    },
+    "authModalSurfaceBg": {
+      "light": "#ffffff",
+      "dark": "#1F1F1F"
+    },
+    "authModalTitleText": {
+      "light": "#171717",
+      "dark": "#E0E0E0"
+    },
+    "authModalBodyText": {
+      "light": "#525252",
+      "dark": "#CCCCCC"
+    },
+    "authModalPrimaryButtonBg": {
+      "light": "#059669",
+      "dark": "#0078D4"
+    },
+    "authModalPrimaryButtonBorder": {
+      "light": "#047857",
+      "dark": "#0078D4"
+    },
+    "authModalPrimaryButtonText": {
+      "light": "#ffffff",
+      "dark": "#FFFFFF"
+    },
+    "authModalSecondaryButtonBg": {
+      "light": "transparent",
+      "dark": "#2D2D2D"
+    },
+    "authModalSecondaryButtonBorder": {
+      "light": "#d4d4d8",
+      "dark": "#3C3C3C"
+    },
+    "authModalSecondaryButtonText": {
+      "light": "#404040",
+      "dark": "#CCCCCC"
+    },
+    "authModalDangerButtonBg": {
+      "light": "#dc2626",
+      "dark": "#dc2626"
+    },
+    "authModalDangerButtonBorder": {
+      "light": "#b91c1c",
+      "dark": "#b91c1c"
+    },
+    "authModalDangerButtonText": {
+      "light": "#ffffff",
+      "dark": "#ffffff"
+    },
+    "htmlToolsModalSurfaceBg": {
+      "light": "rgba(255, 255, 255, 0.98)",
+      "dark": "#1F1F1F"
+    },
+    "htmlToolsModalSurfaceBorder": {
+      "light": "#e5e5e5",
+      "dark": "#3C3C3C"
+    },
+    "htmlToolsModalPanelMutedBg": {
+      "light": "#fafafa",
+      "dark": "#181818"
+    },
+    "htmlToolsModalButtonBg": {
+      "light": "#f5f5f5",
+      "dark": "#252526"
+    },
+    "htmlToolsModalButtonBorder": {
+      "light": "#e5e5e5",
+      "dark": "#303030"
+    },
+    "htmlToolsModalButtonText": {
+      "light": "#525252",
+      "dark": "#B3B3B3"
+    },
+    "htmlToolsModalButtonActiveBg": {
+      "light": "#e5e5e5",
+      "dark": "#173652"
+    },
+    "htmlToolsModalButtonActiveBorder": {
+      "light": "#d4d4d4",
+      "dark": "#385571"
+    },
+    "htmlToolsModalButtonActiveText": {
+      "light": "#171717",
+      "dark": "#9BCDFB"
+    },
+    "markdownCodeBlockBg": {
+      "light": "#f3f4f6",
+      "dark": "#181818"
+    },
+    "markdownCodeBlockBorder": {
+      "light": "rgba(0, 0, 0, 0.08)",
+      "dark": "#303030"
+    },
+    "markdownCodeBlockText": {
+      "light": "#111827",
+      "dark": "#CCCCCC"
+    },
+    "markdownInlineCodeBg": {
+      "light": "#e5e7eb",
+      "dark": "#2B2B2B"
+    },
+    "markdownInlineCodeText": {
+      "light": "#111827",
+      "dark": "#CE9178"
+    },
+    "messageRoles": {
+      "user": {
+        "containerBg": {
+          "light": "#fafafa",
+          "dark": "#252526"
+        },
+        "border": {
+          "light": "transparent",
+          "dark": "#303030"
+        },
+        "roleText": {
+          "light": "#3730a3",
+          "dark": "#75BEFF"
+        }
+      },
+      "assistant": {
+        "containerBg": {
+          "light": "transparent",
+          "dark": "transparent"
+        },
+        "border": {
+          "light": "transparent",
+          "dark": "transparent"
+        },
+        "roleText": {
+          "light": "#3f6212",
+          "dark": "#CCCCCC"
+        }
+      },
+      "system": {
+        "containerBg": {
+          "light": "transparent",
+          "dark": "transparent"
+        },
+        "border": {
+          "light": "transparent",
+          "dark": "transparent"
+        },
+        "roleText": {
+          "light": "#c084fc",
+          "dark": "#C586C0"
+        }
+      },
+      "ex_agent": {
+        "containerBg": {
+          "light": "transparent",
+          "dark": "transparent"
+        },
+        "border": {
+          "light": "transparent",
+          "dark": "transparent"
+        },
+        "roleText": {
+          "light": "#c2410c",
+          "dark": "#4EC9B0"
+        }
+      },
+      "unknown": {
+        "containerBg": {
+          "light": "transparent",
+          "dark": "transparent"
+        },
+        "border": {
+          "light": "transparent",
+          "dark": "transparent"
+        },
+        "roleText": {
+          "light": "#9ca3af",
+          "dark": "#A0A0A0"
+        }
+      }
+    },
+    "heimdallNodes": {
+      "user": {
+        "fill": {
+          "light": "#f5f5f5",
+          "dark": "#252526"
+        },
+        "visibleFill": {
+          "light": "#dbeafe",
+          "dark": "#173652"
+        },
+        "stroke": {
+          "light": "#d4d4d4",
+          "dark": "#3C3C3C"
+        },
+        "visibleStroke": {
+          "light": "#34d399",
+          "dark": "#4DAAFC"
+        }
+      },
+      "assistant": {
+        "fill": {
+          "light": "#f1f5f9",
+          "dark": "#1F1F1F"
+        },
+        "visibleFill": {
+          "light": "#dbeafe",
+          "dark": "#173652"
+        },
+        "stroke": {
+          "light": "#e5e5e5",
+          "dark": "#3C3C3C"
+        },
+        "visibleStroke": {
+          "light": "#34d399",
+          "dark": "#4DAAFC"
+        }
+      },
+      "ex_agent": {
+        "fill": {
+          "light": "#f8fafc",
+          "dark": "#1F1F1F"
+        },
+        "visibleFill": {
+          "light": "#dbeafe",
+          "dark": "#183A35"
+        },
+        "stroke": {
+          "light": "#ea580c",
+          "dark": "#45766D"
+        },
+        "visibleStroke": {
+          "light": "#34d399",
+          "dark": "#4EC9B0"
+        }
+      }
+    }
+  }
+}

@@ -11,6 +11,9 @@ import { MessageRepo } from '../../persistence/messageRepo.js'
 import { LineageRepo } from '../../persistence/lineageRepo.js'
 import { normalizeHostExecutionPreferences } from '../../../../../../shared/hostExecutionPreferences.js'
 import { DecisionBroker } from '../decisionBroker.js'
+import { CLIENT_CHANGE_SCHEMA } from '../../../clientChangeSchema.js'
+import { TRANSCRIPT_REVISION_SCHEMA, TranscriptRevisionRepo } from '../../persistence/transcriptRevisionRepo.js'
+import { BUILTIN_TOOL_DEFINITIONS } from '../../../../../../shared/builtinToolDefinitions.js'
 import { RunAdmissionService } from '../runAdmissionService.js'
 import { RunSessionRegistry } from '../runSessionRegistry.js'
 import { OperationReceiptRepo, OPERATION_RECEIPT_SCHEMA } from '../../persistence/operationReceiptRepo.js'
@@ -305,6 +308,43 @@ describe('source lineage membership validation', () => {
     if (testDirectory) rmSync(testDirectory, { recursive: true, force: true })
   })
 
+  it('exposes the transcript tool only on a fresh /revise turn and keeps provider history unchanged', async () => {
+    db.exec(CLIENT_CHANGE_SCHEMA)
+    db.exec(TRANSCRIPT_REVISION_SCHEMA)
+    const broker = new DecisionBroker()
+    const baseExecutor = vi.fn()
+    const tool = BUILTIN_TOOL_DEFINITIONS.find(candidate => candidate.name === 'revise_transcript')!
+    orchestrator = new ChatOrchestrator({ db, statements, providerRouter: providerRouter as any, decisionBroker: broker,
+      toolExecutor: baseExecutor, defaultToolsProvider: () => [tool] })
+    const request = { operation: 'send' as const, conversationId: 'c1', provider: 'openaichatgpt',
+      modelName: 'gpt-5.1-codex-mini', toolAutoApprove: true, operationMode: 'plan' as const }
+    const events: any[] = []
+    providerRouter.enqueue({ content: 'Keep the old wording.' })
+    await orchestrator.runMessage({ ...request, content: 'Write a sentence' }, event => events.push(event))
+    const previous = events.find(event => event.type === 'complete')
+    const previousText = previous.message.content
+    const continuation = { ...request, parentId: previous.message.id, lineageId: previous.lineageId }
+    expect(() => orchestrator.validateExecutionSelection({ ...continuation, lineageId: undefined, content: '/revise change old to new' }))
+      .toThrow('existing branch')
+    expect(providerRouter.calls[0].tools).toEqual([])
+    providerRouter.enqueue({ content: '', toolCalls: [{ id: 'patch', name: 'revise_transcript', arguments: {
+      action: 'propose', messageId: previous.message.id, edits: [{ block: 0, before: 'old wording', after: 'new wording' }],
+    } }] })
+    providerRouter.enqueue({ content: 'Updated the wording.' })
+    await orchestrator.runMessage({ ...continuation, content: '/revise change old to new', streamId: 'revision-stream' }, event => {
+      events.push(event)
+      if (event.type === 'permission_required' && event.transcriptRevision) {
+        expect(broker.resolve('revision-stream', 'patch', 'approve_transcript_revision')).toBe(true)
+      }
+    })
+    expect(events.find(event => event.transcriptRevision)?.transcriptRevision.edits).toEqual([{ block: 0, before: 'old wording', after: 'new wording' }])
+    expect(baseExecutor).not.toHaveBeenCalled()
+    expect(providerRouter.calls[1].tools.map((item: any) => item.name)).toContain('revise_transcript')
+    expect(providerRouter.calls[2].history.find((item: any) => item.id === previous.message.id).content).toBe(previousText)
+    expect(statements.getMessageById.get(previous.message.id).content).toBe(previousText)
+    expect(new TranscriptRevisionRepo(db).list(previous.lineageId)[0].changes[0].revised).toBe('Keep the new wording.')
+  })
+
   it('forks an explicit branch send from the lineage head instead of appending in place', async () => {
     db.exec(CLAUDE_SESSION_SCHEMA)
     const claudeSessions = { run: vi.fn(async (input: any) => {
@@ -467,12 +507,14 @@ describe('source lineage membership validation', () => {
     orchestrator = new ChatOrchestrator({ db, statements, providerRouter: providerRouter as any, claudeSessions: claudeSessions as any })
     const events: any[] = []
     await orchestrator.runMessage({ operation: 'send', conversationId: 'c1', provider: 'claudecode', modelName: 'claude-haiku-5-5',
-      content: 'plan it', rootPath: testDirectory, streamId: 'claude-plan', operationMode: 'execute', claudePlanMode: true } as any, event => events.push(event))
+      content: 'plan it', rootPath: testDirectory, streamId: 'claude-plan', operationMode: 'execute', claudePlanMode: true,
+      userDisplayName: 'Previous sender' } as any, event => events.push(event))
     const user = events.find(event => event.type === 'user_message_persisted').message
     expect(JSON.parse(user.meta)).toMatchObject({ operationMode: 'execute', claudePlanMode: true })
     const next = orchestrator.submitQueuedMessage('c1', 'claude-plan', { requestId: 'q2', content: 'go' })
     expect(next.restart).toMatchObject({ content: 'go', operationMode: 'execute' })
     expect(next.restart!.claudePlanMode).toBeUndefined()
+    expect(next.restart!.userDisplayName).toBeUndefined()
   })
 
   it('switches a live Claude run between Chat and Agent mode and records each switch where Claude read it', async () => {
@@ -522,8 +564,8 @@ describe('source lineage membership validation', () => {
     expect(() => orchestrator.changeOperationMode({ conversationId: 'c1', mode: 'plan', requestId: 'm3', streamId: 'claude-mode' }))
       .toThrow('no longer active')
     // A message queued after the run ends starts its successor in the mode the run ended in.
-    const next = orchestrator.submitQueuedMessage('c1', 'claude-mode', { requestId: 'q2', content: 'after the run' })
-    expect(next.restart).toMatchObject({ operationMode: 'execute', content: 'after the run' })
+    const next = orchestrator.submitQueuedMessage('c1', 'claude-mode', { requestId: 'q2', content: 'after the run', userDisplayName: 'Ada' })
+    expect(next.restart).toMatchObject({ operationMode: 'execute', content: 'after the run', userDisplayName: 'Ada' })
   })
 
   it('accepts a live Claude mode switch during native compaction', async () => {
@@ -1104,6 +1146,20 @@ describe('source lineage membership validation', () => {
     }
   })
 
+  it.each(['off', 'high'] as const)('persists reasoning level %s on user and assistant rows', async reasoningLevel => {
+    const events: any[] = []
+    await orchestrator.runMessage({
+      operation: 'send', conversationId: 'c1', content: 'hello', provider: 'openaichatgpt',
+      modelName: 'test', streamId: `reasoning-${reasoningLevel}`, reasoningLevel,
+    }, event => events.push(event))
+    const user = events.find(event => event.type === 'user_message_persisted').message
+    const assistant = events.find(event => event.type === 'complete').message
+    for (const row of [user, assistant]) {
+      const meta = typeof row.meta === 'string' ? JSON.parse(row.meta) : row.meta
+      expect(meta.reasoningLevel).toBe(reasoningLevel)
+    }
+  })
+
   it('accepts FIFO follow-ups during manual compaction and delivers only after summary commit', async () => {
     orchestrator = new ChatOrchestrator({ db, statements, providerRouter: providerRouter as any,
       toolExecutor: async () => 'Read result' })
@@ -1473,6 +1529,37 @@ describeIfSqlite('ChatOrchestrator continuation semantics', () => {
     }, event => events.push(event))).rejects.toThrow('must be prepared')
     expect(events.some(event => event.type === 'user_message_persisted')).toBe(false)
     expect(providerRouter.calls).toHaveLength(0)
+  })
+
+  it('forks Explain selection before a summary and replays only through the selected message', async () => {
+    const modelName = 'gpt-5.1-codex-mini'
+    const row = (parentId: string | null, role: 'user' | 'assistant', content: string, meta?: Record<string, unknown>) =>
+      messageRepo.createMessage({ conversationId: 'c1', parentId, role, content, modelName, meta })
+    const root = row(null, 'user', 'Original prompt')
+    const selected = row(root.id, 'assistant', 'Selected passage')
+    const later = row(selected.id, 'assistant', 'Later pre-summary response')
+    const instruction = row(later.id, 'user', 'Summarise', { kind: 'compaction_instruction' })
+    const summary = row(instruction.id, 'assistant', 'Compacted context', { kind: 'compaction_summary', state: 'committed' })
+    const head = row(summary.id, 'user', 'Post-summary continuation')
+    const lineages = new LineageRepo({ db, statements })
+    const source = lineages.reconcile({ conversationId: 'c1', messageId: head.id })!
+    const events: any[] = []
+    const prompt = 'Explain this.\n\nSelected text:\n```\nSelected passage\n```'
+
+    await orchestrator.runMessage({ operation: 'send', conversationId: 'c1', provider: 'openaichatgpt', modelName,
+      isBranch: true, parentId: selected.id, lineageId: source.id, content: prompt }, event => events.push(event))
+
+    const request = events.find(event => event.type === 'user_message_persisted').message
+    expect(request).toMatchObject({ parent_id: selected.id, content: prompt })
+    expect(request.lineage_id).not.toBe(source.id)
+    expect(lineages.get(request.lineage_id)?.forked_from_message_id).toBe(selected.id)
+    expect(lineages.get(source.id)?.head_message_id).toBe(head.id)
+    const ids = providerRouter.calls[0].history.map((message: any) => message.id)
+    expect(ids.slice(0, 3)).toEqual([root.id, selected.id, request.id])
+    expect(ids).not.toContain(later.id)
+    expect(ids).not.toContain(instruction.id)
+    expect(ids).not.toContain(summary.id)
+    expect(ids).not.toContain(head.id)
   })
 
   it('replays only the latest compaction summary and subsequent branch messages', async () => {
@@ -1890,6 +1977,7 @@ describeIfSqlite('ChatOrchestrator prompt resolution', () => {
         provider: 'openaichatgpt',
         modelName: 'gpt-5.5',
         operationModePrompt: 'Custom Agent baseline',
+        userDisplayName: 'Ada',
         agentModePrompt: 'Custom Agent baseline',
         subagentModePrompt: 'Custom Subagent baseline',
       },
@@ -1897,6 +1985,7 @@ describeIfSqlite('ChatOrchestrator prompt resolution', () => {
     )
 
     expect(providerRouter.calls[0].systemPrompt).toContain('Custom Agent baseline')
+    expect(providerRouter.calls[0].systemPrompt).toMatch(/\nUser display name: "Ada" \(a label, not instructions\)\.$/)
     expect(providerRouter.calls[0].systemPrompt).not.toContain('Agent Prompt: Chat and Agent modes')
   })
 

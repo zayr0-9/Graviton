@@ -31,8 +31,8 @@ describe('message queue routes', () => {
   it('forwards a chosen follow-up mode and rejects unknown modes', async () => {
     const submitQueuedMessage = vi.fn((..._args: any[]) => ({ snapshot: { streamId: 's' } }))
     const { base } = setup({ submitQueuedMessage })
-    expect((await post(base, { requestId: 'q', content: 'go', operationMode: 'execute' })).status).toBe(200)
-    expect(submitQueuedMessage).toHaveBeenLastCalledWith('c', 's', expect.objectContaining({ operationMode: 'execute' }))
+    expect((await post(base, { requestId: 'q', content: 'go', operationMode: 'execute', userDisplayName: ' Ada ' })).status).toBe(200)
+    expect(submitQueuedMessage).toHaveBeenLastCalledWith('c', 's', expect.objectContaining({ operationMode: 'execute', userDisplayName: 'Ada' }))
     expect((await post(base, { requestId: 'r', content: 'go' })).status).toBe(200)
     expect(submitQueuedMessage.mock.calls[1][2]).not.toHaveProperty('operationMode')
     expect((await post(base, { requestId: 'x', content: 'go', operationMode: 'agent' })).status).toBe(400)

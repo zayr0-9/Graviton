@@ -74,6 +74,10 @@ export interface ToolExecutionContext {
   signal?: AbortSignal
   /** Policy-aware executor used by composite tools for each nested call. */
   nestedExecutor?: ToolExecutor
+  /** Prevents a batch from re-entering multi_call indirectly through REPL. */
+  insideMultiCall?: boolean
+  /** REPL's capture policy for calls inside a captured batch, including hook rewrites. */
+  assertReplCaptureAllowed?: (call: ProviderToolCall) => void
   /** Host-owned tool allowlist; child REPL writer/private-fallback identity. */
   allowedToolNames?: ReadonlySet<string>
   replOwnerId?: string
@@ -539,11 +543,10 @@ function approximateTokens(value: unknown): number {
  * projection. Deliberately NOT `approximateTokens(wholeRow)`: a persisted row duplicates
  * its text across `content`, `plain_text_content`, AND `content_blocks`, carries row
  * metadata (ids, children_ids, timestamps, note), and re-escapes the already-stringified
- * `content_blocks` — inflating the estimate several-fold. That inflation, fed through
- * resolveOpenAIContinuationCompaction's Math.max(reported, projected), let compaction fire
- * while the real reported usage was still low (the ~50k early-fire). Count ONE canonical
- * text representation per message, and skip `role:'tool'` entries whose result is already
- * merged into the preceding assistant message's content_blocks (avoids double-counting).
+ * `content_blocks` — inflating the estimate several-fold. Count ONE canonical text
+ * representation per message, and skip `role:'tool'` entries whose result is already merged
+ * into the preceding assistant message's content_blocks. OpenAI uses this estimate for
+ * auto-compaction only when there is no usable provider snapshot.
  */
 export function estimateHistoryMessageTokens(message: unknown): number {
   if (message == null) return 0
@@ -866,7 +869,7 @@ export class ToolLoopService {
         modelName: params.input.modelName,
         contentBlocks,
         thinkingBlock: partial.reasoning || null,
-        meta: params.assistantMeta,
+        meta: { ...params.assistantMeta, transcriptPartial: true },
       })
       // The live renderer adopts this row instead of throwing its stream buffer away,
       // and the orchestrator's "last persisted assistant id" tracker (which reads this

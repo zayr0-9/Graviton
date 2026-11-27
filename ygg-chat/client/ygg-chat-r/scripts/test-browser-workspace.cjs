@@ -3,7 +3,7 @@ const path = require('node:path')
 if (!process.versions.electron) {
   const { spawnSync } = require('node:child_process')
   const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE; delete env.NODE_OPTIONS
-  process.exit(spawnSync(require('electron'), [__filename], { env, stdio: 'inherit' }).status ?? 1)
+  process.exit(spawnSync(require('electron'), [__filename, ...process.argv.slice(2)], { env, stdio: 'inherit' }).status ?? 1)
 } else {
   const { app, BrowserWindow } = require('electron')
   const express = require('express'); const fs = require('node:fs'); const os = require('node:os')
@@ -28,6 +28,19 @@ if (!process.versions.electron) {
     const publish = event => { projector.apply(event); const frame = { ...event, seq: ++seq }; frames.push(frame); for (const res of subscribers) res.write(`data: ${JSON.stringify(frame)}\n\n`) }
     const queue = () => ({ streamId: run?.streamId ?? 'pending', conversationId: 'c1', lineageId: null, revision: queueRevision, items: queued ? [queued] : [] })
     const row = (id, role, content, parent_id) => ({ id, conversation_id: 'c1', role, content, parent_id, children_ids: [], revision: 1, model_name: 'glm-5.1', created_at: now, content_blocks: [{ type: 'text', content }] })
+    const groupedStepsOnly = process.argv.includes('--grouped-agent-steps')
+    const persistedSteps = (parent = 'base', prefix = '') => {
+      const step = (id, name, index) => ({ type: 'tool_use', id, name, input: {}, index })
+      const settled = (id, index) => ({ type: 'tool_result', tool_use_id: id, content: 'ok', is_error: false, index })
+      const thought = (content, index) => ({ type: 'thinking', content, index })
+      return [
+        { ...row(`${prefix}first`, 'assistant', '', parent), content_blocks: [step(`${prefix}first`, 'read_file', 0), settled(`${prefix}first`, 1)] },
+        { ...row(`${prefix}mixed`, 'assistant', '', `${prefix}first`), content_blocks: [thought('Before the prose', 1),
+          { type: 'text', content: 'Checking.', index: 2 }, step(`${prefix}todo`, 'todo_list', 3),
+          { type: 'responses_output_items', items: [{ type: 'message', role: 'assistant', content: [{ text: 'Checking.' }] }], index: 4 }, settled(`${prefix}todo`, 5)] },
+        { ...row(`${prefix}partial`, 'assistant', '', `${prefix}mixed`), content_blocks: [thought('After the tool', 0)] },
+      ]
+    }
     host.get('/api/host/runtime', (_req, res) => res.json({ protocol: 1, epoch, hostId: 'fixture-host', auth, capabilities: { browserUi: true, sharedRuns: false } }))
     host.get('/api/host/auth/status', (_req, res) => res.json(auth))
     host.get('/api/host/auth/events', (_req, res) => { res.type('text/event-stream'); res.write(`data: ${JSON.stringify(auth)}\n\n`) })
@@ -36,13 +49,60 @@ if (!process.versions.electron) {
     host.get('/api/host/changes', (_req, res) => res.json({ epoch, cursor: 0, reset: false, changes: [] }))
     host.get('/api/host/runs', (_req, res) => res.json({ runs: run ? [{ streamId: run.streamId, conversationId: 'c1', parentId: null, lineageId: null, createdAt: now }] : [] }))
     host.get(['/api/custom-tools', '/api/mcp/tools'], (_req, res) => res.json({ success: true, tools: [] }))
+    host.get('/api/custom-tools/directory', (_req, res) => res.json({ success: true, directory: '/fixtures/tools' }))
+    const diffPaths = []
+    host.get('/api/local/git/file-context', (req, res) => {
+      diffPaths.push(req.query.path)
+      res.json({ path: req.query.path, repoRoot: null, relativePath: null, status: null })
+    })
     host.get('/api/skills', (_req, res) => res.json({ success: true, skills: [] }))
     host.get(['/api/gw/projects', '/api/local/projects'], (_req, res) => res.json([project]))
     host.get(['/api/gw/projects/p1', '/api/app/projects/p1'], (_req, res) => res.json(project))
     host.get(['/api/gw/conversations', '/api/gw/conversations/recent'], (_req, res) => res.json([conversation]))
     host.get(['/api/gw/conversations/paginated', '/api/gw/conversations/by-project'], (_req, res) => res.json({ conversations: [conversation], nextCursor: null, hasMore: false }))
     host.get(['/api/app/conversations/c1', '/api/gw/conversations/c1'], (_req, res) => res.json(conversation))
-    host.get(['/api/app/conversations/c1/messages/tree', '/api/gw/conversations/c1/messages/tree'], (_req, res) => res.json({ messages: rows, tree: null, meta: { storage_mode: 'local' } }))
+    const branchSmoke = process.argv.includes('--branch-loading')
+    if (branchSmoke) rows = [row('base', 'user', 'Common ancestor', null), row('left', 'assistant', 'Remember this branch', 'base'),
+      { ...row('right', 'assistant', 'Other fork content', 'base'), created_at: new Date(Date.now() + 5000).toISOString() }]
+    const compactContextOnly = process.argv.includes('--compact-context')
+    if (compactContextOnly) {
+      conversation.system_prompt = 'test '.repeat(108800) // 85% of GLM's 128k context window.
+      rows = [row('context', 'assistant', 'Context fixture', null)]
+    }
+    const inlineAppsOnly = process.argv.includes('--inline-apps')
+    if (inlineAppsOnly) {
+      const toolUse = (id, name) => ({ type: 'tool_use', id, name, input: {}, index: 0 })
+      const toolResult = (id, content) => ({ type: 'tool_result', tool_use_id: id, content, is_error: false, index: 1 })
+      rows = [row('base', 'user', 'Show me the app', null)]
+      for (let i = 0; i < 3; i++) {
+        const id = `work-${i}`
+        rows.push({ ...row(id, 'assistant', '', rows.at(-1).id), content_blocks: [toolUse(id, 'read_file'), toolResult(id, { count: i })] })
+      }
+      rows.push({ ...row('app', 'assistant', '', rows.at(-1).id), content_blocks: [
+        toolUse('html', 'custom_app'), toolResult('html', { html: '<h1>Fixture app</h1>' }),
+        { ...toolUse('json', 'mcp__demo__lookup'), index: 2 }, { ...toolResult('json', { available: true }), index: 3 },
+      ] })
+    }
+    if (groupedStepsOnly) {
+      rows = [row('base', 'user', 'Fixture prompt', null), ...persistedSteps(),
+        { ...row('error', 'assistant', '', 'partial'), content_blocks: [{ type: 'error', index: 0, excludeFromContext: true,
+          envelope: { code: 'stream_interrupted', userMessage: 'Fixture failure', recoverability: 'retryable' } }] }]
+    }
+    const snapshotQueries = []
+    host.get(['/api/app/conversations/c1/messages/tree', '/api/gw/conversations/c1/messages/tree'], (req, res) => {
+      snapshotQueries.push({ ...req.query })
+      const scoped = req.query.scope === 'branch'
+      const selected = branchSmoke && scoped ? rows.filter(r => r.id === 'base' || r.id === (req.query.tip || 'right')) : rows
+      // A windowed branch read ships the oldest row without its large block payloads.
+      const messages = branchSmoke && scoped && req.query.window ? selected.map(r => r.id === 'base' ? { ...r, body_omitted: true, body_omitted_chars: 12 } : r) : selected
+      res.json({ messages, tree: null, ...(scoped && { retained: rows.filter(r => !selected.includes(r)).map(r => [r.id, r.revision]) }) })
+    })
+    const bodyRequests = []
+    host.get('/api/app/conversations/c1/messages/bodies', (req, res) => {
+      const ids = String(req.query.ids).split(',')
+      bodyRequests.push(ids)
+      res.json({ messages: rows.filter(r => ids.includes(r.id)) })
+    })
     host.get('/api/host/runs/finished', (_req, res) => res.json({ runs: [] }))
     host.get('/api/local/conversations/c1/heimdall-collapse-groups', (_req, res) => res.json({ groups: [] }))
     host.get('/api/conversations/c1/streaming-runs', (_req, res) => res.json({ runs: [] }))
@@ -85,11 +145,13 @@ if (!process.versions.electron) {
         }
         return
       }
-      const receipt = { status: 'accepted', epoch, operationId: body.operationId, conversationId: 'c1', streamId: body.streamId, lineageId: null, parentId: null, disposition: 'started' }
+      const parentId = groupedStepsOnly ? rows.at(-1).id : null
+      const receipt = { status: 'accepted', epoch, operationId: body.operationId, conversationId: 'c1', streamId: body.streamId, lineageId: null, parentId, disposition: 'started' }
       receipts.set(body.operationId, receipt); res.json(receipt)
-      rows = [row('u1', 'user', body.content, null)]
-      publish({ type: 'started', operation: 'send', conversationId: 'c1', parentId: null, provider: 'zai', modelName: 'glm-5.1', streamId: body.streamId })
-      publish({ type: 'user_message_persisted', message: rows[0] })
+      rows.push(row('u1', 'user', body.content, parentId))
+      publish({ type: 'started', operation: 'send', conversationId: 'c1', parentId, provider: 'zai', modelName: 'glm-5.1', streamId: body.streamId })
+      publish({ type: 'user_message_persisted', message: rows.at(-1) })
+      if (groupedStepsOnly) return
       publish({ type: 'chunk', part: 'text', delta: 'Synthetic reply in progress' })
       publish({ type: 'permission_required', streamId: body.streamId, toolCallId: 'tc1', toolName: 'bash', toolInput: { command: 'echo fixture', description: 'Synthetic only' } })
     })
@@ -130,14 +192,285 @@ if (!process.versions.electron) {
       await window.webContents.insertText(value)
       await new Promise(resolve => setTimeout(resolve, 100))
     }
-    for (let i = 0; i < 2; i++) {
+    const highlightedFilesOnly = process.argv.includes('--highlighted-files')
+    const documentsOnly = process.argv.includes('--documents')
+    for (let i = 0; i < (highlightedFilesOnly || documentsOnly || inlineAppsOnly || compactContextOnly || groupedStepsOnly ? 1 : 2); i++) {
       const window = new BrowserWindow({ show: false, width: i ? 390 : 1280, height: i ? 844 : 900, useContentSize: true, webPreferences: { contextIsolation: true, nodeIntegration: false, partition: `workspace-fixture-${i}` } }); windows.push(window)
       window.webContents.on('console-message', details => { if (details.level === 'error') console.error('Renderer:', details.message) })
       await window.loadURL(origin + '/blank')
       await window.webContents.executeJavaScript(`localStorage.setItem('currentProvider','Z.AI / GLM')`)
-      await window.loadURL(origin + '/#/chat/p1/c1')
+      if (inlineAppsOnly || groupedStepsOnly) await window.webContents.executeJavaScript(`localStorage.setItem('chat:groupToolReasoningRuns','true')`)
+      if (compactContextOnly) await window.webContents.executeJavaScript(`localStorage.setItem('chat:heimdallVisible','false')`)
+      const firstSnapshot = snapshotQueries.length
+      await window.loadURL(origin + '/#/chat/p1/c1' + (branchSmoke && i === 1 ? '#left' : ''))
       await wait(window, `!!document.querySelector('textarea[placeholder="Type your message..."]')`, 'Composer missing')
+      if (i === 1) {
+        await wait(window, `!document.querySelector('[aria-label="Opening conversation"]') && performance.getEntriesByType('resource').some(r => r.name.includes('/messages/tree'))`, 'Phone snapshot missing')
+        if (!snapshotQueries.slice(firstSnapshot).length || snapshotQueries.slice(firstSnapshot).some(q => q.scope !== 'branch')) throw new Error('Phone fetched a full conversation on entry')
+      }
       if (await window.webContents.executeJavaScript('!!window.electronAPI')) throw new Error('Unexpected preload')
+    }
+    if (compactContextOnly) {
+      const win = windows[0]
+      const meter = `document.querySelector('svg[role="meter"][aria-label="Context usage"]')`
+      const expandedTint = `document.querySelector('.composer-controls-left').style.backgroundImage`
+      await wait(win, `!${meter} && ${expandedTint}.includes('linear-gradient')`, 'Missing expanded fill or unexpected outline')
+      win.setContentSize(390, 844)
+      await wait(win, `(() => {
+        const svg = ${meter}, [track, progress] = svg?.querySelectorAll('path') ?? [];
+        const percent = Number(svg?.getAttribute('aria-valuenow'));
+        return percent >= 85 && percent < 86 && track.getTotalLength() > 0 &&
+          progress.getAttribute('d') === track.getAttribute('d') && progress.getAttribute('pathLength') === '1' &&
+          Math.abs(parseFloat(getComputedStyle(progress).strokeDasharray) - percent / 100) < 0.00001 &&
+          getComputedStyle(progress).fill === 'none' && getComputedStyle(svg).pointerEvents === 'none';
+      })()`, 'Compact meter did not trace the composer outline at the expected percentage').catch(async error => {
+        const state = await win.webContents.executeJavaScript(`(${meter})?.outerHTML`)
+        throw new Error(`${error.message}\nMeter: ${state}`)
+      })
+      const checkStroke = (color, mode) => wait(win, `(() => {
+        const stroke = getComputedStyle((${meter}).lastElementChild).stroke;
+        if (stroke !== '${color}') return false;
+        const ctx = document.createElement('canvas').getContext('2d');
+        const luminance = color => {
+          ctx.fillStyle = color; ctx.fillRect(0, 0, 1, 1);
+          return [0.2126, 0.7152, 0.0722].reduce((sum, weight, i) => {
+            const value = ctx.getImageData(0, 0, 1, 1).data[i] / 255;
+            return sum + weight * (value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4);
+          }, 0);
+        };
+        const levels = [luminance(stroke), luminance(getComputedStyle(document.documentElement).backgroundColor)].sort((a, b) => a - b);
+        return (levels[1] + 0.05) / (levels[0] + 0.05) >= 3;
+      })()`, 'Incorrect outline color or insufficient contrast in ' + mode)
+      for (const dark of [false, true]) {
+        await win.webContents.executeJavaScript(`document.documentElement.classList.toggle('dark', ${dark})`)
+        await checkStroke(dark ? 'rgb(251, 191, 36)' : 'rgb(180, 83, 9)', dark ? 'default dark' : 'default light')
+      }
+      await win.webContents.executeJavaScript(`localStorage.setItem('chat:customThemeEnabled','true');localStorage.setItem('chat:customTheme',JSON.stringify({colors:{chatProgressBarFill:{light:'#17448a',dark:'#99eeff'}}}));window.dispatchEvent(new Event('chatCustomThemeChange'))`)
+      await checkStroke('rgb(153, 238, 255)', 'custom dark')
+      await win.webContents.executeJavaScript(`document.documentElement.classList.remove('dark')`)
+      await checkStroke('rgb(23, 68, 138)', 'custom light')
+      await win.webContents.executeJavaScript(`window.dispatchEvent(new CustomEvent('chatUi:tokenUsageVisibilityChange', {detail:false}))`)
+      await wait(win, `!${meter}`, 'Disabling token usage did not hide the outline meter')
+      console.log('PASS compact context outline, proportional stroke, expanded fill, light/dark and custom colors, and preference toggle')
+      exit = 0; return
+    }
+    if (inlineAppsOnly) {
+      const win = windows[0]
+      const viewer = '#message-app [aria-label="Open tool output viewer"]'
+      await wait(win, `!!document.querySelector('#message-app iframe[title="HTML Preview"]') && !!document.querySelector('[data-agent-steps] button[aria-expanded="false"]')`, 'The app did not stay inline next to collapsed steps')
+      const headless = await win.webContents.executeJavaScript(`(() => {
+        const card = [...document.querySelectorAll('#message-app [data-chat-block="tool"]')].find(card => card.textContent.includes('mcp__demo__lookup'));
+        return !!card && !card.querySelector('[aria-label="Load app"]');
+      })()`)
+      if (!headless) throw new Error('JSON-only MCP calls should have no Load app control')
+      for (const dark of [false, true]) {
+        await win.webContents.executeJavaScript(`document.documentElement.classList.toggle('dark', ${dark})`)
+        const minimumContrast = `(function () {
+          const button = document.querySelector(${JSON.stringify(viewer)});
+          const css = getComputedStyle(button);
+          const expected = css.getPropertyValue('${dark ? '--color-neutral-300' : '--color-neutral-600'}').trim();
+          const ctx = document.createElement('canvas').getContext('2d', { colorSpace: 'srgb' });
+          const pixel = color => {
+            ctx.clearRect(0, 0, 1, 1); ctx.fillStyle = color; ctx.fillRect(0, 0, 1, 1);
+            return ctx.getImageData(0, 0, 1, 1).data;
+          };
+          const foreground = pixel(css.color), fill = pixel(css.backgroundColor), canvas = pixel(getComputedStyle(document.body).backgroundColor);
+          const background = [0, 1, 2].map(i => (fill[i] * fill[3] + canvas[i] * (255 - fill[3])) / 255);
+          const luminance = rgb => [0.2126, 0.7152, 0.0722].reduce((sum, weight, i) => {
+            const value = rgb[i] / 255;
+            return sum + weight * (value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4);
+          }, 0);
+          const levels = [luminance(foreground), luminance(background)].sort((a, b) => a - b);
+          return !!expected && pixel(expected).every((channel, i) => channel === foreground[i]) && (levels[1] + 0.05) / (levels[0] + 0.05) >= 4.5;
+        })()`
+        await wait(win, minimumContrast, `Viewer lost its text palette or contrast in ${dark ? 'dark' : 'light'} mode`)
+      }
+      await win.webContents.executeJavaScript(`window.dispatchEvent(new CustomEvent('groupToolReasoningRunsChange', {detail:false}))`)
+      await wait(win, `!!document.querySelector('#message-app iframe[title="HTML Preview"]') && !document.querySelector('[data-agent-steps]')`, 'The app did not stay inline when grouping was turned off')
+      await click(win, viewer)
+      await wait(win, `!!document.querySelector('[role="dialog"][aria-label="HTML tool viewer"]') && !!document.querySelector('[aria-label="Favorite tool output"]')`, 'The custom app Viewer did not open the registered result')
+      console.log('PASS inline custom app outside Agent steps, Viewer opens, JSON-only MCP controls, and light/dark viewer contrast')
+      exit = 0; return
+    }
+    if (groupedStepsOnly) {
+      const win = windows[0]
+      await wait(win, `(() => {
+        const groups = [...document.querySelectorAll('[data-agent-steps]')];
+        const prose = [...document.querySelectorAll('.chat-markdown')].filter(node => node.textContent === 'Checking.');
+        return groups.length === 2 && prose.length === 1 && !prose[0].closest('[data-agent-steps]') &&
+          (groups[0].compareDocumentPosition(prose[0]) & Node.DOCUMENT_POSITION_FOLLOWING) &&
+          (prose[0].compareDocumentPosition(groups[1]) & Node.DOCUMENT_POSITION_FOLLOWING) &&
+          groups.every(group => group.textContent.includes('1 completed')) && document.body.innerText.includes('Fixture failure');
+      })()`, 'Mixed stored steps did not form exactly two groups around one visible paragraph')
+      await win.webContents.executeJavaScript(`[...document.querySelectorAll('[data-agent-steps] button[aria-expanded="false"]')].forEach(button => button.click())`)
+      await wait(win, `(() => {
+        const [before, after] = document.querySelectorAll('[data-agent-steps]');
+        return before?.innerText.includes('Before the prose') && before.innerText.includes('read_file') &&
+          after?.innerText.includes('todo_list') && after.innerText.includes('After the tool');
+      })()`, 'Expanded history lost reasoning or tools at a persisted message boundary')
+      for (const dark of [false, true]) {
+        await win.webContents.executeJavaScript(`document.documentElement.classList.toggle('dark', ${dark})`)
+        await wait(win, `(() => {
+          const ctx = document.createElement('canvas').getContext('2d', { colorSpace: 'srgb' });
+          const luminance = color => {
+            ctx.clearRect(0, 0, 1, 1); ctx.fillStyle = color; ctx.fillRect(0, 0, 1, 1);
+            return [0.2126, 0.7152, 0.0722].reduce((sum, weight, i) => {
+              const v = ctx.getImageData(0, 0, 1, 1).data[i] / 255;
+              return sum + weight * (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
+            }, 0);
+          };
+          const bg = luminance(getComputedStyle(document.documentElement).backgroundColor);
+          const labels = [...document.querySelectorAll('[data-agent-steps] button[aria-expanded] span')].filter(el => el.textContent === 'Agent steps');
+          return labels.length === 2 && labels.every(el => {
+            const fg = luminance(getComputedStyle(el).color);
+            return (Math.max(fg, bg) + 0.05) / (Math.min(fg, bg) + 0.05) >= 4.5;
+          });
+        })()`, 'Agent steps label contrast in ' + (dark ? 'dark' : 'light') + ' mode')
+      }
+      await win.webContents.executeJavaScript(`window.dispatchEvent(new CustomEvent('groupToolReasoningRunsChange', {detail:false}))`)
+      await wait(win, `!document.querySelector('[data-agent-steps]') && document.body.innerText.includes('Checking.') && document.body.innerText.includes('todo_list')`, 'Disabling grouping hid transcript blocks')
+      console.log('PASS saved mixed reasoning/text/tools group across rows, light/dark label contrast, ungrouped transcript')
+      await win.webContents.executeJavaScript(`window.dispatchEvent(new CustomEvent('groupToolReasoningRunsChange', {detail:true}))`)
+      // Replay the same production-shaped transcript, including a live continuation after
+      // the mixed row persists. No second disclosure may appear at that handoff.
+      await fill(win, 'Fixture prompt for a new run')
+      await click(win, 'button[title="Send message"]')
+      const deadline = Date.now() + 10000
+      while ((!run || !subscribers.size) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50))
+      if (!run || !subscribers.size) throw new Error('Missing grouped-steps live stream')
+      const firstGroup = `document.getElementById('message-group-live-first')`
+      const lastGroup = `document.getElementById('message-group-live-mixed:2')`
+      for (const [turn, message] of persistedSteps('u1', 'live-').slice(0, 2).entries()) {
+        publish({ type: 'tool_loop', status: 'turn_started', turn: turn + 1 })
+        rows.push(message); publish({ type: 'assistant_message_persisted', message })
+      }
+      await wait(win, `!!${firstGroup} && !!${lastGroup}`, 'The two new persisted groups are missing')
+      const groupCount = await win.webContents.executeJavaScript(`document.querySelectorAll('[data-agent-steps]').length`)
+      publish({ type: 'tool_loop', status: 'turn_started', turn: 3 })
+      publish({ type: 'chunk', part: 'reasoning', delta: 'Live continuation' })
+      await win.webContents.executeJavaScript(`${lastGroup}.querySelector('button').click()`)
+      await wait(win, `${lastGroup}.innerText.includes('Live continuation') && document.querySelectorAll('[data-agent-steps]').length === ${groupCount}`, 'Live reasoning did not attach to the prior tool')
+      publish({ type: 'chunk', part: 'text', delta: 'Done.' })
+      await wait(win, `document.querySelector('[data-live-streaming-tail]')?.innerText.includes('Done.') && !${lastGroup}.innerText.includes('Done.')`, 'Streamed short text did not stay outside the group')
+      console.log('PASS live reasoning attaches to the persisted tool group and short streamed text stays outside')
+      exit = 0; return
+    }
+    if (branchSmoke) {
+      const phone = windows[1]
+      await wait(phone, `document.body.innerText.includes('Remember this branch')`, 'Deep link did not select the older fork')
+      for (let i = 0; i < 100 && !bodyRequests.some(ids => ids.includes('base')); i++) await new Promise(resolve => setTimeout(resolve, 100))
+      if (!bodyRequests.some(ids => ids.includes('base'))) throw new Error('Compacted ancestor on screen was not hydrated')
+      await wait(phone, `document.body.innerText.includes('Common ancestor') && !document.body.innerText.includes('Loading full message')`, 'Hydrated row kept its placeholder')
+      await wait(phone, `Object.keys(localStorage).filter(k=>k.startsWith('chat:viewedTips:')).some(k=>localStorage.getItem(k).includes('left'))`, 'Selected tip not saved')
+      const start = snapshotQueries.length
+      await phone.loadURL(origin + '/blank')
+      await phone.loadURL(origin + '/#/chat/p1/c1')
+      await wait(phone, `document.body.innerText.includes('Remember this branch') && !document.body.innerText.includes('Other fork content')`, 'Cold reload lost the branch')
+      if (!snapshotQueries.slice(start).every(q => q.scope === 'branch' && q.tip === 'left')) throw new Error('Cold reload fetched other forks')
+      await click(phone, '[aria-label="Conversation actions"]')
+      await phone.webContents.executeJavaScript(`[...document.querySelectorAll('button')].find(b=>b.textContent.trim()==='Show tree view')?.click()`)
+      await wait(phone, `!!document.querySelector('[data-node-id="right"]')`, 'Opening the full tree did not reveal the other fork')
+      console.log('PASS phone branch-only open, compacted ancestor hydration, historical deep link, cold same-device restore and on-demand full tree')
+      exit = 0; return
+    }
+    if (documentsOnly) {
+      const { docx, xlsx, largeWorksheet, pdf, emptyPdf } = require('./document-paste-fixtures.cjs')
+      const win = windows[0]
+      const input = `document.querySelector('textarea[placeholder="Type your message..."]')`
+      const importFiles = (source, entries, action = '') => win.webContents.executeJavaScript(`(() => {
+        const input = ${input}
+        const transfer = new DataTransfer()
+        for (const [name, base64] of ${JSON.stringify(entries)}) {
+          transfer.items.add(new File([Uint8Array.from(atob(base64), char => char.charCodeAt(0))], name))
+        }
+        if (${JSON.stringify(source)} === 'picker') {
+          const picker = [...document.querySelectorAll('input[type=file]')].find(el => el.accept.includes('.xlsx'))
+          picker.files = transfer.files
+          picker.dispatchEvent(new Event('change', { bubbles: true }))
+        } else if (${JSON.stringify(source)} === 'drop') {
+          input.dispatchEvent(new DragEvent('drop', { dataTransfer: transfer, bubbles: true, cancelable: true }))
+        } else {
+          input.dispatchEvent(new ClipboardEvent('paste', { clipboardData: transfer, bubbles: true, cancelable: true }))
+        }
+        ${action}
+      })()`)
+      const base64 = value => Buffer.from(value).toString('base64')
+      await win.webContents.executeJavaScript(`(() => {
+        const input = ${input}
+        input.focus()
+        input.dispatchEvent(new KeyboardEvent('keydown', { key: 'V', code: 'KeyV', shiftKey: true, metaKey: true, bubbles: true }))
+        const clipboardData = new DataTransfer()
+        clipboardData.setData('text/plain', 'Spreadsheet selection')
+        clipboardData.items.add(new File(['fixture image'], 'selection.png', { type: 'image/png' }))
+        input.dispatchEvent(new ClipboardEvent('paste', { clipboardData, bubbles: true, cancelable: true }))
+      })()`)
+      await wait(win, `${input}.value === ${JSON.stringify('```\nSpreadsheet selection\n```')}`, 'Shift+Paste should prefer text when the clipboard also has an image')
+      await fill(win, 'Before replace after')
+      await win.webContents.executeJavaScript(`${input}.setSelectionRange(7, 14)`)
+      await importFiles('paste', [['README.md', base64('# Hello')], ['data.json', base64('{"n": 1}')]])
+      await wait(win, `${input}.value === ${JSON.stringify('Before \n```\nFile: README.md\n\n# Hello\n```\n\n```\nFile: data.json\n\n{"n": 1}\n```\n after')}`,
+        'Pasted Markdown and JSON did not replace the selection in order')
+      await importFiles('drop', [['report.docx', docx], ['sales.xlsx', xlsx], ['paper.pdf', pdf]])
+      await wait(win, `['Text from Word','Sheet: Revenue','Item\\t12','Sheet: Notes','Second sheet','Text from PDF'].every(text => ${input}.value.includes(text))`,
+        'Binary files dropped into the composer did not all extract')
+      if (await win.webContents.executeJavaScript(`${input}.value.includes('5+7')`)) throw new Error('XLSX formula leaked instead of its saved value')
+      await importFiles('picker', [['notes.txt', base64('Text from picker')]])
+      await wait(win, `${input}.value.includes('Text from picker')`, 'Picker did not use the document engine')
+      await importFiles('paste', [['not-a-text-layer.pdf', emptyPdf], ['large.xlsx', largeWorksheet], ['old.doc', base64('Invalid')]])
+      await wait(win, `['Scanned PDFs need OCR', 'Worksheet is too large', 'Save as .docx or .xlsx'].every(text => document.body.innerText.includes(text))`, 'Missing per-file errors')
+      for (const dark of [false, true]) {
+        const color = await win.webContents.executeJavaScript(`(async () => {
+          localStorage.setItem('chat:customThemeEnabled', 'true');
+          localStorage.setItem('chat:customTheme', JSON.stringify({ colors: { toolJobsPrimaryText: { light: '#123456', dark: '#e1e2e3' } } }));
+          document.documentElement.classList.toggle('dark', ${dark});
+          window.dispatchEvent(new Event('chatCustomThemeChange'));
+          await new Promise(resolve => setTimeout(resolve, 100));
+          return getComputedStyle([...document.querySelectorAll('[role=status]')].find(el => el.innerText.includes('Scanned PDFs need OCR'))).color;
+        })()`)
+        if (color !== (dark ? 'rgb(225, 226, 227)' : 'rgb(18, 52, 86)')) throw new Error(`Wrong import notice color: ${color}`)
+      }
+      const cancelImport = `[...document.querySelectorAll('button')].find(el => el.textContent === 'Cancel import')`
+      await win.webContents.executeJavaScript(`
+        window.originalArrayBuffer = Blob.prototype.arrayBuffer;
+        Blob.prototype.arrayBuffer = function() {
+          if (this.name !== 'cancel.docx') return window.originalArrayBuffer.call(this);
+          return new Promise(resolve => { window.finishPendingRead = () => resolve(window.originalArrayBuffer.call(this)); });
+        };
+        void 0;
+      `)
+      await importFiles('paste', [['cancel.docx', docx]], `document.querySelector('button[title="Send message"]').click()`)
+      await wait(win, `!!${cancelImport}`, 'Missing cancel control')
+      if (executions !== 0) throw new Error('A send slipped through while extracting')
+      await win.webContents.executeJavaScript(`${cancelImport}.click(); window.finishPendingRead(); Blob.prototype.arrayBuffer = window.originalArrayBuffer; void 0;`)
+      await new Promise(resolve => setTimeout(resolve, 300))
+      if (await win.webContents.executeJavaScript(`${input}.value.includes('cancel.docx')`)) throw new Error('Cancelled file was inserted')
+      await win.webContents.executeJavaScript(`
+        window.originalArrayBuffer = Blob.prototype.arrayBuffer;
+        Blob.prototype.arrayBuffer = function() {
+          if (this.name !== 'delayed.txt') return window.originalArrayBuffer.call(this);
+          return new Promise(resolve => { window.finishPendingRead = () => resolve(window.originalArrayBuffer.call(this)); });
+        };
+        void 0;
+      `)
+      await importFiles('paste', [['delayed.txt', base64('late text')]])
+      await wait(win, `!!${cancelImport}`, 'Missing second pending read')
+      await win.webContents.executeJavaScript(`${input}.focus(); ${input}.setSelectionRange(0,0)`)
+      await win.webContents.insertText('New draft text ')
+      await win.webContents.executeJavaScript(`window.finishPendingRead(); Blob.prototype.arrayBuffer = window.originalArrayBuffer; void 0;`)
+      await wait(win, `${input}.value.startsWith('New draft text Before ') && ${input}.value.endsWith('late text\\n\x60\x60\x60')`, 'Late conversion overwrote new draft text or reused the old caret')
+      await click(win, 'button[title="Send message"]')
+      await wait(win, `document.body.innerText.includes('Permission requested')`, 'Imported text was not submitted by the normal Send path')
+      if (!run.content.includes('Text from Word') || !run.content.includes('Text from PDF') || !run.content.includes('Text from picker')) throw new Error('Converted text missing from request content')
+      if (unexpected.size) throw new Error('Unexpected fixture requests: ' + [...unexpected].join('; '))
+      console.log('PASS document paste, binary drop, picker, errors, theme colors, cancellation, and model-facing send content')
+      exit = 0
+      return
+    }
+    if (highlightedFilesOnly) {
+      await testHighlightedFiles()
+      if (unexpected.size) throw new Error('Unexpected fixture requests: ' + [...unexpected].join('; '))
+      exit = 0
+      return
     }
     // Actual textarea identity and draft/caret survive both directions of the breakpoint.
     await fill(windows[1], 'retained compact draft')
@@ -251,7 +584,16 @@ if (!process.versions.electron) {
     await click(windows[1], '[aria-label="Open sidebar panel"]')
     await wait(windows[1], `(()=>{const panel=document.querySelector('[role="dialog"][aria-label="Sidebar panel"]'); if(!panel)return false; const r=panel.getBoundingClientRect(); return r.width > 200 && r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight;})()`, 'Phone sidebar panel not visible within viewport')
     await click(windows[1], 'button[aria-label="Close sidebar panel"]')
-    console.log('PASS responsive web selectors at 320/390/767/820px, horizontal phone navigation and sidebar panel')
+    // Wider phone/unfolded foldable: the top bar spans the viewport, so the panel must open
+    // from the left below it, not get pushed to the right by the bar's right edge.
+    windows[1].setContentSize(700, 900)
+    await new Promise(resolve => setTimeout(resolve, 400))
+    await click(windows[1], '[aria-label="Open sidebar panel"]')
+    await wait(windows[1], `(()=>{const panel=document.querySelector('[role="dialog"][aria-label="Sidebar panel"]'); const rail=document.querySelector('[aria-label="Sidebar rail"]'); if(!panel||!rail)return false; const r=panel.getBoundingClientRect(), b=rail.getBoundingClientRect(); return r.left <= 12 && r.width >= innerWidth - 24 && r.right <= innerWidth && r.top >= b.bottom - 1 && r.bottom <= innerHeight;})()`, 'Foldable-width sidebar panel not anchored below the top bar')
+    await click(windows[1], 'button[aria-label="Close sidebar panel"]')
+    windows[1].setContentSize(390, 844)
+    await new Promise(resolve => setTimeout(resolve, 300))
+    console.log('PASS responsive web selectors at 320/390/767/820px, horizontal phone navigation and sidebar panel (390/700px)')
     // Test actual computed canvas colors, not only React inline-style strings.
     const assertBackground = async (dark, color, enabled = true, video = false) => {
       const actual = await windows[0].webContents.executeJavaScript(`(async()=>{
@@ -384,10 +726,72 @@ if (!process.versions.electron) {
     await wait(windows[0], `document.body.innerText.includes('Post-compaction send accepted')`, 'Post-compaction parent was stale')
     if (executions !== 3) throw new Error('Expected exactly one compaction and one follow-up')
     console.log('PASS manual compaction -> restored context -> next send at actual head without refresh')
+    await testHighlightedFiles()
     if (unexpected.size) throw new Error('Unexpected fixture requests: ' + [...unexpected].join('; '))
     console.log('PASS production no-preload two-client chat: independent draft, two live observers, permission settlement, queue/remove, one final reply, phone workspace')
     console.log('Fixture ancillary coverage:', [...unexpected].join('; '))
     exit = 0
+
+    async function testHighlightedFiles() {
+      // Load a settled branch with two disjoint sets of edits and one read-only turn.
+      run = undefined
+      const fileTurn = (n, parent, file) => {
+        const user = row(`files-u${n}`, 'user', `File turn ${n}`, parent)
+        const answer = row(`files-a${n}`, 'assistant', `Reply ${n}\n\n${'A paragraph to separate turns in the viewport.\n\n'.repeat(18)}`, user.id)
+        if (file) answer.content_blocks.unshift(
+          { type: 'tool_use', id: `edit-${n}`, name: 'edit_file', input: { path: file } },
+          { type: 'tool_result', tool_use_id: `edit-${n}`, content: { success: true, path: file } },
+        )
+        return [user, answer]
+      }
+      rows = [...fileTurn(1, null, '/fixtures/first.ts'), ...fileTurn(2, 'files-a1', '/fixtures/second.ts'), ...fileTurn(3, 'files-a2')]
+      const desktop = windows[0]
+      await desktop.webContents.executeJavaScript(`localStorage.setItem('chat:leftWidthPct','72'); localStorage.setItem('chat:heimdallVisible','true')`)
+      await desktop.reload()
+      const diffs = 'button[title="Open modified files in Git diff"]'
+      const panel = `document.querySelector(${JSON.stringify(diffs)})?.parentElement.parentElement.parentElement`
+      const files = (first, second) => `(()=>{const t=${panel}?.textContent ?? '';return t.includes('first.ts')===${first} && t.includes('second.ts')===${second}})()`
+      await wait(desktop, files(true, true), 'Default Modified Files did not include both turns')
+      const toggle = 'button[aria-labelledby="highlighted-turn-files-label"]'
+      const openFileSettings = async () => {
+        await click(desktop, 'button[aria-label="Chat settings"]')
+        await wait(desktop, `!!document.querySelector(${JSON.stringify(toggle)})`, 'Highlighted turn setting missing')
+        await desktop.webContents.executeJavaScript(`[...document.querySelectorAll('button')].find(b=>b.querySelector('p')?.textContent.trim()==='Chat Settings' && b.nextElementSibling?.classList.contains('grid-rows-[0fr]'))?.click()`)
+      }
+      await openFileSettings()
+      await wait(desktop, `document.querySelector(${JSON.stringify(toggle)}).getAttribute('aria-pressed')==='false'`, 'Missing default-off file setting')
+      for (const dark of [false, true]) {
+        await desktop.webContents.executeJavaScript(`document.documentElement.classList.toggle('dark', ${dark}); localStorage.setItem('chat:customThemeEnabled','true'); localStorage.setItem('chat:customTheme',JSON.stringify({colors:{settingsCustomThemesCardBg:{light:'#e0e8f0',dark:'#243448'},settingsCustomThemesTitleText:{light:'#123456',dark:'#e1e2e3'},settingsCustomThemesButtonBg:{light:'#ffffff',dark:'#1a2430'},settingsCustomThemesButtonText:{light:'#234567',dark:'#c1d2e3'}}})); window.dispatchEvent(new Event('chatCustomThemeChange'))`)
+        await wait(desktop, `(()=>{const l=document.getElementById('highlighted-turn-files-label'),b=document.querySelector(${JSON.stringify(toggle)});return getComputedStyle(l).color===${JSON.stringify(dark?'rgb(225, 226, 227)':'rgb(18, 52, 86)')} && getComputedStyle(l.parentElement).backgroundColor===${JSON.stringify(dark?'rgb(36, 52, 72)':'rgb(224, 232, 240)')} && getComputedStyle(b).color===${JSON.stringify(dark?'rgb(193, 210, 227)':'rgb(35, 69, 103)')} && getComputedStyle(b).backgroundColor===${JSON.stringify(dark?'rgb(26, 36, 48)':'rgb(255, 255, 255)')}})()`, 'Highlighted turn setting did not use light/dark theme colors')
+      }
+      await click(desktop, toggle)
+      await wait(desktop, `document.querySelector(${JSON.stringify(toggle)}).getAttribute('aria-pressed')==='true' && localStorage.getItem('chat:showHighlightedTurnFiles')==='true'`, 'Highlighted turn setting did not save')
+      await click(desktop, 'button[aria-label="Close settings"]')
+      const scroller = `document.querySelector('[data-bottom-sentinel]').parentElement`
+      const outlined = id => `!!document.querySelector('[data-node-id="${id}"]')?.parentElement.querySelector('[fill="none"][stroke-width]')`
+      await desktop.webContents.executeJavaScript(`${scroller}.scrollTop=0`)
+      const showTurn = async (n, first, second, scrollDirection = 1) => {
+        const id = `files-u${n}`
+        const target = `document.getElementById('message-${id}')`
+        await wait(desktop, `(()=>{if (${target}) return true; ${scroller}.scrollTop+=${160 * scrollDirection}; return false})()`, `Turn ${n} not mounted`)
+        await desktop.webContents.executeJavaScript(`(()=>{const scroll=${scroller},row=${target};scroll.scrollTop+=row.getBoundingClientRect().top-scroll.getBoundingClientRect().top-21})()`)
+        await wait(desktop, `${outlined(id)} && ${files(first, second)}`, `Modified Files did not follow outline to turn ${n}`)
+      }
+      await showTurn(1, true, false)
+      await showTurn(2, false, true)
+      await showTurn(3, false, false)
+      await wait(desktop, `!document.querySelector(${JSON.stringify(toggle)})`, 'Settings did not close')
+      await openFileSettings()
+      await click(desktop, toggle)
+      await wait(desktop, files(true, true), 'Disabling the filter did not restore the branch summary')
+      await click(desktop, toggle)
+      await click(desktop, 'button[aria-label="Close settings"]')
+      await showTurn(2, false, true, -1)
+      await click(desktop, diffs)
+      await wait(desktop, `document.body.innerText.includes('This file is not inside a Git repository.')`, 'Diffs request did not settle')
+      if (JSON.stringify(diffPaths) !== '["/fixtures/second.ts"]') throw new Error('Diffs did not use the highlighted turn: ' + JSON.stringify(diffPaths))
+      console.log('PASS highlighted-turn files follow Heimdall, scope Diffs, and use light/dark settings theme colors')
+    }
   }).catch(error => console.error(error)).finally(async () => {
     clearTimeout(timeout); for (const window of windows) window.destroy()
     if (server) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)) }

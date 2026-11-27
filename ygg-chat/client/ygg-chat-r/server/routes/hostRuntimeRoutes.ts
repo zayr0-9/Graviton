@@ -28,12 +28,21 @@ export function registerHostRuntimeRoutes(app: Express): void {
       network: { bindHost: config?.bindHost ?? null, port, exposure: config && !isLoopbackHost(config.bindHost) ? 'trusted-network-unprotected' : 'loopback', deviceAuthentication: false },
       capabilities: { browserUi: true, sharedRuns: false } })
   })
-  app.get('/api/host/execution-preferences', (_req, res) => res.json(readHostExecutionPreferences()))
+  // Attached browsers poll these every few seconds. `no-cache` (overriding the policy's
+  // `no-store` for identity routes) lets them revalidate the ETag and receive 304 instead
+  // of the full settings body each time.
+  const revalidated = (res: { setHeader: (name: string, value: string) => unknown }) => res.setHeader('Cache-Control', 'private, no-cache')
+  app.get('/api/host/execution-preferences', (_req, res) => { revalidated(res); res.json(readHostExecutionPreferences()) })
   app.patch('/api/host/execution-preferences', (req, res) => {
+    // Only the desktop main window can opt into automatic execution of repo hooks.
+    if (req.body?.patch && Object.hasOwn(req.body.patch, 'allowClaudeNativeHooks')) {
+      res.status(403).json({ error: 'Change Claude Code hook permissions in Graviton’s desktop Settings.' })
+      return
+    }
     try { res.json(saveHostExecutionPreferences(req.body)) }
     catch (error) { res.status(409).json({ error: error instanceof Error ? error.message : 'Settings update failed' }) }
   })
-  app.get('/api/host/prompts', (_req, res) => res.json(getHostPromptStore().snapshot()))
+  app.get('/api/host/prompts', (_req, res) => { revalidated(res); res.json(getHostPromptStore().snapshot()) })
   app.put('/api/host/prompts', (req, res) => {
     try { res.json(getHostPromptStore().save(req.body?.expectedRevision, req.body?.prompts, req.body)) }
     catch (error) { res.status((error as any)?.status === 409 ? 409 : 400).json({ error: error instanceof Error ? error.message : 'Invalid prompts', snapshot: (error as any)?.snapshot }) }

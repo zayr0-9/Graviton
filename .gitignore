@@ -93,6 +93,17 @@ ygg-chat/server/src/data/uploads/*node_modules/
 .codex
 .ygg
 
+# Bundled desktop theme assets (keep other .ygg state ignored)
+!/ygg-chat/client/ygg-chat-r/.ygg/
+/ygg-chat/client/ygg-chat-r/.ygg/*
+!/ygg-chat/client/ygg-chat-r/.ygg/custom-themes/
+/ygg-chat/client/ygg-chat-r/.ygg/custom-themes/*
+!/ygg-chat/client/ygg-chat-r/.ygg/custom-themes/*.json
+!/ygg-chat/client/ygg-chat-r/.ygg/custom-themes/README.md
+
 # Local skills and design previews
 /.claude/skills/
 /design-previews/
+
+# Local extract of OpenAI's Sky package and app bundle
+/oai-sky/

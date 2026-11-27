@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import { ToolCallGroupCard, type ToolCallGroupCardProps } from './ToolCallGroupCard'
-import { TOOL_NAME_BASE_CLASS, TOOL_NAME_ERROR_CLASS } from './chatMessageShared'
+import { MONO_KEY_CLASS, TOOL_FIELD_KEY_CLASS, TOOL_NAME_BASE_CLASS, TOOL_NAME_ERROR_CLASS } from './chatMessageShared'
 
 vi.mock('../EditFileDiffView/EditToolDiffView', () => ({
   EditToolDiffView: ({ isError, patch }: { isError?: boolean; patch?: { filePath: string } }) => (
@@ -200,7 +200,50 @@ describe('file-backed HTML renderer', () => {
   })
 })
 
-describe('manager-invoked MCP app', () => {
+describe('custom HTML app output', () => {
+  it.each([
+    { html: '<h1>Custom app</h1>', toolName: 'custom_app' },
+    JSON.stringify({ type: 'text/html', content: '<h1>Custom app</h1>' }),
+  ])('renders inline with the existing viewer even when expansion state is closed', content => {
+    const html = renderCard([{ content }], 'custom_app', {}, { expanded: false, canOpenViewer: true })
+    expect(html).toContain('data-test-html-preview')
+    expect(html).toContain('&lt;h1&gt;Custom app&lt;/h1&gt;')
+    expect(html).toContain('aria-label="Open tool output viewer"')
+    expect(html).not.toContain('aria-expanded')
+  })
+
+  it('does not treat a JSON result with a non-string html field as an app', () => {
+    const html = renderCard([{ content: { html: true } }], 'custom_app', {}, { expanded: false, canOpenViewer: true })
+    expect(html).toContain('aria-expanded="false"')
+    expect(html).not.toContain('Open tool output viewer')
+    expect(html).not.toContain('data-test-html-preview')
+  })
+})
+
+describe('MCP app controls', () => {
+  it.each([
+    ['mcp__demo__lookup', {}],
+    ['mcp_manager', { action: 'invoke', name: 'demo', tool: 'lookup' }],
+  ] as const)('keeps JSON-only %s output without a Load app control', (name, args) => {
+    const html = renderCard([{ content: { status: 'available' } }], name, args, {
+      toolDefinitions: [{ name: 'mcp__demo__lookup', isMcp: true, mcpServerName: 'demo', mcpToolName: 'lookup' }] as ToolCallGroupCardProps['toolDefinitions'],
+    })
+    expect(html).toContain('available')
+    expect(html).not.toContain('Load app')
+    expect(html).not.toContain('data-test-mcp-app')
+  })
+
+  it('keeps the Load app and fullscreen controls on a directly called MCP app', () => {
+    const html = renderCard([], 'mcp__demo__open', {}, {
+      expanded: false,
+      canOpenViewer: true,
+      toolDefinitions: [{ name: 'mcp__demo__open', isMcp: true, mcpServerName: 'demo', mcpUi: { resourceUri: 'ui://demo' } }] as ToolCallGroupCardProps['toolDefinitions'],
+    })
+    expect(html).toContain('data-test-mcp-app')
+    expect(html).toContain('aria-label="Load app"')
+    expect(html).toContain('aria-label="Open MCP app viewer"')
+  })
+
   it('renders from persisted discovery metadata without injecting schemas into the registry', () => {
     const html = renderCard([{ content: {
       content: [{ type: 'text', text: 'done' }],
@@ -209,5 +252,49 @@ describe('manager-invoked MCP app', () => {
     }, is_error: false }], 'mcp_manager', { action: 'invoke', name: 'demo_server', tool: 'echo', args: { text: 'x' } })
     expect(html).toContain('data-test-mcp-app')
     expect(html).toContain('MCP App')
+    expect(html).toContain('aria-label="Load app"')
+  })
+})
+
+describe('tool card palette', () => {
+  const themeVars = {
+    '--tool-key': '#111111',
+    '--tool-text': '#222222',
+    '--tool-string': '#333333',
+    '--tool-literal': '#444444',
+    '--tool-punctuation': '#555555',
+  } as const
+
+  it('sets the palette variables on the generic card wrapper and colours its fields', () => {
+    const html = renderCard([{ content: JSON.stringify({ ok: true, lines: 3 }), is_error: false }], 'read_file', { path: 'f.txt' }, { themeVars })
+    expect(html).toContain('--tool-key:#111111')
+    expect(html).toContain('--tool-punctuation:#555555')
+    expect(html).toContain(`<span class="${TOOL_FIELD_KEY_CLASS}">path</span>`)
+    expect(html).toContain(`<span class="${TOOL_FIELD_KEY_CLASS}">lines</span>`)
+  })
+
+  it('merges the palette with the content style', () => {
+    const html = renderCard([], 'read_file', { path: 'f.txt' }, { themeVars, contentStyle: { fontSize: 'calc(1em + 2px)' } })
+    expect(html).toContain('--tool-key:#111111')
+    expect(html).toContain('font-size:calc(1em + 2px)')
+  })
+
+  it('sets the palette on variant cards too', () => {
+    const html = renderCard([], 'edit_file', { path: 'f.txt', edits: [] }, { themeVars })
+    expect(html).toContain('data-test-diff-view')
+    expect(html).toContain('--tool-literal:#444444')
+  })
+
+  it('leaves error output in its tint with the legacy muted key', () => {
+    const html = renderCard([{ content: 'Permission denied.', is_error: true }], 'read_file', { path: 'f.txt' }, { themeVars })
+    expect(html).toContain(`<span class="${MONO_KEY_CLASS}">content:</span> <span>Permission denied.</span>`)
+    // Inputs keep the palette; only the tinted result opts out.
+    expect(html).toContain(`<span class="${TOOL_FIELD_KEY_CLASS}">path</span>`)
+  })
+
+  it('renders without variables when none are supplied', () => {
+    const html = renderCard([], 'read_file', { path: 'f.txt' })
+    expect(html).not.toContain('--tool-key')
+    expect(html).toContain(`<span class="${TOOL_FIELD_KEY_CLASS}">path</span>`)
   })
 })

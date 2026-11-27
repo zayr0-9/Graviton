@@ -1,6 +1,10 @@
 import type { CSSProperties } from 'react'
+import { legacyAssistantText } from '../../../../../shared/transcriptRevision'
+import { hasHtmlToolResult } from '../../../../../shared/toolResultHtml'
 import type { ContentBlock, StreamEvent } from '@/features/chats/chatTypes'
 import { CLAUDE_WORKFLOW_TOOL, type ClaudeBackgroundTask, type ClaudeFilePatch } from '../../../../../shared/claudeProvider'
+
+export { extractHtmlFromToolResult, hasHtmlToolResult } from '../../../../../shared/toolResultHtml'
 
 // Configuration for collapsed content display
 export const COLLAPSED_CONTENT_WORD_LIMIT = 15
@@ -72,6 +76,16 @@ export const SURFACE_CARD_PADDING_CLASS = 'px-3 py-2'
 export const MONO_DETAIL_CLASS =
   `min-w-0 max-w-full break-words font-mono ${TEXT_DETAIL_CLASS} leading-relaxed text-neutral-600 dark:text-neutral-400 [overflow-wrap:anywhere]`
 export const MONO_KEY_CLASS = 'text-neutral-400 dark:text-neutral-600'
+/**
+ * Tool card key/value palette (toolFields.css). Each class reads a `--tool-*` variable that
+ * `getToolCardThemeVars` (toolCardPalette.ts) sets on the card wrapper, falling back to the
+ * row colour when the variables are absent.
+ */
+export const TOOL_FIELD_KEY_CLASS = 'tool-field-key'
+export const TOOL_FIELD_TEXT_CLASS = 'tool-field-text'
+export const TOOL_FIELD_STRING_CLASS = 'tool-field-string'
+export const TOOL_FIELD_LITERAL_CLASS = 'tool-field-literal'
+export const TOOL_FIELD_PUNCTUATION_CLASS = 'tool-field-punctuation'
 
 /** Small pill action used inside tool cards (viewer, transcript, load app). */
 export const ACTION_PILL_CLASS = `inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full bg-black/[0.05] px-2.5 ${TEXT_DETAIL_CLASS} font-medium text-neutral-600 hover:bg-black/[0.09] hover:text-neutral-900 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-white/[0.06] dark:text-neutral-300 dark:hover:bg-white/[0.11] dark:hover:text-white ${FAST_COLOR_TRANSITION_CLASS} ${FOCUS_RING_CLASS}`
@@ -147,7 +161,7 @@ export interface ToolCallRenderGroup {
   id: string
   name?: string
   args?: Record<string, any> | null
-  results: Array<{ content: any; is_error?: boolean; patch?: ClaudeFilePatch; task?: ClaudeBackgroundTask }>
+  results: Array<{ content: any; html_omitted?: boolean; is_error?: boolean; patch?: ClaudeFilePatch; task?: ClaudeBackgroundTask }>
   anchorIndex: number
 }
 
@@ -163,7 +177,12 @@ export const claudePlanFromToolCall = (
 }
 
 /** Interactive/visual tool surfaces must remain visible instead of being folded into Agent steps. */
-export const isExcludedFromProcessRunGrouping = (name?: string, args?: Record<string, any> | null): boolean => {
+export const isExcludedFromProcessRunGrouping = (
+  name?: string,
+  args?: Record<string, any> | null,
+  results?: ToolCallRenderGroup['results'],
+): boolean => {
+  if (results?.some(hasHtmlToolResult)) return true
   const normalizedName = String(name || '').trim().toLowerCase()
   if (normalizedName.startsWith('mcp__') || normalizedName === 'html_renderer') return true
   if (claudePlanFromToolCall(name, args)) return true
@@ -421,6 +440,7 @@ export const buildToolCallGroupsFromBlocks = (blocks?: ContentBlock[]) => {
   const mapByIndex = new Map<number, ToolCallRenderGroup>()
 
   blocks.forEach((block, idx) => {
+    if (!block) return
     if (block.type === 'tool_use') {
       const id = block.id || `tool-${idx}`
       if (!groupsById.has(id)) {
@@ -437,14 +457,15 @@ export const buildToolCallGroupsFromBlocks = (blocks?: ContentBlock[]) => {
     } else if (block.type === 'tool_result') {
       const id = block.tool_use_id || `tool-result-${idx}`
       const target = groupsById.get(id)
+      const result = { content: block.content, html_omitted: block.html_omitted, is_error: block.is_error, patch: block.patch, task: block.task }
       if (target) {
-        target.results.push({ content: block.content, is_error: block.is_error, patch: block.patch, task: block.task })
+        target.results.push(result)
       } else {
         const fallback: ToolCallRenderGroup = {
           id,
           name: 'Tool Result',
           args: null,
-          results: [{ content: block.content, is_error: block.is_error, patch: block.patch, task: block.task }],
+          results: [result],
           anchorIndex: idx,
         }
         mapByIndex.set(idx, fallback)
@@ -489,31 +510,8 @@ export const formatToolResultSummary = (content: any): string | null => {
   }
 }
 
-export const normalizeReasoningTextForComparison = (text: string): string => text.replace(/\s+/g, ' ').trim()
-
-export const extractAssistantTextsFromResponsesOutputItems = (items: any[]): string[] => {
-  const extracted: string[] = []
-
-  for (const item of items) {
-    if (!item || typeof item !== 'object' || item.type !== 'message' || item.role !== 'assistant') continue
-    if (!Array.isArray(item.content)) continue
-
-    const text = item.content
-      .map((part: any) => {
-        if (!part || typeof part !== 'object') return ''
-        return typeof part.text === 'string' ? part.text : ''
-      })
-      .filter(Boolean)
-      .join('')
-      .trim()
-
-    if (text) {
-      extracted.push(text)
-    }
-  }
-
-  return extracted
-}
+export const extractAssistantTextsFromResponsesOutputItems = (items: any[]): string[] =>
+  items.map(legacyAssistantText).filter(Boolean)
 
 export const extractReasoningTextsFromResponsesOutputItems = (items: any[]): string[] => {
   const extracted: string[] = []
@@ -541,40 +539,45 @@ export const extractReasoningTextsFromResponsesOutputItems = (items: any[]): str
   return extracted
 }
 
+/** Responses items are replay metadata when explicit display blocks exist, otherwise a fallback. */
+export function normalizeAssistantDisplayBlocks(blocks: ContentBlock[] = []): ContentBlock[] {
+  if (!blocks.some(block => (block as { type: string } | undefined)?.type === 'responses_output_items')) return blocks
+  const hasExplicitBlocks = blocks.some(block => block &&
+    ['text', 'thinking', 'tool_use', 'image', 'reasoning_details', 'error'].includes(block.type))
+  return blocks.flatMap((block, index): ContentBlock[] => {
+    if (!block) return []
+    const record = block as { type: string; items?: any[] }
+    if (record.type !== 'responses_output_items') return [block]
+    if (hasExplicitBlocks || !Array.isArray(record.items)) return []
+    const output: ContentBlock[] = []
+    // Keep fallback reasoning IDs distinct from explicit block IDs.
+    const baseIndex = 900000000 + (block.index ?? index) * 100
+    let offset = 0
+    for (const item of record.items) {
+      if (item?.type === 'message') {
+        const [content] = extractAssistantTextsFromResponsesOutputItems([item])
+        if (content) output.push({ type: 'text', content, index: baseIndex + offset })
+        offset++
+      } else if (item?.type === 'reasoning') {
+        for (const content of extractReasoningTextsFromResponsesOutputItems([item])) {
+          output.push({ type: 'thinking', content, index: baseIndex + offset++ })
+        }
+      } else if (item?.type === 'function_call') {
+        const id = typeof item.call_id === 'string' ? item.call_id : item.id
+        if (typeof id !== 'string' || !id || typeof item.name !== 'string' || !item.name) continue
+        let input = item.arguments
+        if (typeof input === 'string' && input) {
+          try { input = JSON.parse(input) } catch { /* Preserve raw arguments. */ }
+        }
+        output.push({ type: 'tool_use', id, name: item.name, input, index: baseIndex + offset++ })
+      }
+    }
+    return output
+  })
+}
+
 export const parseMcpQualifiedName = (qualifiedName: string) => {
   const match = qualifiedName.match(/^mcp__([^_]+)__(.+)$/)
   if (!match) return null
   return { serverName: match[1], toolName: match[2] }
-}
-
-export const extractHtmlFromToolResult = (content: any): { html: string; toolName?: string | null } | null => {
-  if (!content) return null
-
-  let resolved = content
-  if (typeof resolved === 'string') {
-    try {
-      resolved = JSON.parse(resolved)
-    } catch {
-      return null
-    }
-  }
-  if (typeof resolved === 'object' && resolved !== null && 'html' in resolved) {
-    return {
-      html: (resolved as any).html,
-      toolName: (resolved as any).toolName ?? (resolved as any).tool_name ?? null,
-    }
-  }
-
-  if (
-    typeof resolved === 'object' &&
-    resolved !== null &&
-    (resolved as any).type === 'text/html' &&
-    typeof (resolved as any).content === 'string'
-  ) {
-    return {
-      html: (resolved as any).content,
-      toolName: (resolved as any).toolName ?? (resolved as any).tool_name ?? null,
-    }
-  }
-  return null
 }

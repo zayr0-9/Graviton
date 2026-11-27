@@ -7,6 +7,7 @@ import type { MessageId } from '../../../../../shared/types'
 import type { RootState } from '@/store/store'
 import 'katex/dist/katex.min.css'
 import { isClaudeTranscriptMessage } from '../../../../../shared/claudeProvider'
+import { projectTranscriptRevision, type TranscriptRevision } from '../../../../../shared/transcriptRevision'
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createSelector } from '@reduxjs/toolkit'
 import { createPortal } from 'react-dom'
@@ -21,7 +22,7 @@ import rehypeKatex from 'rehype-katex'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import { Check, RotateCw, X } from 'lucide-react'
-import { fetchMcpTools } from '../../features/chats/chatActions'
+import { blobToDataURL, fetchMcpTools, resolveAttachmentUrl } from '../../features/chats/chatActions'
 import { chatSliceActions } from '../../features/chats/chatSlice'
 import {
   appendAttachedImagePathMetadata,
@@ -48,10 +49,12 @@ import {
   getThemeModeColor,
   resolveRoleThemeKey,
 } from '../ThemeManager/themeConfig'
+import { useChatDisplayName } from '../../helpers/chatDisplayName'
+import { hasReasoningContent, useHideReasoningBlocks } from '../../helpers/hideReasoningSettings'
 import { ContextInjectionCard, type ContextInjectionCardEntry } from './ContextInjectionCard'
 import { HookActivityCard } from './HookActivityCard'
 import { AgentSteps } from './AgentSteps'
-import { partitionAgentItems, isProcessRunSeparatorText, getAgentProgress, buildStreamRenderItems, trailingAgentGroupKey, type StreamRenderItem } from './agentActivity'
+import { partitionAgentItems, getAgentProgress, buildStreamRenderItems, trailingAgentGroupKey, type StreamRenderItem } from './agentActivity'
 import { MessageActions } from './MessageActions'
 import { placeTouchSelectionMenu, type SelectionRect, type SettledSelection } from './touchSelectionMenu'
 import { useTouchSelectionMenu } from './useTouchSelectionMenu'
@@ -66,14 +69,14 @@ import { isWatcherCompletionMessage, WatcherCompletionNotice } from './WatcherCo
 import { isFullAccessNotification } from '../../../../../shared/accessNotifications'
 import { FullAccessNotice } from './FullAccessNotice'
 import { ToolCallGroupCard, type McpViewerPayload } from './ToolCallGroupCard'
+import { getToolCardThemeVars } from './toolCardPalette'
 import {
   buildToolCallGroupsFromBlocks,
   COLLAPSED_CONTENT_WORD_LIMIT,
   contentBlocksToEditableText,
   editableTextToContentBlocks,
-  extractAssistantTextsFromResponsesOutputItems,
+  normalizeAssistantDisplayBlocks,
   extractHtmlFromToolResult,
-  extractReasoningTextsFromResponsesOutputItems,
   FAST_COLOR_TRANSITION_CLASS,
   FOCUS_RING_CLASS,
   getChatFontSizeOffsetStyle,
@@ -83,7 +86,6 @@ import {
   MESSAGE_BLOCK_STACK_CLASS,
   MESSAGE_IMAGE_CLASS,
   MESSAGE_IMAGE_WRAPPER_CLASS,
-  normalizeReasoningTextForComparison,
   REASONING_TEXT_MARKDOWN_CLASS,
   SHARED_TEXT_MARKDOWN_CLASS,
   TEXT_DETAIL_CLASS,
@@ -114,6 +116,14 @@ export interface ChatMessageProps {
    */
   content: string
   contentBlocks?: ContentBlock[]
+  /** Visible slice of a persisted message; edits and revisions still use the canonical blocks. */
+  displayBlocks?: ContentBlock[]
+  displayRowId?: string
+  transcriptRevision?: TranscriptRevision
+  showTranscriptRevisionControls?: boolean
+  showOriginalTranscript?: boolean
+  onShowOriginalTranscriptChange?: (showOriginal: boolean) => void
+  onUndoTranscriptRevision?: (messageId: string, revisionId: number) => Promise<void>
   streamEvents?: StreamEvent[]
   hookRuns?: HookRunRecord[]
   timestamp?: string | Date
@@ -142,8 +152,6 @@ export interface ChatMessageProps {
   showInlineActions?: boolean
   /** Read-only transcript surfaces must not expose edit/branch context actions. */
   readOnly?: boolean
-  /** Preview prose must never be folded into process disclosures, even separators. */
-  keepTextOutsideGroups?: boolean
   /** Font size offset in pixels applied to every block through `calc(1em + Npx)`. */
   fontSizeOffset?: number
   /** Group long consecutive reasoning/tool runs into one "Agent steps" disclosure. */
@@ -195,7 +203,6 @@ interface MessageRenderItem {
   key: string
   kind: 'process' | 'activity' | 'other'
   processType?: ProcessEntryType
-  ignoreForProcessRunGrouping?: boolean
   node: React.ReactNode
 }
 
@@ -397,20 +404,15 @@ const getCollapsedReasoningSummary = (text: string | any): string => {
   return truncateWords(content)
 }
 
-const parseResponsesToolArgs = (rawArgs: unknown): unknown => {
-  if (typeof rawArgs !== 'string') return rawArgs
-  try {
-    return rawArgs ? JSON.parse(rawArgs) : rawArgs
-  } catch {
-    return rawArgs
-  }
-}
-
 const ROLE_LABEL: Record<string, string> = {
   user: 'User',
   assistant: 'Assistant',
   system: 'System',
   ex_agent: 'Claude Code',
+}
+
+function UserDisplayName() {
+  return <>{useChatDisplayName().trim() || ROLE_LABEL.user}</>
 }
 
 const ROLE_LABEL_CLASS: Record<string, string> = {
@@ -431,6 +433,8 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
     role,
     content,
     contentBlocks,
+    displayBlocks,
+    displayRowId = id,
     streamEvents,
     hookRuns,
     onEdit,
@@ -454,7 +458,6 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
     artifacts = [],
     showInlineActions = true,
     readOnly = false,
-    keepTextOutsideGroups = false,
     fontSizeOffset = 0,
     groupToolReasoningRuns = false,
     processRunActive = false,
@@ -546,8 +549,15 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
       handleMobileMessageActivate()
     }, [noteTouchStart, handleMobileMessageActivate])
     const [selectedArtifactUrl, setSelectedArtifactUrl] = useState<string | null>(null)
-    const liveRenderItems = useMemo(() => streamRenderItems ?? buildStreamRenderItems(streamEvents ?? [], keepTextOutsideGroups), [streamRenderItems, streamEvents, keepTextOutsideGroups])
-    const contentToolGroupsByIndex = useMemo(() => buildToolCallGroupsFromBlocks(contentBlocks), [contentBlocks])
+    const hideReasoning = useHideReasoningBlocks()
+    const liveRenderItems = useMemo(() => {
+      const items = streamRenderItems ?? buildStreamRenderItems(streamEvents ?? [])
+      return hideReasoning ? items.filter(item => item.source !== 'reasoning') : items
+    }, [streamRenderItems, streamEvents, hideReasoning])
+    const contentDisplayBlocks = useMemo(() => displayBlocks ?? (contentBlocks?.length
+      ? normalizeAssistantDisplayBlocks(contentBlocks)
+      : undefined), [contentBlocks, displayBlocks])
+    const contentToolGroupsByIndex = useMemo(() => buildToolCallGroupsFromBlocks(contentDisplayBlocks), [contentDisplayBlocks])
     const htmlRegistry = useHtmlIframeRegistry()
     const explainThemeColor = (key:
       | 'settingsCustomThemesCardBg' | 'settingsCustomThemesInnerCardBg'
@@ -581,6 +591,24 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
     const messageData = useSelector((state: RootState) => selectMessageByIdMap(state).get(String(id)))
     const toolDefinitions = useSelector((state: RootState) => state.chat.tools)
     const conversationId = messageData?.conversation_id ?? null
+    // Only mounted virtual rows need image bytes. Keep base64 for the existing branch
+    // editor, but cancel off-screen loads and never restore an image the user removed.
+    const removedImages = useSelector((state: RootState) => state.chat.attachments.backup[String(id)]?.length ?? 0)
+    const imageUrlsKey = JSON.stringify((messageData?.attachments ?? []).filter(a => !a.mime_type || a.mime_type.startsWith('image/'))
+      .map(a => resolveAttachmentUrl(a.url, a.file_path ?? (typeof a.storage_path === 'string' ? a.storage_path : undefined), a.id)).filter(Boolean))
+    const needsImages = !artifacts.length && !removedImages && role !== 'assistant'
+    useEffect(() => {
+      if (!needsImages || imageUrlsKey === '[]' || !conversationId) return
+      const controller = new AbortController()
+      void Promise.all((JSON.parse(imageUrlsKey) as string[]).map(async url => {
+        const response = await fetch(url, { signal: controller.signal })
+        if (!response.ok) throw new Error('Attachment unavailable')
+        return blobToDataURL(await response.blob())
+      })).then(images => {
+        if (!controller.signal.aborted) dispatch(chatSliceActions.messageArtifactsSet({ messageId: id, artifacts: images }))
+      }).catch(() => { /* Retry on remount; branch submission independently validates retained originals. */ })
+      return () => controller.abort()
+    }, [conversationId, id, dispatch, imageUrlsKey, needsImages])
     const projectId = useSelector((state: RootState) =>
       conversationId ? (selectConversationByIdMap(state).get(String(conversationId))?.project_id ?? null) : null
     )
@@ -796,7 +824,7 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
       // Reasoning and tool detail are markdown too, so skip every `.prose` inside a process
       // block: the answer is the prose that sits directly in the message stack.
       let html: string | undefined
-      const messageEl = document.getElementById(`message-${id}`)
+      const messageEl = messageRef.current
       if (messageEl) {
         const answerHtml = Array.from(messageEl.querySelectorAll('.prose'))
           .filter(node => !node.closest('[data-chat-block="reasoning"], [data-chat-block="tool"]'))
@@ -1162,6 +1190,11 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
       () => getMarkdownThemeVars(customThemeEnabled ? customTheme : createDefaultCustomChatTheme(), isDarkMode),
       [customThemeEnabled, customTheme, isDarkMode]
     )
+    // Key/value palette for every tool card in this message, derived from the same theme.
+    const toolCardThemeVars = useMemo(
+      () => getToolCardThemeVars(customThemeEnabled ? customTheme : createDefaultCustomChatTheme(), isDarkMode),
+      [customThemeEnabled, customTheme, isDarkMode]
+    )
 
     // Style object for content areas that scale with fontSizeOffset. Disclosure labels use
     // em-based sizes so they inherit it too.
@@ -1302,6 +1335,7 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
           disableExpandTransition={isStreamingRender}
           onExpandTransitionEnd={handleExpandTransitionEnd}
           contentStyle={messageContentStyle}
+          themeVars={toolCardThemeVars}
           truncateToolOutput={truncateToolOutput}
           readOnly={readOnly}
           toolDefinitions={toolDefinitions}
@@ -1321,7 +1355,7 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
 
     const buildReasoningRenderItem = (reasoningText: string, reasoningId: number, key: string): MessageRenderItem => {
       const isExpanded = expandedBlocks.reasoning.has(reasoningId)
-      const panelId = `${id}-${key}-panel`
+      const panelId = `${displayRowId}-${key}-panel`
       return {
         key,
         kind: 'process',
@@ -1387,7 +1421,6 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
     const renderTextItem = (key: string, markdown: string): MessageRenderItem => ({
       key,
       kind: 'other',
-      ignoreForProcessRunGrouping: !keepTextOutsideGroups && isProcessRunSeparatorText(markdown),
       node: renderMarkdownNode({ key, markdown, className: SHARED_TEXT_MARKDOWN_CLASS, style: messageContentStyle }),
     })
 
@@ -1442,85 +1475,8 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
       ) }
     })
 
-    const buildResponsesOutputItemsRenderItems = (responseItems: any[], baseIndex: number): MessageRenderItem[] => {
-      const items: MessageRenderItem[] = []
-      let localIndex = 0
-
-      for (const item of responseItems) {
-        if (!item || typeof item !== 'object') {
-          localIndex += 1
-          continue
-        }
-
-        if (item.type === 'message' && item.role === 'assistant') {
-          for (const text of extractAssistantTextsFromResponsesOutputItems([item])) {
-            items.push(renderTextItem(`responses-text-${baseIndex}-${localIndex}`, text))
-            localIndex += 1
-          }
-          continue
-        }
-
-        if (item.type === 'reasoning') {
-          for (const reasoningText of extractReasoningTextsFromResponsesOutputItems([item])) {
-            items.push(
-              buildReasoningRenderItem(
-                reasoningText,
-                900000000 + baseIndex * 100 + localIndex,
-                `responses-reasoning-${baseIndex}-${localIndex}`
-              )
-            )
-            localIndex += 1
-          }
-          continue
-        }
-
-        if (item.type === 'function_call') {
-          const callId = typeof item.call_id === 'string' ? item.call_id : typeof item.id === 'string' ? item.id : ''
-          const name = typeof item.name === 'string' ? item.name : ''
-          if (callId && name) {
-            const args = parseResponsesToolArgs(item.arguments) as Record<string, any> | null
-            const toolNode = renderToolCallGroupCard(
-              {
-                id: callId,
-                name,
-                args,
-                results: [],
-                anchorIndex: baseIndex + localIndex,
-              },
-              `responses-tool-${callId}-${baseIndex}-${localIndex}`
-            )
-            if (toolNode) {
-              items.push({
-                key: `responses-tool-${callId}-${baseIndex}-${localIndex}`,
-                kind: isExcludedFromProcessRunGrouping(name, args) ? 'other' : 'process',
-                processType: 'tool',
-                node: toolNode,
-              })
-            }
-          }
-          localIndex += 1
-          continue
-        }
-
-        localIndex += 1
-      }
-
-      return items
-    }
-
     const buildContentBlockRenderItems = (blocks: ContentBlock[]): MessageRenderItem[] => {
       const items: MessageRenderItem[] = []
-      const renderedReasoningSignatures = new Set<string>()
-      const hasExplicitRenderableBlocks = blocks.some(
-        block =>
-          block.type === 'text' ||
-          block.type === 'thinking' ||
-          block.type === 'tool_use' ||
-          block.type === 'image' ||
-          block.type === 'reasoning_details' ||
-          // A persisted terminal failure is a first-class renderable.
-          block.type === 'error'
-      )
       let idx = 0
 
       while (idx < blocks.length) {
@@ -1536,7 +1492,7 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
           if (toolNode) {
             items.push({
               key: `block-tool-${groupedTool.id}-${idx}`,
-              kind: isExcludedFromProcessRunGrouping(groupedTool.name, groupedTool.args) ? 'other' : 'process',
+              kind: isExcludedFromProcessRunGrouping(groupedTool.name, groupedTool.args, readOnly ? undefined : groupedTool.results) ? 'other' : 'process',
               processType: 'tool',
               node: toolNode,
             })
@@ -1577,6 +1533,10 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
         }
 
         if (block.type === 'thinking') {
+          if (hideReasoning) {
+            idx += 1
+            continue
+          }
           let prevIdx = idx - 1
           while (prevIdx >= 0 && blocks[prevIdx]?.type === 'reasoning_details') prevIdx -= 1
           if (prevIdx >= 0 && blocks[prevIdx]?.type === 'thinking') {
@@ -1602,9 +1562,6 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
             }
           }
 
-          const normalizedThinking = normalizeReasoningTextForComparison(accumulatedThinking)
-          if (normalizedThinking) renderedReasoningSignatures.add(normalizedThinking)
-
           items.push(
             buildReasoningRenderItem(
               accumulatedThinking,
@@ -1613,16 +1570,6 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
             )
           )
           idx = nextIdx
-          continue
-        }
-
-        if ((block as any).type === 'responses_output_items' && Array.isArray((block as any).items)) {
-          const responseBlock = block as any
-          if (!hasExplicitRenderableBlocks) {
-            const baseIndex = typeof responseBlock.index === 'number' ? responseBlock.index : idx
-            items.push(...buildResponsesOutputItemsRenderItems(responseBlock.items, baseIndex))
-          }
-          idx += 1
           continue
         }
 
@@ -1651,7 +1598,7 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
      * User rows always add their `content` as the text block after any context injection cards.
      */
     const renderableBlocks = useMemo<ContentBlock[]>(() => {
-      const blocks = Array.isArray(contentBlocks) ? contentBlocks : []
+      const blocks = contentDisplayBlocks ?? []
       if (isUserRow) {
         const injections = blocks.filter(block => block?.type === 'context_injection')
         const text = visibleContent.trim()
@@ -1659,10 +1606,10 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
           ? [...injections, { type: 'text', index: injections.length, content: visibleContent } as ContentBlock]
           : injections
       }
-      if (blocks.length > 0) return blocks
+      if (contentDisplayBlocks) return blocks
       const text = visibleContent.trim()
       return text ? [{ type: 'text', index: 0, content: visibleContent } as ContentBlock] : []
-    }, [contentBlocks, isUserRow, visibleContent])
+    }, [contentDisplayBlocks, isUserRow, visibleContent])
 
     /**
      * A row of pure agent work sits in the same tight run as the blocks inside it. Message rows
@@ -1688,9 +1635,19 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
     const showActionsRow = !readOnly && hasContent && canBranchMessage && showInlineActions
     const contextHighlightClass = contextMenuOpen ? 'bg-black/[0.03] dark:bg-white/[0.03]' : ''
 
+    // A row that held only reasoning has nothing left to draw while reasoning is hidden. Chat.tsx
+    // already drops such rows; this covers the other transcripts (parallel pane, agent previews).
+    const hadReasoning = hasStreamEvents
+      ? streamEvents!.some(event => event.type === 'reasoning')
+      : hasReasoningContent(renderableBlocks)
+    if (hideReasoning && hadReasoning && !isUserRow && !editingState && !showActionsRow &&
+        renderItems.length === 0 && !(Array.isArray(artifacts) && artifacts.length > 0)) {
+      return null
+    }
+
     return (
       <div
-        id={`message-${id}`}
+        id={`message-${displayRowId}`}
         ref={messageRef}
         className={`group ${width} px-0 sm:px-2 ${isUserRow ? 'pt-3 pb-1' : isProcessOnlyRow ? 'py-px' : 'py-1'} ${className ?? ''}`}
         onContextMenu={handleContextMenu}
@@ -1710,7 +1667,7 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
                 className={`${TEXT_MICRO_CLASS} font-semibold ${roleLabelClass}`}
                 style={roleLabelStyle}
               >
-                {roleLabel}
+                {isUserRow ? <UserDisplayName /> : roleLabel}
               </span>
             </div>
           )}
@@ -2131,6 +2088,43 @@ const ChatMessageBody: React.FC<ChatMessageProps> = React.memo(
 
 ChatMessageBody.displayName = 'ChatMessageBody'
 
+function RevisedChatMessage({ props }: { props: ChatMessageProps }) {
+  const revision = props.transcriptRevision!
+  const projected = useMemo(() => projectTranscriptRevision(props.content, props.contentBlocks ?? [], revision), [props.content, props.contentBlocks, revision])
+  const [localShowOriginal, setLocalShowOriginal] = useState(false)
+  const showOriginal = props.showOriginalTranscript ?? localShowOriginal
+  const setShowOriginal = props.onShowOriginalTranscriptChange ?? setLocalShowOriginal
+  const [undoing, setUndoing] = useState(false)
+  const [undoError, setUndoError] = useState(false)
+  const undo = async () => {
+    if (!props.onUndoTranscriptRevision || undoing) return
+    setUndoing(true)
+    setUndoError(false)
+    try { await props.onUndoTranscriptRevision(revision.messageId, revision.id) }
+    catch { setUndoError(true) }
+    finally { setUndoing(false) }
+  }
+  const view = projected && !showOriginal ? projected : null
+  let displayBlocks = props.displayBlocks
+  if (displayBlocks && view) {
+    const projectedDisplayBlocks = normalizeAssistantDisplayBlocks(view.blocks)
+    displayBlocks = displayBlocks.map(block => block.type === 'text'
+      ? projectedDisplayBlocks.find(candidate => candidate?.type === 'text' && candidate.index === block.index) ?? { ...block, content: '' }
+      : block)
+  }
+  return <>
+    <ChatMessageBody {...props} content={view?.content ?? props.content} contentBlocks={view?.blocks ?? props.contentBlocks} displayBlocks={displayBlocks} onEdit={undefined} />
+    {props.showTranscriptRevisionControls !== false && <div className={`${MESSAGE_BLOCK_INSET_CLASS} flex flex-wrap items-center gap-x-2 py-1 text-xs text-neutral-700 dark:text-neutral-300`}
+      style={{ color: props.customThemeEnabled && props.customTheme ? getThemeModeColor(props.customTheme.colors.toolPermissionDialogTitleText, props.isDarkMode ?? false) : undefined }}>
+      {projected ? <button type='button' aria-pressed={showOriginal} onClick={() => setShowOriginal(!showOriginal)}
+        className={`underline underline-offset-2 ${FOCUS_RING_CLASS}`}>{showOriginal ? 'Show revision' : 'Edited · Show original'}</button> : <span>Revision no longer matches the original</span>}
+      {props.onUndoTranscriptRevision && <button type='button' disabled={undoing} onClick={() => void undo()}
+        className={`underline underline-offset-2 disabled:opacity-60 ${FOCUS_RING_CLASS}`}>Undo revision</button>}
+      {undoError && <span role='alert'>Could not undo this revision.</span>}
+    </div>}
+  </>
+}
+
 // Keep automated notice payloads out of rich bubbles, including shared transcript callers.
 // The stored message remains untouched; only its presentation changes.
 const ChatMessage: React.FC<ChatMessageProps> = React.memo(props => {
@@ -2158,7 +2152,17 @@ const ChatMessage: React.FC<ChatMessageProps> = React.memo(props => {
       {compactionPlaceholder}
     </CompactMessageNotice>
   }
-  return <ChatMessageBody {...props} />
+  // A branch read outside the renderer window ships this row without its large block payloads;
+  // Chat hydrates it as it scrolls into view. Editing would write the compacted blocks back.
+  if (message?.body_omitted) {
+    return <>
+      <ChatMessageBody {...props} onEdit={undefined} />
+      <div role='status' className={`${MESSAGE_BLOCK_INSET_CLASS} py-1 text-xs text-neutral-500 dark:text-neutral-400`}>Loading full message…</div>
+    </>
+  }
+  return props.role === 'assistant' && props.transcriptRevision
+    ? <RevisedChatMessage key={props.transcriptRevision.id} props={props} />
+    : <ChatMessageBody {...props} />
 })
 
 ChatMessage.displayName = 'ChatMessage'

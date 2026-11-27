@@ -1,6 +1,6 @@
 import type { ContentBlock } from '@/features/chats/chatTypes'
 import { buildMcpAppEntryKey, getMcpAppHeight } from '../McpAppIframe/mcpAppSizing'
-import { isProcessOnlyBlockSet, isExcludedFromProcessRunGrouping } from './chatMessageShared'
+import { buildToolCallGroupsFromBlocks, hasHtmlToolResult, isProcessOnlyBlockSet, isExcludedFromProcessRunGrouping, normalizeAssistantDisplayBlocks } from './chatMessageShared'
 import { stripAttachedImagePathMetadata } from '../../features/chats/attachedImagePaths'
 import { CLAUDE_FILE_EDIT_TOOLS, CLAUDE_WORKFLOW_TOOL } from '../../../../../shared/claudeProvider'
 
@@ -97,12 +97,19 @@ const CODE_LINE_RATIO = 0.85 * 1.5
 /** Body height of an always-expanded tool card, in px. The header is a separate rem value. */
 const TOOL_BODY_EDIT_DIFF = 96
 const TOOL_BODY_PLAN_MD = 200
-const TOOL_BODY_HTML = 400
 const TOOL_BODY_INTERNAL_LINK = 72
 /** A Claude Workflow's task card: status line plus a short agent list. */
 const TOOL_BODY_BACKGROUND_TASK = 96
-/** `DISCLOSURE_BODY_CLASS` (pt-1 pb-2) plus the `p-1` surface card around the MCP iframe. */
-const REM_MCP_APP_BODY_CHROME = 1.25
+/** `HtmlIframe`'s inline min-height. */
+const INLINE_HTML_HEIGHT = 800
+/** `DISCLOSURE_BODY_CLASS` (pt-1 pb-2) plus the `p-1` surface card around the iframe. */
+const REM_IFRAME_BODY_CHROME = 1.25
+/** Each additional HTML result has its own `p-1` surface and `space-y-2` gap. */
+const REM_ADDITIONAL_HTML_RESULT_CHROME = 1
+
+const estimateInlineHtmlCard = (rootFontSize: number, count: number): number =>
+  INLINE_HTML_HEIGHT * count +
+  (REM_DISCLOSURE_ROW + REM_IFRAME_BODY_CHROME + (count - 1) * REM_ADDITIONAL_HTML_RESULT_CHROME) * rootFontSize
 
 /** The root font size when it cannot be measured, matching the index.css default. */
 export const DEFAULT_ROOT_FONT_SIZE = 16
@@ -129,7 +136,7 @@ const estimateSpecialToolCard = (
   const input = (block.input ?? {}) as Record<string, unknown>
   const header = REM_DISCLOSURE_ROW * rootFontSize
 
-  if (name === 'html_renderer' && typeof input.html === 'string') return header + TOOL_BODY_HTML
+  if (name === 'html_renderer' && typeof input.html === 'string') return estimateInlineHtmlCard(rootFontSize, 1)
   if (name === 'internallink' || name === 'internal_link') return header + TOOL_BODY_INTERNAL_LINK
   if (name === 'plan_md' && String(input.action ?? '').toLowerCase() === 'display') return header + TOOL_BODY_PLAN_MD
   if (name === 'edit_file' || name === 'editfile' || name === 'multi_edit') return header + TOOL_BODY_EDIT_DIFF
@@ -141,7 +148,7 @@ const estimateSpecialToolCard = (
     // collapsible rows. Without the predicate, assume the app: that was the old behaviour.
     if (isMcpAppTool && !isMcpAppTool(String(block.name ?? ''))) return null
     const key = messageId && block.id ? buildMcpAppEntryKey(messageId, block.id) : null
-    return header + REM_MCP_APP_BODY_CHROME * rootFontSize + getMcpAppHeight(key)
+    return header + REM_IFRAME_BODY_CHROME * rootFontSize + getMcpAppHeight(key)
   }
   return null
 }
@@ -264,7 +271,9 @@ export const estimateMessageRowHeight = (input: EstimateMessageRowInput): number
   } = input
 
   const isUserRow = role === 'user'
-  const blocks = Array.isArray(contentBlocks) ? contentBlocks : []
+  const blocks = Array.isArray(contentBlocks) && !isUserRow
+    ? normalizeAssistantDisplayBlocks(contentBlocks)
+    : contentBlocks ?? []
   // Mirrors `isProcessOnlyRow` in ChatMessage, which drops such a row to `py-px`.
   const isProcessOnly = !isUserRow && isProcessOnlyBlockSet(contentBlocks)
 
@@ -309,6 +318,7 @@ export const estimateMessageRowHeight = (input: EstimateMessageRowInput): number
     // Fallback path: an old assistant row with only a `content` string.
     pushText(content)
   } else {
+    const tools = buildToolCallGroupsFromBlocks(blocks)
     let index = 0
     while (index < blocks.length) {
       const block = blocks[index]
@@ -331,8 +341,16 @@ export const estimateMessageRowHeight = (input: EstimateMessageRowInput): number
           if (!mergesWithPrevious) items.push([disclosureRow, 'reasoning'])
           break
         }
-        case 'tool_use': {
-          items.push([estimateSpecialToolCard(block, rootFontSize, messageId, isMcpAppTool) ?? disclosureRow, isExcludedFromProcessRunGrouping(block.name, block.input) ? 'other' : 'tool'])
+        case 'tool_use':
+        case 'tool_result': {
+          // Only the call's anchor (or a standalone result) draws a card.
+          const tool = tools.get(index)
+          if (!tool) break
+          const htmlCount = tool.results.filter(hasHtmlToolResult).length
+          const specialHeight = block.type === 'tool_use' ? estimateSpecialToolCard(block, rootFontSize, messageId, isMcpAppTool) : null
+          const height = specialHeight ?? (htmlCount ? estimateInlineHtmlCard(rootFontSize, htmlCount) : disclosureRow)
+          const standalone = htmlCount > 0 || isExcludedFromProcessRunGrouping(tool.name, tool.args)
+          items.push([height, standalone ? 'other' : 'tool'])
           break
         }
         case 'image': {
@@ -348,8 +366,7 @@ export const estimateMessageRowHeight = (input: EstimateMessageRowInput): number
           if (blocks[index - 1]?.type !== 'context_injection') items.push([contextCard, 'activity'])
           break
         }
-        // tool_result folds into its tool_use group. reasoning_details, provider bookkeeping
-        // such as context_usage, and any unknown type draw nothing.
+        // reasoning_details, provider bookkeeping such as context_usage, and unknown types draw nothing.
         default:
           break
       }

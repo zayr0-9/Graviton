@@ -2,7 +2,9 @@ import { newQuickJSWASMModuleFromVariant, type QuickJSContext, type QuickJSRunti
 import variant from '@jitl/quickjs-singlefile-cjs-release-sync'
 import { assertToolAllowedWithoutAutoApprove, requiresAgentMode } from '../../../../../shared/operationModeToolPolicy.js'
 import { REPL_GUIDE } from '../../../../../shared/replGuide.js'
+import type { ProviderToolCall } from '../providers/providerTypes.js'
 import type { ToolExecutionContext, ToolExecutor } from './toolLoopService.js'
+import { runReplScript } from './replScript.js'
 
 const MAX_SESSIONS = 16
 const IDLE_MS = 30 * 60_000
@@ -12,8 +14,8 @@ const MEMORY_BYTES = 32 * 1024 * 1024
 const MAX_OUTPUT = 20_000
 const MAX_CODE = 32_000
 const NAME = /^[A-Za-z_$][A-Za-z0-9_$]{0,63}$/
-// These tools have transcript/UI semantics, not just a return value. Never hide them.
-const DIRECT_ONLY = new Set(['repl', 'multi_call', 'skill_manager', 'html_renderer', 'view_image', 'switch_mode'])
+// Recursive or transcript/UI tools cannot be captured, even through a batch.
+const DIRECT_ONLY = new Set(['repl', 'skill_manager', 'html_renderer', 'view_image', 'switch_mode', 'revise_transcript'])
 
 type Session = {
   runtime: QuickJSRuntime
@@ -32,9 +34,13 @@ type Workspace = {
   mutationEpoch: number
   lastWriter: string | null
   reservations: Map<string, symbol>
+  activeScripts: number
 }
 const MAX_QUEUED_CELLS = 64
 const MAX_CAPTURES = 16
+const MAX_SCRIPTS = 4
+
+type InvokeTool = (tool: string, args: Record<string, unknown>, scriptIndex?: number) => Promise<any>
 
 function argsObject(value: unknown): Record<string, any> {
   const parsed = typeof value === 'string' ? JSON.parse(value) : value
@@ -131,12 +137,12 @@ const BOOTSTRAP = `(() => {
   const objectPrototype = Object.prototype, arrayPrototype = Array.prototype;
   const finite = Number.isFinite, ArtifactError = Error;
   const join = Function.prototype.call.bind(Array.prototype.join);
-  const artifact = value => {
+  const serializePlain = (value, maxChars = 5242880) => {
     const chunks = [], ancestors = [];
     let chars = 0, nodes = 0, count = 0;
     const add = text => {
       chars += text.length;
-      if (chars > 5242880) throw new ArtifactError('JSON artifact exceeds 5 MiB');
+      if (chars > maxChars) throw new ArtifactError('Plain JSON exceeds size budget');
       chunks[count++] = text;
     };
     const visit = (item, depth) => {
@@ -144,7 +150,7 @@ const BOOTSTRAP = `(() => {
       if (item === null) { add('null'); return; }
       const type = typeof item;
       if (type === 'string' || type === 'boolean' || (type === 'number' && finite(item))) {
-        if (type === 'string' && item.length > 5242880) throw new ArtifactError('JSON artifact exceeds 5 MiB');
+        if (type === 'string' && item.length > maxChars) throw new ArtifactError('Plain JSON exceeds size budget');
         add(stringify(item)); return;
       }
       if (type !== 'object') throw new ArtifactError('JSON artifact contains an unsupported value');
@@ -183,9 +189,9 @@ const BOOTSTRAP = `(() => {
       ...(value && typeof value === 'object' && !array(value) ? { keys: keys(value).slice(0, 30) } : {}) };
   };
   define(globalThis, '__repl', { value: Object.freeze({
-    has, info,
-    artifact(name) { return artifact(get(name)); },
-    validateArtifact(text) { artifact(parse(text)); },
+    has, info, serializePlain,
+    artifact(name) { return serializePlain(get(name)); },
+    validateArtifact(text) { serializePlain(parse(text)); },
     put(name, text, overwrite) {
       if (initialHas(name) || name === '__repl') throw Error('Reserved variable name');
       if (has(name) && !overwrite) throw Error('Variable exists; pass overwrite:true');
@@ -215,6 +221,7 @@ const BOOTSTRAP = `(() => {
 export class ReplSessions {
   private workspaces = new Map<string, Workspace>()
   private captureSequence = 0
+  private activeScripts = 0
 
   private key(context: ToolExecutionContext): string {
     if (!context.conversationId || (!context.lineageId && !context.replOwnerId)) throw new Error('repl requires a branch lineage or agent identity')
@@ -230,7 +237,7 @@ export class ReplSessions {
 
   clear(): void {
     for (const [key, workspace] of this.workspaces) {
-      if (!workspace.active && !workspace.queued && !workspace.reservations.size) {
+      if (!workspace.active && !workspace.queued && !workspace.reservations.size && !workspace.activeScripts) {
         this.disposeSession(workspace)
         this.workspaces.delete(key)
       }
@@ -239,7 +246,7 @@ export class ReplSessions {
 
   private workspace(key: string): Workspace {
     for (const [id, workspace] of this.workspaces) {
-      if (!workspace.active && !workspace.queued && !workspace.reservations.size && Date.now() - workspace.touched > IDLE_MS) {
+      if (!workspace.active && !workspace.queued && !workspace.reservations.size && !workspace.activeScripts && Date.now() - workspace.touched > IDLE_MS) {
         this.disposeSession(workspace)
         this.workspaces.delete(id)
       }
@@ -247,7 +254,7 @@ export class ReplSessions {
     let workspace = this.workspaces.get(key)
     if (!workspace) {
       if (this.workspaces.size >= MAX_SESSIONS) throw new Error('REPL session limit reached; reset unused sessions')
-      workspace = { tail: Promise.resolve(), queued: 0, active: 0, touched: Date.now(), revision: 0, mutationEpoch: 0, lastWriter: null, reservations: new Map() }
+      workspace = { tail: Promise.resolve(), queued: 0, active: 0, touched: Date.now(), revision: 0, mutationEpoch: 0, lastWriter: null, reservations: new Map(), activeScripts: 0 }
       this.workspaces.set(key, workspace)
     }
     return workspace
@@ -333,7 +340,32 @@ export class ReplSessions {
     return { revision: workspace.revision, lastWriter: workspace.lastWriter }
   }
 
-  async run(args: Record<string, any>, context: ToolExecutionContext, invoke: (tool: string, args: Record<string, any>) => Promise<any>): Promise<any> {
+  private async script(workspace: Workspace, args: Record<string, any>, context: ToolExecutionContext, invoke: InvokeTool): Promise<string> {
+    if (!context.nestedExecutor || !context.allowedToolNames) throw new Error('REPL scripts require a policy-aware nested executor and caller tool list')
+    if (this.activeScripts >= MAX_SCRIPTS) throw new Error('REPL in-flight script limit reached')
+    this.activeScripts++
+    workspace.activeScripts++
+    try {
+      return await runReplScript({
+        code: args.code, bootstrap: BOOTSTRAP, timeout: integer(args.timeoutMs, 100, 1, 250),
+        capture: args.assign !== undefined, signal: context.signal,
+        invoke: async (tool, input, index) => {
+          let value = await this.waitForTool(context, invoke(tool, input, index))
+          context.signal?.throwIfAborted()
+          if (value && typeof value === 'object' && 'modelContent' in value) {
+            value = value.persistedContent ?? value.displayContent ?? { unavailable: 'Use this tool directly for its multimodal output' }
+          }
+          return boundedJson(value ?? null)
+        },
+      })
+    } finally {
+      this.activeScripts--
+      workspace.activeScripts--
+      workspace.touched = Date.now()
+    }
+  }
+
+  async run(args: Record<string, any>, context: ToolExecutionContext, invoke: InvokeTool): Promise<any> {
     context.signal?.throwIfAborted()
     if (args.howto !== undefined && typeof args.howto !== 'boolean') throw new Error('howto must be a boolean')
     if (args.howto === true) return { success: true, howto: REPL_GUIDE }
@@ -351,7 +383,20 @@ export class ReplSessions {
       if (requiresAgentMode({ name: tool }, context.operationMode ?? 'execute')) throw new Error('REPL export is not available in Chat Mode')
       if (context.autoApprove === false && context.replOwnerId) assertToolAllowedWithoutAutoApprove({ name: tool })
     }
+    if (action === 'exec' && args.async !== undefined && typeof args.async !== 'boolean') throw new Error('async must be a boolean')
+    const asyncScript = action === 'exec' && args.async === true
+    if (asyncScript) {
+      if (typeof args.code !== 'string' || !args.code.trim() || args.code.length > MAX_CODE) throw new Error('code must contain 1–32000 characters')
+      integer(args.timeoutMs, 100, 1, 250)
+      if (args.show !== undefined) throw new Error('Use assign and a separate show with async exec')
+      if (args.overwrite !== undefined && typeof args.overwrite !== 'boolean') throw new Error('overwrite must be a boolean')
+    }
     const workspace = this.workspace(key)
+    if (asyncScript && args.assign === undefined) {
+      await this.script(workspace, args, context, invoke)
+      context.signal?.throwIfAborted()
+      return { success: true, status: 'executed', ...this.receipt(workspace) }
+    }
     if (action === 'export') {
       const name = variableName(args.variable)
       const snapshot = await this.cell(workspace, context, async () => {
@@ -373,9 +418,9 @@ export class ReplSessions {
       return { success: true, status: 'exported', variable: name, path: args.path, format: 'json',
         sizeBytes: snapshot.sizeBytes, revision: snapshot.revision, lastWriter: snapshot.lastWriter }
     }
-    if (action !== 'invoke' && action !== 'import') return this.cell(workspace, context, async () => {
+    if (action !== 'invoke' && action !== 'import' && !asyncScript) return this.cell(workspace, context, async () => {
       if (action === 'reset') {
-        if (workspace.reservations.size) throw new Error('Cannot reset while captures are in flight')
+        if (workspace.reservations.size || workspace.activeScripts) throw new Error('Cannot reset while captures or scripts are in flight')
         this.disposeSession(workspace)
         this.changed(workspace, context, true)
         // No queued callers may still hold this workspace when releasing its slot.
@@ -441,24 +486,29 @@ export class ReplSessions {
         epoch = workspace.mutationEpoch
         workspace.reservations.set(name, token)
       })
-      // Do not hold a cell while awaiting IO or a child which needs this workspace.
+      // Do not hold a workspace cell during a script or nested tool call.
+      const scriptText = asyncScript ? await this.script(workspace, args, context, invoke) : undefined
       let value: any
       let toolStatus = 'success'
-      try {
-        value = await this.waitForTool(context, action === 'import'
-          ? invoke('read_file', { path: args.path, maxBytes: MAX_ARTIFACT_BYTES })
-          : invoke(args.tool, args.args === undefined ? {} : argsObject(args.args)))
-        if (value?.success === false || value?.isError === true) toolStatus = 'error'
-      } catch (error) {
-        if (context.signal?.aborted || (error instanceof Error && error.name === 'AbortError')) throw error
-        toolStatus = 'error'
-        value = { success: false, error: error instanceof Error ? error.message : String(error) }
+      if (!asyncScript) {
+        try {
+          value = await this.waitForTool(context, action === 'import'
+            ? invoke('read_file', { path: args.path, maxBytes: MAX_ARTIFACT_BYTES })
+            : invoke(args.tool, args.args === undefined ? {} : argsObject(args.args)))
+          if (value?.success === false || value?.isError === true) toolStatus = 'error'
+        } catch (error) {
+          if (context.signal?.aborted || (error instanceof Error && error.name === 'AbortError')) throw error
+          toolStatus = 'error'
+          value = { success: false, error: error instanceof Error ? error.message : String(error) }
+        }
       }
       context.signal?.throwIfAborted()
       const metadataOnly = !!value && typeof value === 'object' && 'modelContent' in value
       if (metadataOnly) value = value.persistedContent ?? value.displayContent ?? { unavailable: 'Use this tool directly for its multimodal output' }
       let text: string
-      if (action === 'import') {
+      if (scriptText !== undefined) {
+        text = scriptText
+      } else if (action === 'import') {
         if (toolStatus === 'error' || metadataOnly || typeof value?.content !== 'string') throw new Error('REPL import read failed; destination unchanged')
         if (value.truncated !== false || value.sizeBytes > MAX_ARTIFACT_BYTES || Buffer.byteLength(value.content, 'utf8') > MAX_ARTIFACT_BYTES)
           throw new Error('REPL import requires a complete JSON file of at most 5 MiB; destination unchanged')
@@ -505,14 +555,21 @@ export class ReplSessions {
 export function createReplDispatchExecutor(leaf: ToolExecutor, sessions = new ReplSessions()): ToolExecutor {
   return async (call, context) => {
     if (call.name !== 'repl') return leaf(call, context)
-    return sessions.run(argsObject(call.arguments), context, async (tool, args) => {
+    return sessions.run(argsObject(call.arguments), context, async (tool, args, scriptIndex) => {
       if (typeof tool !== 'string' || !tool.trim()) throw new Error('tool is required')
       tool = tool.trim()
-      if (DIRECT_ONLY.has(tool) || (tool === 'plan_md' && args.action === 'display')) throw new Error(`Use ${tool} directly; recursive or context/UI tools cannot be captured`)
+      const assertReplCaptureAllowed = (nested: ProviderToolCall) => {
+        const name = nested.name
+        if (DIRECT_ONLY.has(name) || (name === 'plan_md' && argsObject(nested.arguments).action === 'display')) {
+          throw new Error(`Use ${name} directly; recursive or context/UI tools cannot be captured`)
+        }
+        if (!context.allowedToolNames?.has(name)) throw new Error(`Tool is not available to this caller: ${name}`)
+        if (requiresAgentMode(nested, context.operationMode ?? 'execute')) throw new Error(`Tool "${name}" is not available in Chat Mode`)
+      }
       if (!context.nestedExecutor) throw new Error('REPL requires a policy-aware nested executor')
-      if (!context.allowedToolNames?.has(tool)) throw new Error(`Tool is not available to this caller: ${tool}`)
-      if (requiresAgentMode({ name: tool, arguments: args }, context.operationMode ?? 'execute')) throw new Error(`Tool "${tool}" is not available in Chat Mode`)
-      return context.nestedExecutor({ id: `${call.id}:invoke`, name: tool, arguments: args }, context)
+      const nested = { id: scriptIndex === undefined ? `${call.id}:invoke` : `${call.id}:script:${scriptIndex}`, name: tool, arguments: args }
+      assertReplCaptureAllowed(nested)
+      return context.nestedExecutor(nested, tool === 'multi_call' ? { ...context, assertReplCaptureAllowed } : context)
     })
   }
 }

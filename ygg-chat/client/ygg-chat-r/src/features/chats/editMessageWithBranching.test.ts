@@ -238,6 +238,50 @@ describe('editMessageWithBranching live source resolution', () => {
   })
 })
 
+describe('branch-scoped Full Access and Ultracode requests', () => {
+  it('sends Full Access only on the selected lineage, not on a parallel sibling or an explicit historical fork', async () => {
+    const { dispatch, state } = setup([message('root'), { ...message('a', 'root'), lineage_id: 'a' }, { ...message('b', 'root'), lineage_id: 'b' }], [])
+    dispatch(chatSliceActions.lineageSelected({ conversationId: 'c1', lineageId: 'a', path: ['root', 'a'], focus: 'a' }))
+    dispatch(chatSliceActions.branchFullAccessSelected(true))
+    const send = (parent: string, branchPath: string[], lineageId?: string, isBranch = false) => dispatch(sendMessage({
+      conversationId: 'c1', parent, branchPath, lineageId, isBranch, repeatNum: 1, think: false,
+      input: { content: 'inspect', modelOverride: 'test' },
+    }))
+    await send('a', ['root', 'a'], 'a')
+    await send('b', ['root', 'b'], 'b')
+    await send('root', ['root', 'a'], 'a', true)
+    await send('b', ['root', 'b'])
+    await send('b', ['root', 'b'], 'a')
+    const requests = vi.mocked(runServerChatLoop).mock.calls.map(([params]) => params.request)
+    expect(requests[0]).toMatchObject({ lineageId: 'a', fullAccess: true, fullAccessNotificationId: expect.any(String) })
+    expect(requests[1]).toMatchObject({ lineageId: 'b', fullAccess: false })
+    expect(requests[2]).toMatchObject({ parentId: 'root', isBranch: true, fullAccess: false })
+    expect(requests[3]).toMatchObject({ parentId: 'b', fullAccess: false })
+    expect(requests[4]).toMatchObject({ parentId: 'b', fullAccess: false })
+    expect(state.chat.conversation.currentLineageId).toBe('a')
+  })
+
+  it.each(['lmstudio', 'Claude Code'])('captures %s editor choices before closing the editor', async provider => {
+    const { dispatch, state, fork } = setup([message('u1')], [])
+    state.chat = { ...state.chat, providerState: { ...state.chat.providerState, currentProvider: provider } }
+    dispatch(chatSliceActions.editingBranchSet(true))
+    dispatch(chatSliceActions.branchEditMessageSelected('u1'))
+    if (provider === 'Claude Code') dispatch(chatSliceActions.claudeUltracodeSet(true))
+    else dispatch(chatSliceActions.branchFullAccessSelected(true))
+    const pending = fork()
+    dispatch(chatSliceActions.editingBranchSet(false))
+    expect((await pending).meta.requestStatus).toBe('fulfilled')
+    const { request, fullAccessSourceKey } = vi.mocked(runServerChatLoop).mock.calls[0][0]
+    if (provider === 'Claude Code') expect(request).toMatchObject({ claudeUltracode: true, fullAccess: false })
+    else {
+      expect(request).toMatchObject({ fullAccess: true, fullAccessNotificationId: expect.any(String) })
+      expect(fullAccessSourceKey).toBeNull()
+    }
+    expect(state.chat.composition.branchEditModes).toBeUndefined()
+    expect(state.chat.branchFullAccessChoices).toEqual({})
+  })
+})
+
 describe('branch-scoped Fast mode requests', () => {
   it.each([true, false])('captures isolated edit mode choices (Fast: %s) before the editor closes', async enabled => {
     const { dispatch, state } = setup([{ ...message('u1'), meta: { fastMode: !enabled } }], [])
@@ -324,6 +368,58 @@ describe('branch-scoped Fast mode requests', () => {
   })
 })
 
+describe('branch-scoped reasoning requests', () => {
+  it.each(['send', 'edit'] as const)('%s forwards the caller-chosen level and falls back to the branch level', async operation => {
+    for (const [requested, expected] of [['low', 'low'], [undefined, 'xhigh']] as const) {
+      vi.mocked(runServerChatLoop).mockClear()
+      const { dispatch } = setup([{ ...message('u1'), meta: { reasoningLevel: 'xhigh' } }], [])
+      const common = { conversationId: 'c1', think: true, reasoningConfig: { effort: 'low' as const },
+        reasoningLevel: requested, streamId: `reasoning-${operation}-${expected}` }
+      const result = await dispatch(operation === 'send'
+        ? sendMessage({ ...common, parent: 'u1', repeatNum: 1, input: { content: 'hello', modelOverride: 'test' } })
+        : editMessageWithBranching({ ...common, originalMessageId: 'u1', newContent: 'hello', modelOverride: 'test' }))
+      expect(result.meta.requestStatus).toBe('fulfilled')
+      const request = vi.mocked(runServerChatLoop).mock.calls[0][0].request
+      expect(request.reasoningLevel).toBe(expected)
+      // Edit-branch used to drop the effort entirely, running at the provider default.
+      expect(request).toMatchObject({ think: true, reasoningConfig: { effort: 'low' } })
+    }
+  })
+
+  it('edit omits the effort when thinking is off', async () => {
+    const { dispatch } = setup([message('u1')], [])
+    await dispatch(editMessageWithBranching({ conversationId: 'c1', originalMessageId: 'u1', newContent: 'hello',
+      modelOverride: 'test', think: false, reasoningConfig: { effort: 'high' }, reasoningLevel: 'off', streamId: 'edit-off' }))
+    const request = vi.mocked(runServerChatLoop).mock.calls[0][0].request
+    expect(request.think).toBe(false)
+    expect(request.reasoningConfig).toBeUndefined()
+    expect(request.reasoningLevel).toBe('off')
+  })
+
+  it('captures an isolated edit-session choice without changing the source branch drafts', async () => {
+    const { dispatch, state } = setup([{ ...message('u1'), meta: { reasoningLevel: 'xhigh' } }], [])
+    const sourceDrafts = state.chat.branchReasoningDrafts
+    dispatch(chatSliceActions.editingBranchSet(true))
+    dispatch(chatSliceActions.branchReasoningSelected('low'))
+    expect(state.chat.branchReasoningDrafts).toEqual(sourceDrafts)
+    const pending = dispatch(editMessageWithBranching({ conversationId: 'c1', originalMessageId: 'u1', newContent: 'hello',
+      modelOverride: 'test', think: true, streamId: 'edit-reasoning' }))
+    dispatch(chatSliceActions.editingBranchSet(false))
+    expect(state.chat.composition.branchEditModes).toBeUndefined()
+    expect((await pending).meta.requestStatus).toBe('fulfilled')
+    expect(vi.mocked(runServerChatLoop).mock.calls[0][0].request.reasoningLevel).toBe('low')
+    expect(state.chat.branchReasoningDrafts).toEqual(sourceDrafts)
+  })
+
+  it('persists a reducer choice under the stable lineage and keeps an explicit off', () => {
+    const { dispatch, state } = setup([message('u1')], [])
+    state.chat = { ...state.chat, conversation: { ...state.chat.conversation, currentLineageId: 'primary' } }
+    dispatch(chatSliceActions.branchReasoningSelected('high'))
+    dispatch(chatSliceActions.branchReasoningSelected('off'))
+    expect(state.chat.branchReasoningDrafts).toEqual({ '["c1","lineage:primary"]': 'off' })
+  })
+})
+
 it('forwards explicit Explain child intent through sendMessage without reparenting the selected message', async () => {
   const h = setup([message('old'), message('head', 'old')], [])
   await sendMessage({ conversationId: 'c1', input: { content: 'Explain selected text' }, parent: 'old',
@@ -332,6 +428,46 @@ it('forwards explicit Explain child intent through sendMessage without reparenti
   expect(vi.mocked(runServerChatLoop)).toHaveBeenCalledWith(expect.objectContaining({
     operation: 'send', request: expect.objectContaining({ parentId: 'old', isBranch: true, content: 'Explain selected text' }),
   }), expect.anything())
+})
+
+it.each([true, false])('rebases a stale parent only for ordinary continuation (isBranch=%s)', async isBranch => {
+  const before = { ...message('before'), role: 'assistant' as const }
+  const instruction = { ...message('instruction', before.id), meta: { kind: 'compaction_instruction' } }
+  const summary = { ...message('summary', instruction.id), role: 'assistant' as const,
+    meta: { kind: 'compaction_summary', state: 'committed' } }
+  const restored = { ...message('restored', summary.id), meta: { kind: 'context_injection' } }
+  const h = setup([before, instruction, summary, restored], [])
+  const result = await h.dispatch(sendMessage({ conversationId: 'c1', input: { content: 'continue' }, parent: before.id,
+    isBranch, repeatNum: 1, think: false, streamId: 'summary-fork' }))
+
+  expect(result.meta.requestStatus).toBe('fulfilled')
+  const { operation, request } = vi.mocked(runServerChatLoop).mock.calls[0][0]
+  expect(operation).toBe('send')
+  expect(request.parentId).toBe(isBranch ? before.id : summary.id)
+  if (isBranch) expect(request.isBranch).toBe(true)
+  else expect(request).not.toHaveProperty('isBranch')
+})
+
+it('uses the pre-summary provider for Explain selection after a Claude handoff', async () => {
+  const source = { ...message('source'), meta: { modelSelection: { provider: 'OpenAI (ChatGPT)', model: 'gpt-test' } } }
+  const selected = { ...message('selected', source.id), role: 'assistant' as const }
+  const summary = { ...message('summary', selected.id), role: 'assistant' as const,
+    meta: { kind: 'compaction_summary', state: 'committed' } }
+  const handoff = { ...message('handoff', summary.id), meta: { executionHandoff: { summaryMessageId: summary.id },
+    modelSelection: { provider: 'Claude Code', model: 'claude-sonnet-5-5' } } }
+  const h = setup([source, selected, summary, handoff], [])
+  h.state.chat = { ...h.state.chat,
+    conversation: { ...h.state.chat.conversation, currentLineageId: 'post-summary' },
+    providerState: { ...h.state.chat.providerState, currentProvider: 'Claude Code',
+      providers: [{ name: 'Claude Code' }, { name: 'OpenAI (ChatGPT)' }] as any },
+    branchModelDrafts: { [branchModelKey('c1', 'lineage:post-summary')]: { provider: 'Claude Code', model: 'claude-sonnet-5-5' } },
+  }
+  await h.dispatch(sendMessage({ conversationId: 'c1', input: { content: 'Explain selected text' }, parent: selected.id,
+    isBranch: true, repeatNum: 1, think: false, streamId: 'explain-before-handoff' }))
+
+  expect(vi.mocked(runServerChatLoop).mock.calls[0][0].request).toMatchObject({
+    parentId: selected.id, lineageId: 'post-summary', isBranch: true, provider: 'openai(chatgpt)', modelName: 'gpt-test',
+  })
 })
 
 describe('first-prompt provider edit isolation', () => {

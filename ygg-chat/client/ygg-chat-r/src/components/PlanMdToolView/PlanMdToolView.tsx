@@ -4,7 +4,7 @@ import { Eye, Maximize2, Minus, Pencil, Plus, Save, X } from 'lucide-react'
 import { createPortal } from 'react-dom'
 import { localApi } from '../../utils/api'
 import { MarkdownContent } from '../MarkdownContent/MarkdownContent'
-import { motionState, useMotionPreferences } from '../motion'
+import { useMotionPreferences } from '../motion'
 import {
   getMarkdownThemeVars,
   getThemeModeColor,
@@ -41,7 +41,7 @@ const toString = (value: unknown): string => (typeof value === 'string' ? value 
 const PlanMarkdown = MarkdownContent
 
 const iconButtonClass =
-  'flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-white/45 text-neutral-600 backdrop-blur-xl transition-[background-color,color,transform,opacity] duration-150 hover:bg-white/80 hover:text-neutral-950 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/70 disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:bg-white/45 dark:bg-black/20 dark:text-neutral-300 dark:hover:bg-white/10 dark:hover:text-white dark:focus-visible:ring-orange-400/70 dark:disabled:hover:bg-black/20'
+  'flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-white/45 text-neutral-600 transition-[background-color,color,transform,opacity] duration-150 hover:bg-white/80 hover:text-neutral-950 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/70 disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:bg-white/45 dark:bg-black/20 dark:text-neutral-300 dark:hover:bg-white/10 dark:hover:text-white dark:focus-visible:ring-orange-400/70 dark:disabled:hover:bg-black/20'
 
 export const PlanMdToolView: React.FC<PlanMdToolViewProps> = ({ args, result, className = '', readOnly = false }) => {
   const parsedResult = useMemo(() => parseRecord(result), [result])
@@ -206,7 +206,7 @@ export const PlanMdToolView: React.FC<PlanMdToolViewProps> = ({ args, result, cl
       {isFullscreen && (
         <motion.div
           key='plan-fullscreen'
-          className={`fixed inset-0 ${readOnly ? 'z-[1800]' : 'z-[1200]'} flex items-center justify-center bg-black/30 p-3 backdrop-blur-sm sm:p-6`}
+          className={`fixed inset-0 ${readOnly ? 'z-[1800]' : 'z-[1200]'} flex items-center justify-center bg-black/40 p-3 sm:bg-black/30 sm:p-6 sm:backdrop-blur-sm`}
           onKeyDown={event => {
             // Portal events bubble through the pill's React tree. Close only the
             // viewer on Escape, not the underlying transcript.
@@ -227,9 +227,13 @@ export const PlanMdToolView: React.FC<PlanMdToolViewProps> = ({ args, result, cl
             role='dialog'
             aria-modal='true'
             aria-label={`${name} plan`}
-            className='relative flex h-[calc(100vh-1.5rem)] w-full max-w-6xl flex-col overflow-hidden rounded-2xl bg-white/95 backdrop-blur-xl dark:bg-yBlack-900/95 sm:h-[calc(100vh-3rem)]'
+            className='relative flex h-[calc(100dvh-1.5rem)] w-full max-w-6xl flex-col overflow-hidden rounded-2xl bg-white dark:bg-yBlack-900 sm:h-[calc(100dvh-3rem)] sm:bg-white/95 sm:backdrop-blur-xl sm:dark:bg-yBlack-900/95'
             style={modalSurfaceStyle}
-            {...motionState(motionPreferences.reducedMotion, 8)}
+            // Translate only: a scale animation makes the browser re-raster the
+            // whole plan at its final scale, which lands on the first touch drag.
+            initial={motionPreferences.reducedMotion ? { opacity: 0 } : { opacity: 0, y: 8 }}
+            animate={motionPreferences.reducedMotion ? { opacity: 1 } : { opacity: 1, y: 0 }}
+            exit={motionPreferences.reducedMotion ? { opacity: 0 } : { opacity: 0, y: 8 }}
             transition={motionPreferences.shellTransition}
             onMouseDown={event => event.stopPropagation()}
           >
@@ -284,7 +288,7 @@ export const PlanMdToolView: React.FC<PlanMdToolViewProps> = ({ args, result, cl
                     autoFocus
                     value={draftContent}
                     onChange={event => setDraftContent(event.target.value)}
-                    className='h-full w-full resize-none rounded-xl bg-neutral-100/70 p-4 font-mono leading-relaxed text-neutral-900 outline-none thin-scrollbar focus-visible:ring-2 focus-visible:ring-blue-400/70 dark:bg-black/20 dark:text-neutral-100 dark:focus-visible:ring-orange-400/70'
+                    className='h-full w-full resize-none overscroll-contain rounded-xl bg-neutral-100/70 p-4 font-mono leading-relaxed text-neutral-900 outline-none thin-scrollbar focus-visible:ring-2 focus-visible:ring-blue-400/70 dark:bg-black/20 dark:text-neutral-100 dark:focus-visible:ring-orange-400/70'
                     style={editorStyle}
                     aria-label={`Edit ${name} Markdown`}
                     spellCheck={false}
@@ -293,7 +297,7 @@ export const PlanMdToolView: React.FC<PlanMdToolViewProps> = ({ args, result, cl
               ) : (
                 <motion.div
                   key='preview'
-                  className='min-h-0 flex-1 overflow-auto px-4 pb-24 pt-4 thin-scrollbar sm:px-6'
+                  className='min-h-0 flex-1 overflow-auto overscroll-contain px-4 pb-24 pt-4 thin-scrollbar [will-change:scroll-position] sm:px-6'
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
                   exit={{ opacity: 0 }}
@@ -316,7 +320,7 @@ export const PlanMdToolView: React.FC<PlanMdToolViewProps> = ({ args, result, cl
               transition={motionPreferences.contentTransition}
             >
               <div
-                className='pointer-events-auto flex w-full max-w-md items-center gap-1 rounded-full bg-white/70 p-1.5 backdrop-blur-xl dark:bg-black/35 sm:w-auto sm:gap-2'
+                className='pointer-events-auto flex w-full max-w-md items-center gap-1 rounded-full bg-white/90 p-1.5 dark:bg-neutral-900/90 sm:w-auto sm:gap-2 sm:bg-white/70 sm:backdrop-blur-xl sm:dark:bg-black/35'
                 style={toolbarStyle}
                 role='toolbar'
                 aria-label='Plan viewer controls'

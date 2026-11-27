@@ -1,0 +1,21 @@
+{
+  "name": "graviton-computer-use-mcp",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "build": "tsc && swift build -c release --product graviton-computer-use",
+    "build:server": "tsc",
+    "package:mac": "bash scripts/package-mac.sh",
+    "test": "npm run build:server && node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.4",
+    "typescript": "5.9.3"
+  }
+}

@@ -40,6 +40,8 @@ export interface HeadlessMessageRequest {
   accessToken?: string | null
   accountId?: string | null
   systemPrompt?: string | null
+  /** Optional renderer-local display label, used as model context rather than identity. */
+  userDisplayName?: string
   /** Renderer-selected baseline for the request's current operation mode. */
   operationModePrompt?: string | null
   /** Renderer-selected Agent baseline used when a Plan run upgrades to Agent mode. */
@@ -58,6 +60,8 @@ export interface HeadlessMessageRequest {
   isElectron?: boolean
   imageConfig?: any
   reasoningConfig?: any
+  /** Renderer branch-selected reasoning level, persisted as meta.reasoningLevel. */
+  reasoningLevel?: import('./reasoningLevel.js').ReasoningLevel
   serviceTier?: 'priority'
   promptCacheRetention?: 'in_memory' | '24h'
   tools?: Array<{ name: string; description?: string; inputSchema?: Record<string, any> }>
@@ -381,6 +385,7 @@ export type HeadlessStreamEvent =
   // The server pauses the loop and asks the renderer to approve a tool call.
   | {
       type: 'permission_required'
+      transcriptRevision?: import('./transcriptRevision.js').TranscriptRevisionPreview
       streamId?: string | null
       toolCallId: string
       toolName: string

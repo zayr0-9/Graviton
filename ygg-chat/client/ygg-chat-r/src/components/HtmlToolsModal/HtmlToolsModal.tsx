@@ -50,6 +50,7 @@ const GhostPillIcon: React.FC<{
   style?: React.CSSProperties
   'aria-label'?: string
   'aria-pressed'?: boolean
+  title?: string
 }> = ({ children, onClick, active, disabled, danger, className = '', ...props }) => (
   <button
     type='button'
@@ -90,11 +91,17 @@ const humanizeToolName = (toolName: string): string => {
     .join(' ')
 }
 
-export const HtmlToolsModal: React.FC = () => {
+/**
+ * `modal` (default): the main window's overlay, opened and closed through the registry.
+ * `window`: the detached apps window's whole content, always shown. Closing it closes the
+ * window, which hands the apps back to the main window.
+ */
+export const HtmlToolsModal: React.FC<{ presentation?: 'modal' | 'window' }> = ({ presentation = 'modal' }) => {
   const registry = useHtmlIframeRegistry()
   if (!registry) return null
 
-  const isOpen = registry.isModalOpen
+  const windowMode = presentation === 'window'
+  const isOpen = windowMode || registry.isModalOpen
   const isHomepageFullscreen = registry.isHomepageFullscreen
   const focusKey = registry.focusKey
   const onClose = registry.closeModal
@@ -120,7 +127,7 @@ export const HtmlToolsModal: React.FC = () => {
   const lastFocusKeyRef = useRef<string | null>(null)
   const lastFocusModeRef = useRef<'list' | 'tabs' | null>(null)
   const isDockResizingRef = useRef(false)
-  const isRightDockedLayout = isRightDocked && !isHomepageFullscreen
+  const isRightDockedLayout = isRightDocked && !isHomepageFullscreen && !windowMode
   const clampDockWidth = useCallback((width: number) => {
     if (typeof window === 'undefined') return width
     const minWidth = Math.round(window.innerWidth * 0.3)
@@ -385,7 +392,7 @@ export const HtmlToolsModal: React.FC = () => {
         : isCompact
           ? 'rounded-2xl border border-neutral-200 dark:border-white/[0.05] bg-neutral-50 dark:bg-black/20 cursor-pointer hover:bg-neutral-100 dark:hover:bg-white/[0.03] hover:border-neutral-300 dark:hover:border-white/[0.08] transition-all duration-200'
           : 'rounded-2xl border border-neutral-200 dark:border-white/[0.05] bg-neutral-50 dark:bg-black/20'
-    const cardStyle = isFullscreen ? { paddingTop: 'var(--titlebar-height, 0px)' } : undefined
+    const cardStyle = isFullscreen && !windowMode ? { paddingTop: 'var(--titlebar-height, 0px)' } : undefined
 
     const handleCompactClick = () => {
       if (!isCompact) return
@@ -511,7 +518,7 @@ export const HtmlToolsModal: React.FC = () => {
     )
   }
 
-  const handleClose = isHomepageFullscreen ? closeHomepageFullscreen : onClose
+  const handleClose = windowMode ? () => window.close() : isHomepageFullscreen ? closeHomepageFullscreen : onClose
   const resolvedDockWidthPx = isRightDockedLayout
     ? clampDockWidth(dockWidthPx ?? (typeof window !== 'undefined' ? Math.round(window.innerWidth * 0.5) : 720))
     : null
@@ -525,7 +532,7 @@ export const HtmlToolsModal: React.FC = () => {
         boxSizing: 'border-box' as const,
         width: resolvedDockWidthPx ?? undefined,
       }
-    : { paddingTop: 'var(--titlebar-height, 0px)', boxSizing: 'border-box' as const }
+    : { paddingTop: windowMode ? 0 : 'var(--titlebar-height, 0px)', boxSizing: 'border-box' as const }
   const modalPanelClassName = isRightDockedLayout
     ? 'relative w-full h-full bg-white dark:bg-[rgba(15,15,15,1)] flex flex-col overflow-hidden border-l border-neutral-200 dark:border-white/[0.06] shadow-[-24px_0_60px_-32px_rgba(0,0,0,0.45)]'
     : 'relative w-full h-full bg-white/98 dark:bg-[rgba(15,15,15,0.98)] backdrop-blur-[32px] flex flex-col overflow-hidden'
@@ -621,7 +628,7 @@ export const HtmlToolsModal: React.FC = () => {
         {/* Divider */}
         <div className={`w-px h-4 bg-neutral-300 dark:bg-white/10 ${useIconOnlyHeaderButtons ? 'mx-0.5' : 'mx-1'}`} />
 
-        {useIconOnlyHeaderButtons ? (
+        {windowMode ? null : useIconOnlyHeaderButtons ? (
           <GhostPillIcon
             onClick={() => setIsRightDocked(prev => !prev)}
             active={isRightDocked}
@@ -653,7 +660,23 @@ export const HtmlToolsModal: React.FC = () => {
         >
           <i className='bx bx-slider-alt text-sm' aria-hidden='true' />
         </GhostPillIcon>
-        <GhostPillIcon onClick={handleClose} danger aria-label='Close tool viewer' style={buttonStyle}>
+        {!windowMode && registry.canPopOut && (
+          <GhostPillIcon
+            onClick={() => void registry.popOut(activeKey)}
+            aria-label='Open Task Manager in a new window'
+            title='Open in new window (apps reload there)'
+            style={buttonStyle}
+          >
+            <i className='bx bx-link-external text-sm' aria-hidden='true' />
+          </GhostPillIcon>
+        )}
+        <GhostPillIcon
+          onClick={handleClose}
+          danger
+          aria-label={windowMode ? 'Close window and return apps to the main window' : 'Close tool viewer'}
+          title={windowMode ? 'Close window (apps return to the main window)' : undefined}
+          style={buttonStyle}
+        >
           <i className='bx bx-x text-lg' aria-hidden='true' />
         </GhostPillIcon>
       </div>

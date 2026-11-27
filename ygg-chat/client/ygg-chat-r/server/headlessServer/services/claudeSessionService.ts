@@ -16,6 +16,7 @@ import { claudeWorkspaceChangedError } from './claudeWorkspaceError.js'
 import type { MessageRepo } from '../persistence/messageRepo.js'
 import type { MessageSink } from './messageSink.js'
 import { OperationModeControl } from './operationModeControl.js'
+import { formatUserDisplayNamePrompt } from './headlessSystemPrompt.js'
 import type { OperationMode } from '../../../../../shared/operationModeToolPolicy.js'
 import type { ClarifyDecision, DecisionBroker, OperationModeUpgradeDecision, PermissionDecision } from './decisionBroker.js'
 import type { ChatHookSession } from './chatHookService.js'
@@ -75,7 +76,8 @@ export interface ClaudeGravitonToolsDeps {
    * questions, nested multi_call/repl calls) around its tool executor, as in its own loop.
    */
   executor: (run: { streamId: string; emit: (event: HeadlessStreamEvent) => void; signal: AbortSignal
-    hookSession?: ChatHookSession; modeControl: OperationModeControl }) => ToolExecutor
+    hookSession?: ChatHookSession; modeControl: OperationModeControl
+    reviseTranscript?: import('./transcriptRevisionTool.js').TranscriptRevisionTool }) => ToolExecutor
 }
 /** A Graviton tool under its plain name, as Graviton's own hooks and rows name it. */
 const hookToolName = (name: string) => gravitonToolName(name) ?? name
@@ -376,6 +378,8 @@ export class ClaudeSessionService {
     hookRuns?: HookRunTracker | null
     /** Host setting for Claude Code's own MCP servers, read at each run start; absent keeps MCP off. */
     nativeMcp?: () => HostClaudeMcpPreferences | null | undefined
+    /** Trusted host opt-in; absent or unreadable blocks unmanaged hooks. */
+    allowNativeHooks?: () => boolean
     /** Keep a branch's CLI open between runs (warm sessions); absent or null starts a CLI per run. */
     warm?: ClaudeWarmConfig | null
     /** Graviton's own tools, served to Claude as the `graviton` MCP server; absent keeps them out. */
@@ -416,6 +420,11 @@ export class ClaudeSessionService {
 
   /** MCP servers the last fresh init of a native-MCP run reported (CLI #78820 detection). */
   private lastNativeMcpServerCount = 0
+
+  private nativeHooksDisabled(): boolean {
+    try { return this.deps.allowNativeHooks?.() !== true }
+    catch { return true }
+  }
 
   private nativeMcpPreferences(): HostClaudeMcpPreferences | null {
     try { return this.deps.nativeMcp?.() ?? null }
@@ -547,6 +556,7 @@ export class ClaudeSessionService {
     hookSession?: ChatHookSession | null
     /** The prompt is a Claude skill or custom command `nativeCommand()` resolved; Claude expands it. */
     nativeCommand?: boolean
+    reviseTranscript?: import('./transcriptRevisionTool.js').TranscriptRevisionTool
     /** Messages the user queues while this run is live. */
     queuedInput?: ClaudeQueuedInput
     /** The run's live Chat/Agent mode, shared with Graviton's mode route; a switch applies to the next tool call. */
@@ -568,6 +578,7 @@ export class ClaudeSessionService {
     // process takes live (model, permission mode, effort, ultracode).
     const nativeMcp = this.nativeMcpPreferences()
     const mcp = claudeMcpLaunchOptions(nativeMcp)
+    const disableNativeHooks = this.nativeHooksDisabled()
     // Thinking is never disabled: several Claude models reject it, so the composer offers no
     // Off and a stale think:false falls back to the selected effort or the native default.
     // Omitted settings keep the native default for older/non-composer callers.
@@ -580,8 +591,11 @@ export class ClaudeSessionService {
     const permissionMode = request.claudePlanMode === true ? 'plan' : request.claudePermissionMode === 'auto' ? 'auto' : 'default'
     const liveSettings: ClaudeWarmSettings = { model: request.modelName, effort: selectedEffort ?? null, ultracode: request.claudeUltracode === true }
     const gravitonTools = this.deps.gravitonTools ?? null
+    const availableGravitonTools = () => this.gravitonAvailable().filter(tool => tool.name !== 'revise_transcript' || input.reviseTranscript)
+    const systemPromptAppend = formatUserDisplayNamePrompt(request.userDisplayName)
     const launchKey = this.warm.enabled ? await claudeLaunchKey({ cwd, additionalDirectories: input.additionalDirectories, adaptiveThinking, mcp,
-      plansDirectory: CLAUDE_PLANS_DIRECTORY, executable, hookShape: input.hookSession ? 'graviton-hooks' : 'native-only', gravitonTools: Boolean(gravitonTools) }) : ''
+      plansDirectory: CLAUDE_PLANS_DIRECTORY, executable, hookShape: input.hookSession ? 'graviton-hooks' : 'native-only',
+      disableNativeHooks, gravitonTools: Boolean(gravitonTools), transcriptRevision: Boolean(input.reviseTranscript), systemPromptAppend }) : ''
     // The branch's parked CLI, taken synchronously after the last await so nothing else closes or
     // claims it. It is reused only for a send at the exact head it parked at; anything else closes it.
     let warm = this.warm.take(lineageId)
@@ -610,14 +624,24 @@ export class ClaudeSessionService {
         if (interrupted) throw new Error('Claude session was interrupted. Fork from a completed Claude message before continuing.')
         // A manual /compact ends at a summary, not an assistant response checkpoint.
       } else if (input.sourceMessageId) {
-        const checkpoint = this.deps.sessions.checkpoint(input.sourceMessageId)
+        // A run that failed before Claude answered leaves rows with no native counterpart at the
+        // head (its user message, Graviton's error row). Continue from the completed response
+        // above them, by fork, so one failed send never strands the branch.
+        let checkpoint = this.deps.sessions.checkpoint(input.sourceMessageId)
+        let stranded = false
+        for (let row = checkpoint ? null : this.deps.messages.get(input.sourceMessageId), depth = 0; row?.parent_id && depth < 16; depth += 1) {
+          if (claudeMessageMetadata(row.meta)?.claude?.sessionId) break
+          checkpoint = this.deps.sessions.checkpoint(row.parent_id)
+          if (checkpoint) { stranded = true; break }
+          row = this.deps.messages.get(row.parent_id)
+        }
         if (!checkpoint?.resumable) throw new Error('This node is not a completed Claude checkpoint. Choose a completed Claude response to fork or continue.')
         if (checkpoint.cwd !== cwd) throw claudeWorkspaceChangedError(checkpoint.cwd, cwd)
         // Verify the exact source is still available. Never silently start over.
         const transcript = await sdk.getSessionMessages(checkpoint.session_id, { dir: cwd })
         // getSessionMessages projects only the compacted live chain. Native forkSession
         // can still resolve historical UUIDs in the persisted source and rejects missing cuts.
-        if (input.fork || interrupted || !sessionId || sessionId !== checkpoint.session_id || transcript.at(-1)?.uuid !== checkpoint.message_uuid) {
+        if (input.fork || interrupted || stranded || !sessionId || sessionId !== checkpoint.session_id || transcript.at(-1)?.uuid !== checkpoint.message_uuid) {
           const fork = await sdk.forkSession(checkpoint.session_id, { dir: cwd, upToMessageId: checkpoint.message_uuid })
           sessionId = fork.sessionId
         }
@@ -718,7 +742,8 @@ export class ClaudeSessionService {
         modelName: request.modelName, content: pending.summary,
         contentBlocks: [{ type: 'text', content: pending.summary, index: 0 }], statisticsKind: 'compaction_summary',
         meta: { kind: 'compaction_summary', state: 'committed', version: 1, trigger: pending.trigger,
-          compactionId: randomUUID(), operationMode: control.mode, claudePlanMode: planState.active, claude: { sessionId: activeSession, checkpoint: false } } })
+          compactionId: randomUUID(), operationMode: control.mode, claudePlanMode: planState.active,
+          claudeUltracode: request.claudeUltracode === true, claude: { sessionId: activeSession, checkpoint: false } } })
       parent = compactionSummary.id
       finalMessage = null; lastUuid = null; turnEntries = []
       compactionActive = false
@@ -871,6 +896,7 @@ export class ClaudeSessionService {
     const gravitonDenial = (name: string, args: unknown): string | null => {
       const tool = gravitonToolName(name)
       if (!tool) return null
+      if (tool === 'revise_transcript' && !input.reviseTranscript) return 'Start a new user turn with /revise followed by your request.'
       if (!gravitonTools || !this.gravitonAvailable().some(entry => entry.name === tool)) {
         return `The Graviton tool "${tool}" is turned off in Graviton's Settings → Tools, or not available on this host.`
       }
@@ -985,7 +1011,7 @@ export class ClaudeSessionService {
     // tools read (switch_mode, context_status, subagents, watcher). The result Graviton persists
     // (what its tool cards read) replaces Claude's text copy on the row.
     const gravitonExecutor = gravitonTools?.executor({ streamId: request.streamId!, emit, signal: abortController.signal,
-      hookSession: hookSession ?? undefined, modeControl: control }) ?? null
+      hookSession: hookSession ?? undefined, modeControl: control, reviseTranscript: input.reviseTranscript }) ?? null
     const gravitonResults = new Map<string, { content: string; isError: boolean }>()
     // User messages Claude has read this run; new input lets switch_mode ask again after a decline.
     let deliveredInputs = 0
@@ -1048,6 +1074,11 @@ export class ClaudeSessionService {
           subagentDefaults: request.subagentDefaults, subagentReasoningEffort: request.subagentReasoningEffort,
           subagentSystemPrompt: request.subagentModePrompt ?? null, contextDirectories: request.contextDirectories ?? null,
           allowedToolNames: new Set(this.gravitonAvailable().map(tool => tool.name)),
+          nestedExecutor: async (nestedCall, context) => {
+            const denial = gravitonDenial(claudeGravitonToolName(nestedCall.name), nestedCall.arguments)
+            if (denial) throw new Error(denial)
+            return gravitonExecutor(nestedCall, context)
+          },
           getContextStatus, switchOperationMode,
         })
         persisted = toToolResultContent(result)
@@ -1067,8 +1098,8 @@ export class ClaudeSessionService {
       cwd, model: request.modelName, ...(sessionId ? { resume: sessionId } : {}),
       ...(input.additionalDirectories?.length ? { additionalDirectories: input.additionalDirectories } : {}),
       abortController, includePartialMessages: true, permissionMode,
-      // Claude's own settings load (skills, hooks, plugins, CLAUDE.md) as in the CLI. MCP is off
-      // unless Settings turns on Claude's own servers; hidden servers lose their tools by deny rule.
+      // Keep Claude's settings layers (skills, plugins, CLAUDE.md and permission rules) while
+      // blocking unmanaged native hooks unless explicitly allowed. Claude MCP remains opt-in.
       canUseTool, permissionPrompts: 'host', settingSources: CLAUDE_SETTING_SOURCES,
       strictMcpConfig: mcp.strictMcpConfig, ...(mcp.mcpServers ? { mcpServers: mcp.mcpServers } : {}),
       ...(mcp.disallowedTools ? { disallowedTools: mcp.disallowedTools } : {}),
@@ -1080,9 +1111,10 @@ export class ClaudeSessionService {
       ...(adaptiveThinking
         ? { thinking: { type: 'adaptive', display: 'summarized' } as const, ...(selectedEffort ? { effort: selectedEffort } : {}) }
         : { extraArgs: { 'thinking-display': 'summarized' } }),
-      systemPrompt: { type: 'preset', preset: 'claude_code' },
+      systemPrompt: { type: 'preset', preset: 'claude_code', ...(systemPromptAppend ? { append: systemPromptAppend } : {}) },
       // Ultracode is session-scoped flag settings, so every run (each resume) restates it.
-      settings: { plansDirectory: CLAUDE_PLANS_DIRECTORY, ...(request.claudeUltracode ? { ultracode: true } : {}), ...mcp.settings },
+      settings: { plansDirectory: CLAUDE_PLANS_DIRECTORY, ...(request.claudeUltracode ? { ultracode: true } : {}), ...mcp.settings,
+        ...(disableNativeHooks ? { disableAllHooks: true } : {}) },
     }
     // Use the host's installed CLI rather than resolving a bundled native executable relative to an esbuild bundle.
     options.pathToClaudeCodeExecutable = executable
@@ -1138,6 +1170,9 @@ export class ClaudeSessionService {
     // The last turn ended; the session closes once nothing is left to start another one.
     let idle = false
     let startTimer: ReturnType<typeof setTimeout> | undefined
+    // Armed when a `result` from before this run's prompt is skipped; the prompt must then start.
+    let preludeTimer: ReturnType<typeof setTimeout> | undefined
+    let preludeTimedOut = false
     // Non-ambient background tasks still running, child agents' included (the CLI's level signal).
     let liveTasks = 0
     let liveTaskList: HeadlessBackgroundTask[] = []
@@ -1315,11 +1350,12 @@ export class ClaudeSessionService {
     // left) still reaches the final row, where a mode row would displace the resumable checkpoint.
     // Plan mode too, so the composer restores it per branch and an approved plan reads as off.
     const runMeta = () => ({ ...(this.deps.broker ? { toolAutoApprove: this.deps.broker.isAutoApproveAll(request.streamId!) } : {}),
-      operationMode: control.mode, claudePlanMode: planState.active, ...permissionMeta() })
+      operationMode: control.mode, claudePlanMode: planState.active, claudeUltracode: request.claudeUltracode === true, ...permissionMeta() })
     const persist = (content: string, blocks: any[], uuid?: string, partial = false) => {
       const row = sink.persistAssistantMessage({ conversationId: request.conversationId, parentId: parent,
         modelName: request.modelName, content, contentBlocks: blocks,
-        meta: { operationMode: control.mode, claudePlanMode: planState.active, ...permissionMeta(), claude: { sessionId: activeSession, messageUuid: uuid ?? null, checkpoint: false, partial } } })
+        meta: { operationMode: control.mode, claudePlanMode: planState.active, claudeUltracode: request.claudeUltracode === true,
+          ...permissionMeta(), claude: { sessionId: activeSession, messageUuid: uuid ?? null, checkpoint: false, partial } } })
       parent = row.id
       finalMessage = row
       if (uuid && activeSession) this.deps.sessions.record(row.id, activeSession, uuid, cwd, false)
@@ -1329,12 +1365,13 @@ export class ClaudeSessionService {
     let unbindTasks: (() => void) | undefined
     try {
       signal?.throwIfAborted()
+      if (disableNativeHooks !== this.nativeHooksDisabled()) throw new Error('Claude Code hook settings changed before this turn started. Send again.')
       const bindings = { canUseTool, hooks, ...(gravitonTools ? { gravitonTool } : {}) }
       if (proc) {
         if (!proc.activate(bindings)) throw new Error('The Claude process ended before this turn started. Send again.')
       } else {
         proc = new ClaudeWarmProcess(params => sdk.query(params), options, bindings, lineageId, launchKey, sessionId ?? null, liveSettings,
-          gravitonTools ? { tools: () => this.gravitonAvailable() } : null)
+          gravitonTools ? { tools: availableGravitonTools } : null)
         if (proc.graviton) {
           const started = proc
           this.gravitonProcesses.add(started)
@@ -1370,6 +1407,10 @@ export class ClaudeSessionService {
       // A reused CLI's turn is this run's only once Claude starts this run's prompt; anything
       // before that is work the CLI started by itself.
       let promptStarted = !warm
+      // A resumed CLI can run a turn of its own before this run's prompt (its notice about
+      // background tasks the previous process left unfinished). That turn's `result` is not ours.
+      let ownPromptStarted = false
+      let lifecycleSeen = false
       while (true) {
         // A warm CLI is idle once the run's input is finished: it stays for the branch's next send.
         if (this.warm.enabled && inputClosed && !abortController.signal.aborted) break
@@ -1381,6 +1422,14 @@ export class ClaudeSessionService {
         if (next.done) break
         const event = next.value
         signal?.throwIfAborted()
+        if ((event as { type: string }).type === 'command_lifecycle') {
+          lifecycleSeen = true
+          const own = event as unknown as { command_uuid: string; state: string }
+          if (own.command_uuid === promptUuid && own.state === 'started') {
+            ownPromptStarted = true
+            clearTimeout(preludeTimer)
+          }
+        }
         if (!promptStarted) {
           const lifecycle = (event as { type: string }).type === 'command_lifecycle' ? event as unknown as { command_uuid: string; state: string } : null
           if (lifecycle?.command_uuid === promptUuid && lifecycle.state === 'started') promptStarted = true
@@ -1590,6 +1639,13 @@ export class ClaudeSessionService {
             compactionEvent('started')
           }
         } else if (event.type === 'result') {
+          // Before this run's prompt started and with nothing produced: the end of a turn the CLI
+          // started itself. The prompt is still queued behind it, so keep reading. Only for a CLI
+          // that reports command lifecycles; otherwise the result is taken as this run's.
+          if (lifecycleSeen && !ownPromptStarted && !finalMessage && !streamedText && !streamedReasoning && !deliveredInputs && !request.manualCompaction) {
+            preludeTimer ??= setTimeout(() => { preludeTimedOut = true; releaseInput() }, QUEUED_START_TIMEOUT_MS)
+            continue
+          }
           if (event.is_error || event.subtype !== 'success') throw new Error(`Claude run failed: ${'errors' in event ? event.errors.join('; ') : event.subtype}`)
           // A main compaction always ends at its boundary or a failed status within the turn.
           if (compactionActive) {
@@ -1614,6 +1670,7 @@ export class ClaudeSessionService {
       // However the loop ended, a stopped run is never a completed one: an earlier turn's
       // `result` must not let a mid-turn row become the resumable checkpoint.
       if (abortController.signal.aborted) throw abortController.signal.reason ?? new Error('Claude run stopped')
+      if (preludeTimedOut) throw new Error('Claude did not start this message. Send it again.')
       if (hookFailure) throw hookFailure
       if (pendingCompactions.length) throw new Error('Claude supplied a summary without a completed compaction boundary')
       if (request.manualCompaction) {
@@ -1668,6 +1725,7 @@ export class ClaudeSessionService {
       }
       throw error
     } finally {
+      clearTimeout(preludeTimer)
       unbindTasks?.()
       liveTaskList = []
       liveProgress.clear()
@@ -1687,7 +1745,7 @@ export class ClaudeSessionService {
       if (proc) {
         // Kept only when it is idle at a completed response with nothing it could still start.
         const keep = parkable && !uncleanInput && !offered.size && !offeredModes.size && !rawTaskCount && !abortController.signal.aborted
-          && Boolean(activeSession) && Boolean(finalMessage)
+          && Boolean(activeSession) && Boolean(finalMessage) && disableNativeHooks === this.nativeHooksDisabled()
         if (keep) this.warm.park(proc, String(finalMessage.id), activeSession!, liveSettings)
         else if (this.warm.enabled) void this.warm.retire(proc)
         else proc.kill()

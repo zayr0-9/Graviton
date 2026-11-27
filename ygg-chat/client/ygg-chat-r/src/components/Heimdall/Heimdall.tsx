@@ -5,7 +5,7 @@ import { isCommittedCompaction } from '../../../../../shared/compaction'
 import { useQueryClient } from '@tanstack/react-query'
 import { isContextInjectionMessage } from '../../../../../shared/contextInjection'
 import 'boxicons/css/boxicons.min.css'
-import { ChevronRight, Flame, Layers, ListFilter, RotateCcw, UnfoldVertical, ZoomIn, ZoomOut } from 'lucide-react'
+import { ChevronRight, Flame, Layers, ListFilter, RotateCcw, Search, UnfoldVertical, ZoomIn, ZoomOut } from 'lucide-react'
 import type { JSX } from 'react'
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AppMarkdown } from '../MarkdownContent/AppMarkdown'
@@ -26,6 +26,7 @@ import { createChatFromSelection, moveSelection } from '../../features/chats/tra
 import { chatSliceActions } from '../../features/chats/chatSlice'
 import { buildBranchPathForMessage } from '../../features/chats/pathUtils'
 import { buildMessageTransferPayload, hasUnselectedDescendants, transferErrorMessage } from '../../features/chats/messageTransfer'
+import { hydrateMessageBodies, withHydratedBodies } from '../../features/chats/messageBodyHydration'
 import { claudeTransferRefusal } from '../../../../../shared/claudeTransfer'
 import { createConversation, deleteConversation, updateCwd } from '../../features/conversations/conversationActions'
 import { makeSelectConversationById } from '../../features/conversations/conversationSelectors'
@@ -53,7 +54,7 @@ import { useCommandBlocker, useCommands } from '../../keyboard/KeyboardProvider'
 import { formatShortcut, isMacKeyboard } from '../../keyboard/commands'
 import { useShortcutOverrides } from '../../keyboard/useShortcutOverrides'
 import { buildKeyboardTree, getKeyboardActivationPath, moveKeyboardNode, resolveKeyboardNode } from './heimdallKeyboard'
-import type { RootState } from '../../store/store'
+import type { AppDispatch, RootState } from '../../store/store'
 import { parseId } from '../../utils/helpers'
 import stripMarkdownToText from '../../utils/markdownStripper'
 import { getCompactionPlaceholder } from '../../features/chats/summaryPresentation'
@@ -63,7 +64,8 @@ import { DeleteConfirmModal } from '../DeleteConfirmModal/DeleteConfirmModal'
 import { buildHeimdallVisibleRoot, isHeimdallScaffoldingMessage, shouldPromoteHeimdallNode } from './heimdallNodeVisibility'
 import { getIntermediateAgentTextIds, hasHeimdallTextContent } from './heimdallAgentTextVisibility'
 import { TextArea } from '../TextArea/TextArea'
-import { TextField } from '../TextField/TextField'
+import { HeimdallSearchPanel } from './HeimdallSearchPanel'
+import type { HeimdallSearchRole } from './heimdallSearch'
 import {
   getThemeModeColor,
   resolveHeimdallNodeThemeKey,
@@ -132,7 +134,6 @@ const HeimdallGraphLayers = React.memo<GraphLayersProps>(({ connections, nodes }
   )
 })
 
-const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
 const NOTE_COLOR_PRESETS = ['#ef4444', '#f97316', '#f59e0b', '#22c55e', '#06b6d4', '#3b82f6', '#8b5cf6', '#ec4899']
 const HEIMDALL_NODE_SELECTED_STROKE_WIDTH = 2.75
@@ -298,6 +299,15 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   const streamingRoot = useSelector((state: RootState) => state.chat.streaming)
   // const selectedProject = useSelector(selectSelectedProject)
   const allMessages = useSelector((state: RootState) => state.chat.conversation.messages)
+  // Transfers copy bodies out of Redux. Rows a branch read shipped compacted (`body_omitted`)
+  // must be hydrated first, or the copy would persist the compacted blocks.
+  const withFullBodies = useCallback(async (ids: readonly MessageId[]): Promise<Message[]> => {
+    const sourceConversationId = conversationId ?? currentConversationId
+    const selected = new Set(ids.map(String))
+    if (sourceConversationId == null || !allMessages.some(message => message.body_omitted && selected.has(String(message.id)))) return allMessages
+    const hydrated = await (dispatch as AppDispatch)(hydrateMessageBodies({ conversationId: sourceConversationId, messageIds: [...selected] })).unwrap()
+    return withHydratedBodies(allMessages, hydrated)
+  }, [allMessages, conversationId, currentConversationId, dispatch])
   // Get current conversation to access project_id
   const currentConversation = useSelector(conversationId ? makeSelectConversationById(conversationId) : () => null)
   const [showConversationSelector, setShowConversationSelector] = useState<boolean>(false)
@@ -886,45 +896,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   // Search UI state
   const [searchQuery, setSearchQuery] = useState<string>('')
   const [searchOpen, setSearchOpen] = useState<boolean>(false)
-  const [searchHoverIndex, setSearchHoverIndex] = useState<number>(-1)
-  const searchTokens = useMemo(() => (searchQuery || '').trim().split(/\s+/).filter(Boolean), [searchQuery])
-  const searchTokensLower = useMemo(() => searchTokens.map(token => token.toLowerCase()), [searchTokens])
-  const filteredResults = useMemo(() => {
-    const q = (searchQuery || '').trim().toLowerCase()
-    if (!q) return [] as { id: MessageId; content: string; role: string; plain: string }[]
-    const res = (plainMessages as any[])
-      .filter(m => {
-        const plain = (m?.content_plain_text || m?.plain_text_content || m?.content || '').toLowerCase()
-        return typeof plain === 'string' && plain.includes(q)
-      })
-      .map(m => ({
-        id: parseId(m.id),
-        content: m.content,
-        role: m.role,
-        plain: m?.content_plain_text || m?.plain_text_content || m?.content || '',
-      }))
-    return res
-  }, [searchQuery, plainMessages])
-  const renderHighlightedText = useCallback(
-    (text: string) => {
-      if (!searchTokens.length) return text
-      const regex = new RegExp(`(${searchTokens.map(escapeRegExp).join('|')})`, 'gi')
-      const parts = (text || '').split(regex)
-      return parts.map((part, idx) =>
-        searchTokensLower.includes(part.toLowerCase()) ? (
-          <mark
-            key={`hl-${idx}`}
-            className='bg-amber-200/70 text-stone-900 dark:bg-amber-400/40 dark:text-amber-100 rounded px-0.5'
-          >
-            {part}
-          </mark>
-        ) : (
-          <span key={`hl-${idx}`}>{part}</span>
-        )
-      )
-    },
-    [searchTokens, searchTokensLower]
-  )
+  const [searchRole, setSearchRole] = useState<HeimdallSearchRole>('all')
   const handleSelectSearchResult = useCallback(
     (item: { id: MessageId }) => {
       if (!item) return
@@ -933,13 +905,11 @@ export const Heimdall: React.FC<HeimdallProps> = ({
       if (path.length > 0) onNodeSelect?.(String(item.id), path.map(String))
       setSearchOpen(false)
       setSearchQuery('')
-      setSearchHoverIndex(-1)
     },
     [onNodeSelect, flatMessages]
   )
   const handleSearchClose = useCallback(() => {
     setSearchOpen(false)
-    setSearchHoverIndex(-1)
   }, [])
   const lastCenteredIdRef = useRef<string | null>(null)
   // Only center when focus comes from the search bar, not other sources
@@ -2558,7 +2528,7 @@ export const Heimdall: React.FC<HeimdallProps> = ({
 
     try {
       setConversationSelectorError(null)
-      const messagesToCopy = buildMessageTransferPayload(allMessages, transferMessageIds)
+      const messagesToCopy = buildMessageTransferPayload(await withFullBodies(transferMessageIds), transferMessageIds)
       // Move must validate and delete exactly the rows included in the copy.
       const idsToTransfer = messagesToCopy.map(message => message.source_id)
 
@@ -2626,14 +2596,14 @@ export const Heimdall: React.FC<HeimdallProps> = ({
   // Create new chat from selected nodes. The menu stays open until it succeeds, so a failure can be shown there.
   const handleCreateNewChat = async (ids: MessageId[]): Promise<void> => {
     if (isCreatingChat) return
-    const messagesToCopy = buildMessageTransferPayload(allMessages, ids)
-    if (messagesToCopy.length === 0) {
+    if (buildMessageTransferPayload(allMessages, ids).length === 0) {
       setShowContextMenu(false)
       return
     }
     setIsCreatingChat(true)
     setTransferNotice(null)
     try {
+      const messagesToCopy = buildMessageTransferPayload(await withFullBodies(ids), ids)
       // Generate title from first message content
       const firstContent = messagesToCopy[0].content
       const title = firstContent.slice(0, 100) + (firstContent.length > 100 ? '...' : '')
@@ -4262,6 +4232,12 @@ export const Heimdall: React.FC<HeimdallProps> = ({
         : undefined,
     [customTheme, customThemeEnabled, heimdallControlButtonStyle, isDarkMode]
   )
+  const heimdallSearchTriggerStyle: React.CSSProperties | undefined = customThemeEnabled
+    ? {
+        backgroundColor: getTranslucentCssColor(getThemeModeColor(customTheme.colors.settingsCustomThemesButtonBg, isDarkMode), 0.85),
+        color: getThemeModeColor(customTheme.colors.settingsCustomThemesButtonText, isDarkMode),
+      }
+    : undefined
   const heimdallContextMenuItemClass = `w-full flex items-center gap-3 px-3 py-2.5 rounded-[14px] text-sm font-medium cursor-pointer transition-[background-color,color,opacity,transform] duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-current group ${
     customThemeEnabled
       ? 'text-stone-500 hover:bg-[var(--heimdall-context-menu-item-hover-bg)] hover:text-[var(--heimdall-context-menu-item-hover-text)] dark:text-neutral-400 dark:hover:bg-[var(--heimdall-context-menu-item-hover-bg)] dark:hover:text-[var(--heimdall-context-menu-item-hover-text)]'
@@ -4420,11 +4396,12 @@ export const Heimdall: React.FC<HeimdallProps> = ({
         <button
           type='button'
           onClick={() => setSearchOpen(true)}
-          className='flex items-center gap-2 rounded-[20px] border border-stone-200/55 bg-white/75 px-3 py-2 text-stone-800 shadow-[0_18px_36px_-22px_rgba(0,0,0,0.18)] backdrop-blur-2xl transition hover:bg-stone-100/80 active:scale-95 dark:border-neutral-700/55 dark:bg-neutral-900/75 dark:text-stone-200 dark:shadow-[0_30px_60px_-12px_rgba(0,0,0,0.6)] dark:hover:bg-neutral-800/80'
-          style={heimdallHoverPreviewStyle}
+          className='flex h-11 items-center gap-2 rounded-full bg-white/85 pl-3.5 pr-4 text-stone-700 backdrop-blur-xl transition-[background-color,color,transform] duration-150 hover:bg-white hover:text-stone-950 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/70 dark:bg-yBlack-900/85 dark:text-stone-200 dark:hover:bg-neutral-900 dark:hover:text-white dark:focus-visible:ring-orange-400/70'
+          style={heimdallSearchTriggerStyle}
+          aria-haspopup='dialog'
         >
-          <i className='bx bx-search text-lg' />
-          <span className='text-sm font-medium'>Search Messages</span>
+          <Search size={18} strokeWidth={2.25} aria-hidden='true' />
+          <span className='text-sm font-medium'>Search messages</span>
         </button>
         {/* <div className='bg-neutral-100 text-stone-800 dark:text-stone-200 px-3 py-1 rounded-lg text-sm border-2 border-stone-300 dark:border-stone-700 drop-shadow-xl shadow-[0_0px_6px_-12px_rgba(0,0,0,0.05)] dark:shadow-[0_-12px_28px_-6px_rgba(0,0,0,0.65)] dark:bg-yBlack-900'>
           Zoom: {Math.round(zoom * 100)}%
@@ -4534,98 +4511,15 @@ export const Heimdall: React.FC<HeimdallProps> = ({
         {graphHasFocus && keyboardEntry ? `${keyboardEntry.node.message.slice(0, 240)}. ${shortcutLabel('heimdall.activate')} to open branch.` : ''}
       </div>
       {searchOpen && (
-        <div
-          className='absolute inset-0 z-30 flex items-center justify-center  bg-black/20 backdrop-blur-[2px] '
-          onClick={handleSearchClose}
-        >
-          <div
-            className='flex max-h-[85vh] w-[95%] max-w-6xl flex-col rounded-[20px] border border-stone-200/55 bg-white/75 shadow-[0_18px_36px_-22px_rgba(0,0,0,0.18)] backdrop-blur-2xl sm:w-[90%] dark:border-neutral-700/55 dark:bg-neutral-900/75 dark:shadow-[0_30px_60px_-12px_rgba(0,0,0,0.6)]'
-            style={heimdallHoverPreviewStyle}
-            onClick={e => e.stopPropagation()}
-            data-heimdall-wheel-exempt='true'
-          >
-            <div className='flex items-center justify-between px-5 py-4 shrink-0'>
-              <div>
-                <h3 className='text-base font-semibold text-stone-800 dark:text-stone-100'>Search Messages</h3>
-                <p className='text-xs text-stone-500 dark:text-stone-400'>Search across this conversation.</p>
-              </div>
-              <button
-                onClick={handleSearchClose}
-                className='p-1.5 hover:bg-black/5 dark:hover:bg-white/10 rounded-full transition-colors'
-                aria-label='Close search'
-              >
-                <svg className='w-5 h-5 text-stone-500' fill='none' viewBox='0 0 24 24' stroke='currentColor'>
-                  <path strokeLinecap='round' strokeLinejoin='round' strokeWidth={2} d='M6 18L18 6M6 6l12 12' />
-                </svg>
-              </button>
-            </div>
-            <div className='px-5 pb-4'>
-              <TextField
-                placeholder='Search for words or phrases'
-                value={searchQuery}
-                onChange={val => {
-                  setSearchQuery(val)
-                  setSearchHoverIndex(-1)
-                }}
-                onKeyDown={e => {
-                  if (e.key === 'ArrowDown') {
-                    e.preventDefault()
-                    setSearchHoverIndex(prev => Math.min(prev + 1, Math.max(0, filteredResults.length - 1)))
-                  } else if (e.key === 'ArrowUp') {
-                    e.preventDefault()
-                    setSearchHoverIndex(prev => Math.max(-1, prev - 1))
-                  } else if (e.key === 'Enter') {
-                    const item = filteredResults[searchHoverIndex >= 0 ? searchHoverIndex : 0]
-                    if (item) {
-                      handleSelectSearchResult(item)
-                    }
-                  } else if (e.key === 'Escape') {
-                    handleSearchClose()
-                  }
-                }}
-                size='small'
-                autoFocus
-                className='bg-white/55 dark:bg-white/10'
-              />
-              {searchQuery.trim() && (
-                <div className='mt-2 text-xs text-stone-500 dark:text-stone-400'>
-                  {`${filteredResults.length} result${filteredResults.length === 1 ? '' : 's'}`}
-                </div>
-              )}
-            </div>
-            <div className='overflow-y-auto flex-1 thin-scrollbar px-5 py-4' data-heimdall-wheel-exempt='true'>
-              {searchQuery.trim() && filteredResults.length === 0 && (
-                <div className='text-sm text-stone-500 dark:text-stone-400'>No matches found.</div>
-              )}
-              {searchQuery.trim() && filteredResults.length > 0 && (
-                <div className='grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3'>
-                  {filteredResults.map((item, idx) => {
-                    const messageText = (item.plain || item.content || '').trim() || '(empty message)'
-                    return (
-                      <button
-                        key={item.id}
-                        type='button'
-                        onClick={() => handleSelectSearchResult(item)}
-                        onMouseEnter={() => setSearchHoverIndex(idx)}
-                        className={`flex flex-col justify-start text-left rounded-xl bg-white/55 dark:bg-white/10 p-3 h-56 max-h-[45vh] sm:h-64 md:h-72 lg:h-80 xl:h-96 shadow-sm hover:bg-white/75 dark:hover:bg-white/15 transition-[background-color,color,opacity,transform] duration-150 ${
-                          idx === searchHoverIndex ? 'ring-2 ring-amber-300/70 dark:ring-amber-400/50' : ''
-                        }`}
-                      >
-                        <div className='flex items-center justify-between text-[11px] uppercase tracking-wide text-stone-500 dark:text-stone-400'>
-                          <span className='font-semibold'>{item.role}</span>
-                          <span>#{idx + 1}</span>
-                        </div>
-                        <div className='mt-2 min-h-0 flex-1 text-sm text-stone-700 dark:text-stone-200 overflow-y-auto thin-scrollbar whitespace-pre-wrap'>
-                          {renderHighlightedText(messageText)}
-                        </div>
-                      </button>
-                    )
-                  })}
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
+        <HeimdallSearchPanel
+          messages={plainMessages}
+          query={searchQuery}
+          onQueryChange={setSearchQuery}
+          role={searchRole}
+          onRoleChange={setSearchRole}
+          onSelect={handleSelectSearchResult}
+          onClose={handleSearchClose}
+        />
       )}
       {showConversationSelector && (
         <div

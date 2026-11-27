@@ -17,13 +17,18 @@ export function startHostChangeClient(queryClient: QueryClient): () => void {
     const domains = new Set(detail.changes?.map(change => change.domain))
     void queryClient.invalidateQueries({ predicate: query => {
       const root = String(query.queryKey[0])
-      if (detail.reset) return ['conversations', 'projects', 'research-notes', 'lineages'].includes(root)
+      if (detail.reset) return ['conversations', 'projects', 'research-notes', 'lineages', 'transcript-revisions'].includes(root)
+      if (root === 'transcript-revisions') return detail.changes?.some(change => change.domain === 'transcript_revisions' &&
+        change.conversation_id === query.queryKey[1] && change.entity_id === query.queryKey[2]) ?? false
+      if (domains.size === 1 && domains.has('transcript_revisions')) return false
       if (root === 'projects') return domains.has('projects')
       if (root === 'research-notes' || root === 'lineages') return domains.has('conversations') || domains.has('messages')
       if (root !== 'conversations') return false
       return query.queryKey[2] !== 'messages' || detail.conversationIds.includes(String(query.queryKey[1]))
     } })
-    window.dispatchEvent(new CustomEvent(HOST_DATA_CHANGED, { detail }))
+    if (detail.reset || domains.size !== 1 || !domains.has('transcript_revisions')) {
+      window.dispatchEvent(new CustomEvent(HOST_DATA_CHANGED, { detail }))
+    }
   }
   const poll = async () => {
     let delay = 1000

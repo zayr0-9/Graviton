@@ -14,7 +14,7 @@ paths:
 
 # Agent Context: Design Patterns
 
-Last reviewed: 2026-07-19
+Last reviewed: 2026-11-25
 
 ## Purpose
 
@@ -129,6 +129,7 @@ When a UI surface is part of the main app experience, make it theme-aware unless
 - Theme surfaces broadly, not just one accent: modal backdrop, modal body, sticky header/footer chrome, section cards, nested panels, primary/muted text, badges, inputs/textareas, icon controls, and selected/toggled states should all be considered.
 - Active/toggled states should usually borrow `composerToggleActive*` tokens. General pill or secondary actions can borrow `settingsCustomThemesButton*`. Primary apply/save actions can borrow `settingsCustomThemesPrimaryButton*` when using native buttons; if a shared `Button` does not support inline style, keep its default variant rather than widening the Button API unnecessarily.
 - Do not hard-code theme-specific colors into new classes when a custom theme token already exists.
+- When a surface needs a calmer, lighter or translucent variant of a token, derive it at render time with `modulateColor` from `src/components/ThemeManager/colorModulation.ts` (saturation multiplier, lightness offset, alpha, mix) rather than adding a token. Keep one spec object per surface so the derivations are tuned in one place; `src/components/ChatMessage/toolCardPalette.ts` is the reference. Keep derived accents few: one or two hues plus neutrals, never a rainbow.
 
 ### Exceptions
 

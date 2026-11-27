@@ -8,13 +8,23 @@ import { useAppDispatch, useAppSelector } from './redux'
 import type { ConversationMessagesTreeData } from '../features/chats/conversationMessagesApi'
 import { coordinateConversationSnapshot } from '../features/chats/conversationSnapshotCoordinator'
 import { conversationQueryKeys } from '../features/chats/conversationQueryKeys'
+import { readViewedTip, saveViewedTip } from '../features/chats/browserViewedTips'
+import { supportsBranchSnapshots } from '../platform/clientCapabilities'
 import type { RootState } from '../store/store'
 
-export function useConversationSnapshotCoordinator(conversationId: ConversationId | null) {
+export function useConversationSnapshotCoordinator(conversationId: ConversationId | null, branchOnly = false) {
   const dispatch = useAppDispatch()
+  // Read at request time: toggling Heimdall (a modal on mobile) must not start a reload by itself.
+  const branchOnlyRef = useRef(branchOnly)
+  branchOnlyRef.current = branchOnly
   const reduxStore = useStore() as Store<RootState>
   const queryClient = useQueryClient()
   const currentConversationId = useAppSelector(state => state.chat.conversation.currentConversationId)
+  const userId = useAppSelector(state => state.users?.currentUser?.id)
+  const visibleTip = useAppSelector(state => supportsBranchSnapshots && state.chat.selection.status === 'ready' ? state.chat.conversation.currentPath.at(-1) : null)
+  useEffect(() => {
+    if (visibleTip && conversationId === currentConversationId) saveViewedTip(userId, String(conversationId), String(visibleTip))
+  }, [userId, visibleTip, conversationId, currentConversationId])
   const selectionRequestId = useAppSelector(state => state.chat.selection.requestId)
   const snapshotConversationId = useAppSelector(state => state.chat.conversation.snapshotConversationId)
   // Each mounted conversation visit owns its callbacks, not just its in-flight requests.
@@ -34,6 +44,7 @@ export function useConversationSnapshotCoordinator(conversationId: ConversationI
       .sort()
       .join('|')
   })
+  const [acceptedRequestId, setAcceptedRequestId] = useState<string | null>(null)
   const [acceptedConversationId, setAcceptedConversationId] = useState<string | null>(null)
   const [data, setData] = useState<ConversationMessagesTreeData | undefined>(() =>
     conversationId == null
@@ -73,7 +84,8 @@ export function useConversationSnapshotCoordinator(conversationId: ConversationI
     // It must not take loading ownership away from the newly mounted conversation.
     if (!visit.active || activeVisitRef.current !== visit || mountedConversationRef.current !== requestedId ||
         String(reduxStore.getState().chat.conversation.currentConversationId ?? '') !== requestedId) return Promise.resolve(undefined)
-    attemptedSelectionRef.current = reduxStore.getState().chat.selection.requestId
+    const requestId = reduxStore.getState().chat.selection.requestId
+    attemptedSelectionRef.current = requestId
     const revision = ++refreshRevisionRef.current
     // Conversation identity alone is insufficient: same-chat refreshes overlap,
     // and an A -> B -> A visit must not revive a request from the earlier visit.
@@ -84,8 +96,11 @@ export function useConversationSnapshotCoordinator(conversationId: ConversationI
     setFailure(null)
     const promise = (async () => {
       try {
+        const wantsBranch = branchOnlyRef.current
         const result = await coordinateConversationSnapshot({
           conversationId,
+          branchOnly: wantsBranch,
+          savedTip: wantsBranch ? readViewedTip(userId, requestedId) : undefined,
           queryClient,
           getState: reduxStore.getState,
           isCurrent: ownsRefresh,
@@ -94,6 +109,7 @@ export function useConversationSnapshotCoordinator(conversationId: ConversationI
         if (result.accepted && ownsRefresh()) {
           setFailure(null)
           setData(result.data)
+          setAcceptedRequestId(requestId)
           setAcceptedConversationId(requestedId)
           setIsFetched(true)
           return result.data
@@ -124,7 +140,7 @@ export function useConversationSnapshotCoordinator(conversationId: ConversationI
     })()
     latestRefreshRef.current = { visit, revision, promise }
     return promise
-  }, [conversationId, dispatch, queryClient, reduxStore, visit])
+  }, [conversationId, userId, dispatch, queryClient, reduxStore, visit])
 
   useEffect(() => {
     if (typeof window === 'undefined') return
@@ -163,9 +179,16 @@ export function useConversationSnapshotCoordinator(conversationId: ConversationI
     autoRefreshRef.current = refresh
     // In-place focus uses the accepted snapshot. A new intent after a failed load
     // must fetch again, but do not duplicate a Retry that already started loading.
-    if (contextChanged || ((acceptedConversationId !== String(conversationId) || String(snapshotConversationId) !== String(conversationId)) &&
+    if (contextChanged || ((branchOnly || acceptedConversationId !== String(conversationId) || String(snapshotConversationId) !== String(conversationId)) &&
         attemptedSelectionRef.current !== selectionRequestId)) void refresh()
-  }, [conversationId, currentConversationId, refresh, selectionRequestId, acceptedConversationId, snapshotConversationId])
+  }, [conversationId, currentConversationId, refresh, branchOnly, selectionRequestId, acceptedConversationId, snapshotConversationId])
+
+  // A full graph is needed only once per visit: when the accepted snapshot is a partial
+  // branch read and a full-graph consumer (Heimdall, parallel pane) opens. Closing it never reloads.
+  const acceptedPartial = acceptedConversationId === (conversationId == null ? null : String(conversationId)) && data?.retained != null
+  useEffect(() => {
+    if (!branchOnly && acceptedPartial) void refresh()
+  }, [branchOnly, acceptedPartial, refresh])
 
   // Terminal reconciliation is independent of stream pruning. The listener records a
   // lease; this transition supplies the persistence retry after the final SSE projection.
@@ -189,7 +212,7 @@ export function useConversationSnapshotCoordinator(conversationId: ConversationI
   [failure, reduxStore, routeConversationId, visit])
   return {
     data: ownsCurrentConversation ? data : undefined,
-    acceptedConversationId: ownsCurrentConversation ? acceptedConversationId : null,
+    acceptedConversationId: ownsCurrentConversation && (!branchOnly || acceptedRequestId === selectionRequestId) ? acceptedConversationId : null,
     isFetched: ownsCurrentConversation && isFetched,
     isFetching: ownsMountedConversation && isFetching,
     error: ownsMountedConversation && failure?.requestId === selectionRequestId ? failure?.error ?? null : null,

@@ -1,7 +1,8 @@
 import type { AppDispatch, RootState } from '../../store/store'
 import type { AgentForkGroup } from '../../hooks/useRunningAgentStreams'
 import { newClientId } from '../../helpers/clientId'
-import { getPendingFullAccessNotification, isFullAccessEnabled } from '../../helpers/fullAccessSettings'
+import { readChatDisplayName } from '../../helpers/chatDisplayName'
+import { resolveLineageFullAccess } from './branchFullAccess'
 import { runningAgentsUiActions as actions } from '../ui/runningAgentsUiSlice'
 import { findFollowUpKey, relatedFollowUpKeys, type AgentFollowUpAttempt } from '../ui/agentFollowUpState'
 import { getAdmissionEpoch } from './runAdmissionClient'
@@ -65,7 +66,8 @@ export const selectAgentFollowUpMode = (fork: AgentForkGroup, key: string, mode:
 export const submitAgentFollowUp = (fork: AgentForkGroup, confirmPolicy = false, selectedDraftKey?: string) =>
   async (dispatch: AppDispatch, getState: () => RootState) => {
     const target = followUpTarget(fork)
-    const drafts = getState().runningAgentsUi.followUps
+    const state = getState()
+    const drafts = state.runningAgentsUi.followUps
     const related = relatedFollowUpKeys(drafts, fork.key, target.streamIds)
     const key = selectedDraftKey && related.includes(selectedDraftKey) ? selectedDraftKey : findFollowUpKey(drafts, fork.key, target.streamIds)
     const draft = drafts[key]
@@ -75,19 +77,20 @@ export const submitAgentFollowUp = (fork: AgentForkGroup, confirmPolicy = false,
     const retry = draft.status === 'unknown' ? draft.attempt : undefined
     const policyAttempt = confirmPolicy && draft.policy !== undefined ? draft.attempt : undefined
     if (!retry && !policyAttempt && (target.reason || !draft.content.trim())) return
+    const access = resolveLineageFullAccess(state.chat, target.run.conversationId!, target.run.lineageIdConfirmed ? target.run.lineageId : null)
     dispatch(actions.followUpPreparing(key))
     let attempt: AgentFollowUpAttempt
     try {
       attempt = retry ?? (policyAttempt ? {
         ...policyAttempt, requestId: newClientId(), preparedTextSubmission: {
-          ...policyAttempt.preparedTextSubmission, fullAccess: draft.policy!,
+          ...policyAttempt.preparedTextSubmission, fullAccess: draft.policy!, fullAccessNotificationId: undefined,
         },
       } : {
         conversationId: target.run.conversationId!, streamId: target.run.streamId,
         content: draft.content, revision: draft.revision, requestId: newClientId(),
+        userDisplayName: readChatDisplayName(),
         ...(draft.operationMode ? { operationMode: draft.operationMode } : {}),
-        preparedTextSubmission: { epoch: await getAdmissionEpoch(), fullAccess: isFullAccessEnabled(),
-          fullAccessNotificationId: getPendingFullAccessNotification(target.run.conversationId!) },
+        preparedTextSubmission: { epoch: await getAdmissionEpoch(), ...access },
       })
     } catch (error) {
       dispatch(actions.followUpSettled({ key, error: error instanceof Error ? error.message : 'Could not contact the host.' }))

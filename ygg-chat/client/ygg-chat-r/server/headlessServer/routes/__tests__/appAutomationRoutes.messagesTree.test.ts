@@ -7,7 +7,8 @@
  */
 import type Database from 'better-sqlite3'
 import express from 'express'
-import type { Server } from 'node:http'
+import { request, type Server } from 'node:http'
+import { gunzipSync } from 'node:zlib'
 import type { AddressInfo } from 'node:net'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { registerAppAutomationRoutes } from '../appAutomationRoutes.js'
@@ -25,6 +26,21 @@ try {
 }
 const describeIfSqlite = BetterSqlite3Ctor ? describe : describe.skip
 
+// Node's fetch adds `Cache-Control: no-cache` to any request given If-None-Match by hand, which
+// rightly disables freshness. Browsers revalidate from their cache without it; mimic that raw.
+const conditional = (url: string, etag: string) => new Promise<{ status: number; body: string }>((resolve, reject) => {
+  const req = request(url, { headers: { 'Accept-Encoding': 'gzip', 'If-None-Match': etag } }, res => {
+    const chunks: Buffer[] = []
+    res.on('data', chunk => chunks.push(chunk))
+    res.on('end', () => {
+      const raw = Buffer.concat(chunks)
+      resolve({ status: res.statusCode ?? 0, body: (raw.length > 0 && res.headers['content-encoding'] === 'gzip' ? gunzipSync(raw) : raw).toString('utf8') })
+    })
+  })
+  req.on('error', reject)
+  req.end()
+})
+
 function createSchema(db: Database.Database): void {
   db.exec(`
     CREATE TABLE users (id TEXT PRIMARY KEY, username TEXT, created_at TEXT);
@@ -38,7 +54,7 @@ function createSchema(db: Database.Database): void {
       children_ids TEXT DEFAULT '[]', role TEXT NOT NULL, content TEXT NOT NULL, plain_text_content TEXT,
       thinking_block TEXT, tool_calls TEXT, tool_call_id TEXT, model_name TEXT DEFAULT 'unknown',
       note TEXT, note_color TEXT, ex_agent_session_id TEXT, ex_agent_type TEXT, content_blocks TEXT,
-      meta TEXT, created_at TEXT
+      meta TEXT, created_at TEXT, revision INTEGER NOT NULL DEFAULT 1
     );
     CREATE TABLE hook_runs (
       id TEXT PRIMARY KEY, conversation_id TEXT, stream_id TEXT, event TEXT NOT NULL, message_id TEXT,
@@ -151,6 +167,78 @@ describeIfSqlite('messages/tree read', () => {
     return { status: res.status, body: await res.json() }
   }
 
+  it('discloses only the requested ancestry and its enrichment, even with a multi-megabyte sibling', async () => {
+    db.prepare(`INSERT INTO messages (id, conversation_id, parent_id, role, content, created_at)
+      VALUES ('fork', 'c1', 'm1', 'assistant', ?, ?)`).run('z'.repeat(4 * 1024 * 1024), at(9000))
+    const { body } = await get('/api/app/conversations/c1/messages/tree?scope=branch&tip=m2')
+    expect(body.messages.map((row: any) => row.id)).toEqual(['m1', 'm2', 'm3'])
+    expect(body.messages[0].attachments).toHaveLength(2)
+    expect(body.messages[0].hook_runs).toHaveLength(505)
+    expect(body.retained).toEqual([['fork', 1]])
+    expect(body.tree).toBeNull()
+    expect(JSON.stringify(body).length).toBeLessThan(512 * 1024)
+    const { body: fallback } = await get('/api/app/conversations/c1/messages/tree?scope=branch&tip=x1')
+    expect(fallback.messages.map((row: any) => row.id)).toEqual(['m1', 'fork'])
+    expect((await get('/api/app/conversations/c-empty/messages/tree?scope=branch')).body).toEqual({ retained: [], messages: [], tree: null })
+  })
+
+  type TreeBlock = { type: string; omitted?: boolean; content?: string }
+  type TreeRow = { id: string; body_omitted?: boolean; body_omitted_chars?: number; content: string; content_blocks: TreeBlock[]; attachments: Array<{ id: string }>; hook_runs: unknown[] }
+  it('compacts large block payloads outside the window, hydrates them on demand and answers 304 when unchanged', async () => {
+    const blocks = JSON.stringify([
+      { type: 'text', index: 0, content: 'kept prose' },
+      { type: 'thinking', index: 1, content: 't'.repeat(500) },
+      { type: 'tool_use', index: 2, id: 't9', name: 'read_file', input: { path: '/tmp/x', data: 'y'.repeat(5000) } },
+      { type: 'tool_result', index: 3, tool_use_id: 't9', content: 'z'.repeat(20000), is_error: false },
+      { type: 'context_usage', index: 4, usage: { usedTokens: 1 } },
+    ])
+    const insert = db.prepare(`INSERT INTO messages (id, conversation_id, parent_id, children_ids, role, content, content_blocks, created_at) VALUES (?, ?, ?, '[]', ?, ?, ?, ?)`)
+    insert.run('big', 'c1', 'm3', 'assistant', '', blocks, at(4000))
+    insert.run('tail', 'c1', 'big', 'user', 'latest', null, at(5000))
+
+    const { body } = await get('/api/app/conversations/c1/messages/tree?scope=branch&tip=tail&window=1')
+    expect(body.messages.map((row: TreeRow) => [row.id, row.body_omitted ?? false])).toEqual([['m1', false], ['m2', false], ['m3', false], ['big', true], ['tail', false]])
+    const big = body.messages[3]
+    expect(big.body_omitted_chars).toBeGreaterThan(25000)
+    expect(big.content_blocks.map((block: TreeBlock) => [block.type, block.omitted ?? false])).toEqual([
+      ['text', false], ['thinking', true], ['tool_use', true], ['tool_result', true], ['context_usage', false],
+    ])
+    expect(big.content_blocks[0].content).toBe('kept prose')
+    expect(big.content_blocks[1].content).toBe('t'.repeat(160))
+    expect(big.content_blocks[2]).toEqual({ type: 'tool_use', index: 2, id: 't9', name: 'read_file', input: { path: '/tmp/x' }, omitted: true })
+    expect(big.content_blocks[3]).toEqual({ type: 'tool_result', index: 3, tool_use_id: 't9', is_error: false, omitted: true })
+    expect(JSON.stringify(big).length).toBeLessThan(2048)
+    // Small rows outside the window are not flagged: nothing was dropped from them.
+    expect(body.messages[1].content_blocks).toEqual(JSON.parse(statements.getMessagesByConversationId.all('c1')[1].content_blocks))
+
+    const wide = await get('/api/app/conversations/c1/messages/tree?scope=branch&tip=tail&window=10')
+    expect(wide.body.messages.some((row: TreeRow) => row.body_omitted)).toBe(false)
+    const full = await get('/api/app/conversations/c1/messages/tree?scope=branch&tip=tail')
+    expect(full.body.messages.some((row: TreeRow) => row.body_omitted)).toBe(false)
+
+    const { status, body: bodies } = await get('/api/app/conversations/c1/messages/bodies?ids=big,m1,missing')
+    expect(status).toBe(200)
+    expect(bodies.messages.map((row: TreeRow) => row.id)).toEqual(['m1', 'big'])
+    expect(bodies.messages[1].content_blocks).toEqual(JSON.parse(blocks))
+    expect(bodies.messages[1].body_omitted).toBeUndefined()
+    expect(bodies.messages[0].attachments.map((a: { id: string }) => a.id)).toEqual(['att-a', 'att-b'])
+    expect(bodies.messages[0].hook_runs).toHaveLength(505)
+    expect((await get('/api/app/conversations/c1/messages/bodies')).status).toBe(400)
+
+    const url = `${baseUrl}/api/app/conversations/c1/messages/tree?scope=branch&tip=tail&window=1`
+    const first = await fetch(url, { headers: { 'Accept-Encoding': 'gzip' } })
+    expect(first.headers.get('cache-control')).toBe('private, no-cache')
+    const etag = first.headers.get('etag')
+    expect(etag).toBeTruthy()
+    const unchanged = await conditional(url, etag!)
+    expect(unchanged.status).toBe(304)
+    expect(unchanged.body).toBe('')
+    db.prepare(`UPDATE messages SET content = 'edited' WHERE id = 'tail'`).run()
+    const changed = await conditional(url, etag!)
+    expect(changed.status).toBe(200)
+    expect(JSON.parse(changed.body).messages.at(-1).content).toBe('edited')
+  })
+
   it('attaches the same attachment rows, in the same order, as the per-message query did', async () => {
     const { status, body } = await get('/api/app/conversations/c1/messages/tree')
     expect(status).toBe(200)
@@ -168,6 +256,17 @@ describeIfSqlite('messages/tree read', () => {
     expect(m3.attachments.map((a: any) => a.id)).toEqual(['att-a'])
     // The grouping key must not leak into the attachment objects.
     expect(Object.keys(m1.attachments[0])).not.toContain('link_message_id')
+  })
+
+  it('negotiates gzip for large finite snapshots without changing their decoded shape', async () => {
+    const url = `${baseUrl}/api/app/conversations/c1/messages/tree?scope=branch`
+    const compressed = await fetch(url, { headers: { 'Accept-Encoding': 'gzip' } })
+    const identity = await fetch(url, { headers: { 'Accept-Encoding': 'identity' } })
+    expect(compressed.headers.get('content-encoding')).toBe('gzip')
+    expect(compressed.headers.get('vary')).toContain('Accept-Encoding')
+    expect(identity.headers.get('content-encoding')).toBeNull()
+    expect(Number(compressed.headers.get('content-length'))).toBeLessThan(Number(identity.headers.get('content-length')))
+    expect(await compressed.json()).toEqual(await identity.json())
   })
 
   it('parses JSON columns and builds the tree and meta as before', async () => {

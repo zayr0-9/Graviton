@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import type { ContentBlock, HookRunRecord, StreamEvent } from '../../features/chats/chatTypes'
 import { AgentSteps } from './AgentSteps'
-import { getAgentProgress, partitionAgentItems, splitLiveAgentEvents, hasTrailingAgentProse, canAttachLiveAgentGroup, buildStreamRenderItems, trailingAgentGroupKey, resolveActivityIndicatorOwner, resolveTrailingStatusGroupKey, type ActivityItem } from './agentActivity'
+import { getAgentProgress, partitionAgentItems, splitLiveAgentEvents, canAttachLiveAgentGroup, buildStreamRenderItems, trailingAgentGroupKey, resolveActivityIndicatorOwner, resolveTrailingStatusGroupKey, type ActivityItem } from './agentActivity'
 import { estimateMessageRowHeight } from './estimateMessageHeight'
 
 const item = (key: string, kind: ActivityItem['kind']): ActivityItem => ({ key, kind })
@@ -25,20 +25,17 @@ describe('continuing agent history', () => {
     const groups = partitionAgentItems([item('a', 'process'), item('rule', 'activity'), item('answer', 'other'), item('error', 'other'), item('html', 'other'), item('b', 'process')])
     expect(groups.map(group => group.key)).toEqual(['a', 'answer', 'error', 'html', 'b'])
   })
-  it('does not swallow short final answers or standalone context', () => {
+  it('keeps standalone context and all visible text outside history', () => {
     expect(partitionAgentItems([item('rule', 'activity')])).toEqual([item('rule', 'activity')])
-    const answer = { ...item('answer', 'other'), ignoreForProcessRunGrouping: true }
-    expect(partitionAgentItems([item('a', 'process'), answer]).map(part => part.key)).toEqual(['a', 'answer'])
-  })
-  it('keeps short final prose outside even when context follows it', () => {
-    const answer = { ...item('answer', 'other'), ignoreForProcessRunGrouping: true }
-    expect(partitionAgentItems([item('a', 'process'), answer, item('rule', 'activity')]).map(part => part.key)).toEqual(['a', 'answer', 'rule'])
-    expect(hasTrailingAgentProse([tool('a'), { type: 'text', content: 'Done.', index: 1 }, context])).toBe(true)
-    expect(hasTrailingAgentProse([{ type: 'text', content: 'Inspecting.', index: 0 }, tool('a'), context])).toBe(false)
-  })
-  it('retains leading annotations inside a run without swallowing trailing prose', () => {
-    const annotation = { ...item('note', 'other'), ignoreForProcessRunGrouping: true }
-    expect(partitionAgentItems([annotation, item('a', 'process')])).toHaveLength(1)
+    const events: StreamEvent[] = [{ type: 'reasoning', delta: 'First thought' }, { type: 'text', delta: 'OK' },
+      { type: 'reasoning', delta: 'Second thought' }, call('a'), result('a')]
+    const items = buildStreamRenderItems(events)
+    expect(partitionAgentItems(items)).toEqual([
+      { key: items[0].key, history: items.slice(0, 1), activity: [] },
+      items[1],
+      { key: items[2].key, history: items.slice(2), activity: [] },
+    ])
+    expect(splitLiveAgentEvents(events)).toEqual({ process: events.slice(0, 1), outside: events.slice(1) })
   })
 })
 
@@ -65,6 +62,22 @@ describe('live projection ownership', () => {
     const split = splitLiveAgentEvents(events)
     expect(split.process).toEqual(events.slice(0, 2))
     expect(split.outside).toEqual(events.slice(2))
+  })
+  it('moves a custom app and its late HTML result outside the attached history without moving earlier results', () => {
+    const app = call('app', 'custom_app')
+    const html: StreamEvent = { type: 'tool_result', toolResult: { tool_use_id: 'app', content: { html: '<p>App</p>' }, is_error: false } }
+    const prior = call('earlier')
+    const subsequent = call('later')
+    const latePrior = result('earlier')
+    const events = [prior, app, subsequent, latePrior, html]
+    const split = splitLiveAgentEvents(events)
+    expect(split.process).toEqual([prior, latePrior])
+    expect(split.outside).toEqual([app, subsequent, html])
+    expect(buildStreamRenderItems(split.outside)).toMatchObject([
+      { source: 'tool', kind: 'other', group: { id: 'app', results: [{ content: { html: '<p>App</p>' } }] } },
+      { source: 'tool', kind: 'process', group: { id: 'later' } },
+    ])
+    expect(buildStreamRenderItems([app, result('app')])).toMatchObject([{ kind: 'process' }])
   })
   it('keeps errors outside, including ones followed by a tool result', () => {
     const events: StreamEvent[] = [call('a'), { type: 'error' }, result('a')]
@@ -110,6 +123,19 @@ describe('attached activity rendering', () => {
     expect(html).toContain('Tool history')
     expect(html).toContain('Hook passed')
     expect(html.match(/data-agent-steps/g)).toHaveLength(1)
+  })
+  it('estimates an HTML app outside grouped steps, including before its body hydrates', () => {
+    const estimate = (contentBlocks: ContentBlock[], groupToolReasoningRuns = true) => estimateMessageRowHeight({
+      role: 'assistant', content: '', contentBlocks, containerWidth: 720, rootFontSize: 16, fontSizeOffset: 0,
+      groupToolReasoningRuns, artifactCount: 0, showsActionsRow: false,
+    })
+    const app: ContentBlock = { type: 'tool_use', id: 'app', name: 'custom_app', input: {}, index: 1 }
+    const result: ContentBlock = { type: 'tool_result', tool_use_id: 'app', index: 2, content: { html: '<p>App</p>' }, is_error: false }
+    const numeric: ContentBlock = { ...result, content: { count: 1 } }
+    const compact: ContentBlock = { ...result, content: undefined, html_omitted: true }
+    expect(estimate([tool('work'), app, result])).toBeGreaterThan(estimate([tool('work'), app, numeric]) + 800)
+    expect(estimate([tool('work'), app, compact])).toBe(estimate([tool('work'), app, result]))
+    expect(estimate([tool('work'), app, result], false)).toBe(estimate([tool('work'), app, result]))
   })
   it('estimates attached context without adding a second group header', () => {
     const estimate = (blocks: ContentBlock[]) => estimateMessageRowHeight({ role: 'assistant', content: '', contentBlocks: blocks, containerWidth: 720, rootFontSize: 16, fontSizeOffset: 0, groupToolReasoningRuns: true, artifactCount: 0, showsActionsRow: false })

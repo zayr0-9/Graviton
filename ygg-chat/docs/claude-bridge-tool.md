@@ -1,5 +1,6 @@
 ---
 paths:
+  - "shared/builtinToolDefinitions.ts"
   - "client/ygg-chat-r/server/tools/claudeBridge.ts"
   - "client/ygg-chat-r/server/tools/claudeBridge.test.ts"
   - "client/ygg-chat-r/server/tools/claudeSessionStore.ts"
@@ -11,6 +12,10 @@ paths:
 # Claude bridge
 
 `claude_bridge` is a built-in, headless tool for continued code-review conversations with the Claude Code CLI installed on the **server machine**. It uses the CLI's existing authentication; Graviton does not collect a Claude token. Messages and inspected code are processed through the CLI's configured account/provider and consume normal Claude usage.
+
+## What to include in a review request
+
+Give Claude the business goal, expected behavior, acceptance criteria, and constraints, plus the relevant files or architecture and the specific review scope. Include the diff and known test results when available, distinguish assumptions from facts, and leave out secrets. For follow-ups, carry forward the requirements that still matter and explain what changed. Claude cannot see the current Graviton chat or run `git`, so send relevant diffs explicitly.
 
 ## Find a conversation by its human name
 
@@ -46,16 +51,16 @@ A live CLI registry entry with an existing process blocks direct resume (idle te
 
 ```json
 {"action":"models"}
-{"action":"start","name":"Patch review","model":"haiku","message":"Review this diff."}
-{"action":"send","name":"Patch review","model":"sonnet","message":"Check the concurrency risks more deeply."}
-{"action":"fork","name":"Patch review","newName":"Independent review","model":"opus","message":"Recheck the conclusions."}
+{"action":"start","name":"Patch review","model":"haiku","message":"Goal: prevent duplicate submissions. The route must return the same receipt for retried requests without changing its response shape. Review the admission guard and its concurrency test. Diff: <relevant diff>. Tests: <observed results>."}
+{"action":"send","name":"Patch review","model":"sonnet","message":"For the duplicate-submission fix, check that simultaneous retries also return the same receipt. Focus on the admission guard; no code changed since the last review."}
+{"action":"fork","name":"Patch review","newName":"Independent review","model":"claude-fable-5-2","message":"Independently check whether the admission guard prevents duplicate submissions and preserves the response shape. Review the diff above and call out missing concurrency coverage."}
 ```
 
 `model` accepts a CLI alias or a full provider model ID on `start`, `send`, `resume`, and `fork`. The selection persists in bridge metadata and survives restarts. A later `send` can switch models **between turns**, retaining the same session ID and history. Running jobs cannot be switched. `resume` without a message can set the next-turn choice without inference. A fork inherits an attached source's bridge override unless explicitly overridden; external sessions without a bridge choice use the CLI's normal restored/default model behavior.
 
 Omitting `model` retains the bridge choice; if none exists, no `--model` flag is passed. Explicit `model:"default"` uses Claude's runtime default rather than the prior override, and persists that choice for later launches. This does not change the user's global Claude settings.
 
-`models` returns a **documented catalog**, not verified account entitlements; it does not run inference or install an SDK. Verified against [official model configuration](https://code.claude.com/docs/en/model-config) on 2026-10-16: `sonnet`, `opus`, `haiku`, `fable`, `best`, `default`, extended-context aliases, and `opusplan`. Current direct Anthropic IDs include `claude-sonnet-5-5`, `claude-opus-5-5`, `claude-haiku-5-5`, and `claude-fable-5-1`. Aliases can resolve differently with provider, CLI version and settings. Haiku, Sonnet and Opus were live-tested on CLI 2.1.301, including a Haiku-to-Sonnet switch preserving history and an Opus fork. Other catalog entries are documented, not individually live-tested. The public CLI help has no model-list command; the Agent SDK has model discovery, but this direct-process bridge does not depend on that SDK or its control protocol.
+`models` returns a **documented catalog**, not verified account entitlements; it does not run inference or install an SDK. Verified against [official model configuration](https://code.claude.com/docs/en/model-config) on 2026-10-16: `sonnet`, `opus`, `haiku`, `fable`, `best`, `default`, extended-context aliases, and `opusplan`. The catalog also lists `claude-fable-5-2` as an explicit selection: set `model:"claude-fable-5-2"` to request Fable 5.2 without relying on the `fable` alias. Aliases can resolve differently with provider, CLI version and settings. Haiku, Sonnet and Opus were live-tested on CLI 2.1.301, including a Haiku-to-Sonnet switch preserving history and an Opus fork. Other catalog entries are documented, not individually live-tested. The public CLI help has no model-list command; the Agent SDK has model discovery, but this direct-process bridge does not depend on that SDK or its control protocol.
 
 **Fable and `best` can bill additional usage credits without a consent prompt in non-interactive mode.** Organization policy, account access and provider availability still apply. `opusplan` refers to Claude's permission mode, not Graviton's Chat/Agent mode; this bridge always uses `dontAsk`.
 

@@ -33,7 +33,8 @@ export async function initializeHostExecutionPreferences(): Promise<void> {
 }
 export async function refreshHostExecutionPreferences(): Promise<void> {
   if (isNativeShell) { install(await window.electronAPI!.executionPreferences.read()); return }
-  const response = await fetch(await buildLocalApiUrl('/host/execution-preferences'), { cache: 'no-store', signal: AbortSignal.timeout(10000) })
+  // `no-cache` revalidates with the host's ETag on every poll: an unchanged body costs a 304, not ~80 KB.
+  const response = await fetch(await buildLocalApiUrl('/host/execution-preferences'), { cache: 'no-cache', signal: AbortSignal.timeout(10000) })
   if (!response.ok) throw new Error('Host settings unavailable')
   install(await response.json())
 }
@@ -42,7 +43,7 @@ export async function saveHostExecutionPreference(patch: Partial<HostExecutionPr
   if (snapshot.repairNeeded) throw new Error(snapshot.repairNeeded)
   const keys = Object.keys(patch) as Array<keyof HostExecutionPreferences>
   const expectedRevisions = snapshot.revisions ? Object.fromEntries(keys.map(key => [key,
-    (key === 'provider' || key === 'subagent' || key === 'modePrompts' || key === 'toolTimeouts' || key === 'hookGeneration' || key === 'claudeMcp') ? expectedRevision : snapshot!.revisions![key]])) : undefined
+    (key === 'provider' || key === 'subagent' || key === 'modePrompts' || key === 'toolTimeouts' || key === 'hookGeneration' || key === 'claudeMcp' || key === 'allowClaudeNativeHooks') ? expectedRevision : snapshot!.revisions![key]])) : undefined
   const request = { hostId: snapshot.hostId, epoch: snapshot.epoch, expectedRevision, expectedRevisions, patch }
   if (isNativeShell) { install(await window.electronAPI!.executionPreferences.save(request)); return }
   const response = await fetch(await buildLocalApiUrl('/host/execution-preferences'), {

@@ -1,14 +1,19 @@
 import { createSlice, current, PayloadAction } from '@reduxjs/toolkit'
 import { composerApprovalHandoff, composerProvider, loadBranchToolApprovalDrafts, resolveComposerToolApproval, saveBranchToolApprovalDrafts } from './branchToolApproval'
 import { loadBranchFastModeDrafts, saveBranchFastModeDrafts } from './branchFastMode'
+import { composerFullAccessTarget, type FullAccessSubmission } from './branchFullAccess'
+import { loadClaudeUltracodeDrafts, saveClaudeUltracodeDrafts } from './branchUltracode'
+import { newClientId } from '../../helpers/clientId'
+import { loadBranchReasoningDrafts, saveBranchReasoningDrafts } from './branchReasoning'
+import type { ReasoningLevel } from '../../../../../shared/reasoningLevel'
 import { loadClaudePlanModeDrafts, saveClaudePlanModeDrafts, withClaudePlanModeDraft } from './branchPlanMode'
 import { loadClaudeAutoModeDrafts, saveClaudeAutoModeDrafts, withClaudeAutoModeDraft } from './branchClaudeAutoMode'
-import { branchModelKey, loadBranchModelDrafts, saveBranchModelDrafts, type BranchModelSelection } from './branchModelSelection'
+import { branchModelKey, branchSettingsTarget, lineageSettingsKey, loadBranchModelDrafts, saveBranchModelDrafts, type BranchModelSelection } from './branchModelSelection'
 import { normalizeChatErrorEnvelope } from '../../../../../shared/chatErrors'
 import providersList from '../../../../../shared/providers.json'
 import { ConversationId, MessageId } from '../../../../../shared/types'
 import type { HeadlessBackgroundTask } from '../../../../../shared/headlessApi'
-import { type ClaudeToolApproval, loadClaudeToolApprovalDefault, loadClaudeUltracode, loadDefaultToolAutoApprove, saveClaudeUltracode } from '../../helpers/toolApprovalSettingsStorage'
+import { type ClaudeToolApproval, loadClaudeToolApprovalDefault, loadDefaultToolAutoApprove } from '../../helpers/toolApprovalSettingsStorage'
 import { parseId } from '../../utils/helpers'
 import { isStreamContinuationTail } from './streamContinuationTail'
 import { canFollowSelectedTip } from './followSelectedTip'
@@ -278,7 +283,8 @@ const makeInitialState = (): ChatState => {
     planClarificationRequestsByStream: {},
     toolAutoApprove: loadDefaultToolAutoApprove(),
     ...claudeToolApprovalState(loadClaudeToolApprovalDefault()),
-    claudeUltracode: loadClaudeUltracode(),
+    claudeUltracodeDrafts: loadClaudeUltracodeDrafts(),
+    branchFullAccessChoices: {},
     claudePlanModeDrafts: loadClaudePlanModeDrafts(),
     claudeAutoModeDrafts: loadClaudeAutoModeDrafts(),
     operationMode: 'plan',
@@ -286,6 +292,7 @@ const makeInitialState = (): ChatState => {
     operationModeDrafts: {},
     branchModelDrafts: loadBranchModelDrafts(),
     branchFastModeDrafts: loadBranchFastModeDrafts(),
+    branchReasoningDrafts: loadBranchReasoningDrafts(),
     branchToolApprovalDrafts: loadBranchToolApprovalDrafts(),
     messageQueues: {},
     // Tier-2 failures that have no persisted assistant message to live on. Deliberately
@@ -571,6 +578,19 @@ export const chatSlice = createSlice({
       const anchor = currentLineageId ? `lineage:${currentLineageId}` : currentPath.at(-1)
       state.branchFastModeDrafts[branchModelKey(currentConversationId, anchor)] = action.payload
       saveBranchFastModeDrafts(state.branchFastModeDrafts)
+    },
+    branchReasoningSelected: (state, action: PayloadAction<ReasoningLevel>) => {
+      if (state.composition.editingBranch) {
+        state.composition.branchEditModes ??= {}
+        state.composition.branchEditModes.reasoningLevel = action.payload
+        return
+      }
+      const { currentConversationId, currentPath, currentLineageId } = state.conversation
+      if (!currentConversationId) return
+      state.branchReasoningDrafts ??= {}
+      const anchor = currentLineageId ? `lineage:${currentLineageId}` : currentPath.at(-1)
+      state.branchReasoningDrafts[branchModelKey(currentConversationId, anchor)] = action.payload
+      saveBranchReasoningDrafts(state.branchReasoningDrafts)
     },
     //provider management
     providerSelected: (state, action: PayloadAction<string>) => {
@@ -1533,6 +1553,26 @@ export const chatSlice = createSlice({
       }
     },
 
+    /** Installs full bodies for rows a branch read shipped compacted. Unknown, already full or newer rows are left alone. */
+    messageBodiesHydrated: (state, action: PayloadAction<{ conversationId: ConversationId; messages: Message[] }>) => {
+      if (String(state.conversation.currentConversationId ?? '') !== String(action.payload.conversationId)) return
+      const incoming = new Map(action.payload.messages.map(message => [String(message.id), message]))
+      state.conversation.messages = state.conversation.messages.map(existing => {
+        const fetched = incoming.get(String(existing.id))
+        if (!fetched || !existing.body_omitted) return existing
+        if (typeof existing.revision === 'number' && typeof fetched.revision === 'number' && fetched.revision < existing.revision) return existing
+        const row: Message = {
+          ...existing,
+          ...fetched,
+          artifacts: existing.artifacts?.length ? existing.artifacts : fetched.artifacts ?? [],
+          pastedContext: existing.pastedContext?.length ? existing.pastedContext : fetched.pastedContext ?? [],
+        }
+        delete row.body_omitted
+        delete row.body_omitted_chars
+        return row
+      })
+    },
+
     messageDeleted: (state, action: PayloadAction<MessageId>) => {
       const id = action.payload
       const deleted = new Set<MessageId>([id])
@@ -1885,6 +1925,11 @@ export const chatSlice = createSlice({
     },
 
     toolPermissionRequested: (state, action: PayloadAction<ToolCallPermissionRequest>) => {
+      if (action.payload.transcriptRevision && action.payload.streamId) {
+        state.transcriptRevisionRequestsByStream ??= {}
+        state.transcriptRevisionRequestsByStream[action.payload.streamId] = action.payload
+        return
+      }
       state.toolCallPermissionRequest = action.payload
       if (action.payload.streamId) state.toolPermissionRequestsByStream[action.payload.streamId] = action.payload
     },
@@ -1928,6 +1973,7 @@ export const chatSlice = createSlice({
 
     decisionSettled: (state, action: PayloadAction<{ streamId: string; toolCallId: string }>) => {
       const { streamId, toolCallId } = action.payload
+      if (state.transcriptRevisionRequestsByStream?.[streamId]?.toolCallId === toolCallId) delete state.transcriptRevisionRequestsByStream[streamId]
       if (state.toolPermissionRequestsByStream[streamId]?.toolCallId === toolCallId) delete state.toolPermissionRequestsByStream[streamId]
       if (state.operationModeUpgradeRequestsByStream[streamId]?.toolCallId === toolCallId) delete state.operationModeUpgradeRequestsByStream[streamId]
       if (state.planClarificationRequestsByStream[streamId]?.toolCallId === toolCallId) delete state.planClarificationRequestsByStream[streamId]
@@ -1942,6 +1988,7 @@ export const chatSlice = createSlice({
         if (change.streamId === streamId) delete state.operationModeChanges[key]
       }
       delete state.toolPermissionRequestsByStream[streamId]
+      if (state.transcriptRevisionRequestsByStream) delete state.transcriptRevisionRequestsByStream[streamId]
       delete state.operationModeUpgradeRequestsByStream[streamId]
       delete state.planClarificationRequestsByStream[streamId]
       if (state.toolCallPermissionRequest?.streamId === streamId) state.toolCallPermissionRequest = null
@@ -1986,8 +2033,61 @@ export const chatSlice = createSlice({
     },
 
     claudeUltracodeSet: (state, action: PayloadAction<boolean>) => {
-      state.claudeUltracode = action.payload
-      saveClaudeUltracode(action.payload)
+      if (state.selection?.status === 'pending' || state.selection?.status === 'error') return
+      if (state.composition.editingBranch) {
+        state.composition.branchEditModes ??= {}
+        state.composition.branchEditModes.claudeUltracode = action.payload
+        return
+      }
+      const { key, mismatch } = branchSettingsTarget(state)
+      if (key == null || mismatch) return
+      state.claudeUltracodeDrafts ??= {}
+      state.claudeUltracodeDrafts[key] = action.payload
+      saveClaudeUltracodeDrafts(state.claudeUltracodeDrafts)
+    },
+
+    branchFullAccessSelected: {
+      prepare(enabled: boolean) {
+        return { payload: { fullAccess: enabled, fullAccessNotificationId: enabled ? newClientId() : undefined } }
+      },
+      reducer(state, action: PayloadAction<FullAccessSubmission>) {
+        if (state.selection?.status === 'pending' || state.selection?.status === 'error' ||
+          state.conversation.currentConversationId == null || isClaudeProvider(composerProvider(state))) return
+        if (state.composition.editingBranch) {
+          state.composition.branchEditModes ??= {}
+          state.composition.branchEditModes.fullAccess = action.payload
+          return
+        }
+        const key = composerFullAccessTarget(state)
+        if (key == null) return
+        state.branchFullAccessChoices ??= {}
+        state.branchFullAccessChoices[key] = action.payload
+      },
+    },
+
+    // A first send, provider handoff or edit can acquire a new lineage. Only move the
+    // exact submitted opt-in; a toggle/navigation while the request was in flight must win.
+    branchFullAccessRunStarted: (state, action: PayloadAction<{
+      conversationId: string; lineageId: string; sourceKey: string | null; requestId: string
+    }>) => {
+      const { conversationId, lineageId, sourceKey, requestId } = action.payload
+      const key = lineageSettingsKey(conversationId, lineageId)
+      state.branchFullAccessChoices ??= {}
+      if (sourceKey !== null) {
+        if (sourceKey === key || state.branchFullAccessChoices[sourceKey]?.fullAccessNotificationId !== requestId) return
+        delete state.branchFullAccessChoices[sourceKey]
+      }
+      state.branchFullAccessChoices[key] ??= { fullAccess: true, fullAccessNotificationId: requestId }
+    },
+
+    branchFullAccessNoticePersisted: (state, action: PayloadAction<string>) => {
+      // Request IDs are unique to an opt-in. Late acknowledgements cannot clear another choice.
+      for (const access of Object.values(state.branchFullAccessChoices ?? {})) {
+        if (access.fullAccessNotificationId === action.payload) {
+          delete access.fullAccessNotificationId
+          break
+        }
+      }
     },
 
     // Plan mode belongs to the branch: the choice is kept at the selected tip (or the edit being
@@ -2269,9 +2369,11 @@ export const chatSlice = createSlice({
         })),
       }
       next.toolPermissionRequestsByStream = state.toolPermissionRequestsByStream
+      next.transcriptRevisionRequestsByStream = state.transcriptRevisionRequestsByStream
       next.operationModeUpgradeRequestsByStream = state.operationModeUpgradeRequestsByStream
       next.planClarificationRequestsByStream = state.planClarificationRequestsByStream
       next.messageQueues = state.messageQueues
+      next.branchFullAccessChoices = state.branchFullAccessChoices
       next.operationModeChanges = state.operationModeChanges
       next.errorNotices = state.errorNotices
       next.composition.sending = state.composition.sending

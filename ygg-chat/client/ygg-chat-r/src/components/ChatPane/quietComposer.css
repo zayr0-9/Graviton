@@ -45,7 +45,7 @@
 .quiet-agents-slot { display: flex; flex: 0 0 44px; }
 .quiet-notice-slot { position: absolute; top: calc(100% + 6px); left: 0; right: 0; z-index: 40; }
 .quiet-agent-notice { width: 100%; padding: 12px 16px; border-radius: 20px; text-align: left; font-size: 13px; }
-.quiet-agents-backdrop { position: fixed; inset: 0; z-index: 1499; background: rgb(0 0 0 / .2); }
+.quiet-agents-backdrop { position: fixed; inset: 0; z-index: 1499; background: transparent; }
 .agents-pill[data-quiet-panel='true'] { inset: max(8px, env(safe-area-inset-top)) 8px auto !important; width: auto !important; max-height: calc(100dvh - 16px); height: auto !important; overflow-y: auto; }
 .agents-pill[data-quiet-panel='true'] > div > div { width: 100% !important; }
 .agents-pill[data-quiet-panel='true'][hidden] { display: none; }

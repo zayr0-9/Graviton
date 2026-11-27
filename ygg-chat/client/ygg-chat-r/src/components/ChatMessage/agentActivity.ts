@@ -1,17 +1,9 @@
 import type { ContentBlock, HookRunRecord, StreamEvent } from '../../features/chats/chatTypes'
-import { buildToolCallGroupsFromStream, isExcludedFromProcessRunGrouping, type ToolCallRenderGroup } from './chatMessageShared'
-
-export const isProcessRunSeparatorText = (text: string): boolean => {
-  const trimmed = text.trim()
-  if (!trimmed) return true
-  if (trimmed.startsWith('#') || trimmed.startsWith('```')) return false
-  return trimmed.split(/\s+/).filter(Boolean).length <= 12
-}
+import { buildToolCallGroupsFromStream, hasHtmlToolResult, isExcludedFromProcessRunGrouping, type ToolCallRenderGroup } from './chatMessageShared'
 
 export interface ActivityItem {
   key: string
   kind: 'process' | 'activity' | 'other'
-  ignoreForProcessRunGrouping?: boolean
 }
 
 /** Attachments do not end a process run, but prose, errors and interactive output do. */
@@ -19,18 +11,13 @@ export function partitionAgentItems<T extends ActivityItem>(items: T[]): Array<{
   const groups: Array<{ key: string; history: T[]; activity: T[] } | T> = []
   let pending: T[] = []
   const flush = () => {
-    // Attachments after prose must not make a short final answer look like an annotation.
-    const lastProcess = pending.reduce((last, item, index) => item.kind === 'process' ? index : last, -1)
-    const firstTrailingText = pending.findIndex((item, index) => index > lastProcess && item.kind === 'other')
-    const trailing = firstTrailingText >= 0 ? pending.splice(firstTrailingText) : []
     if (pending.some(item => item.kind === 'process')) {
-      groups.push({ key: pending[0].key, history: pending.filter(item => item.kind !== 'activity'), activity: pending.filter(item => item.kind === 'activity') })
+      groups.push({ key: pending[0].key, history: pending.filter(item => item.kind === 'process'), activity: pending.filter(item => item.kind === 'activity') })
     } else groups.push(...pending)
-    groups.push(...trailing)
     pending = []
   }
   for (const item of items) {
-    if (item.kind === 'process' || item.kind === 'activity' || item.ignoreForProcessRunGrouping) pending.push(item)
+    if (item.kind !== 'other') pending.push(item)
     else { flush(); groups.push(item) }
   }
   flush()
@@ -39,6 +26,13 @@ export function partitionAgentItems<T extends ActivityItem>(items: T[]): Array<{
 
 /** Only the leading process segment may join the previous persisted group. Never move prose. */
 export function splitLiveAgentEvents(events: StreamEvent[]): { process: StreamEvent[]; outside: StreamEvent[] } {
+  // A result can arrive after other calls/text. Keep the app outside starting at its call, not its result.
+  const htmlCallIds = new Set<string>()
+  for (const event of events) {
+    if (event.type === 'tool_result' && event.toolResult && hasHtmlToolResult(event.toolResult)) {
+      htmlCallIds.add(event.toolResult.tool_use_id)
+    }
+  }
   let boundary = events.length
   for (let index = 0; index < events.length; index++) {
     const event = events[index]
@@ -46,10 +40,11 @@ export function splitLiveAgentEvents(events: StreamEvent[]): { process: StreamEv
       let text = event.delta || ''
       let end = index + 1
       while (events[end]?.type === 'text') text += events[end++].delta || ''
-      if (text.trim() && (!isProcessRunSeparatorText(text) || !events.slice(end).some(next => next.type === 'tool_call' || next.type === 'reasoning'))) { boundary = index; break }
+      if (text.trim()) { boundary = index; break }
       index = end - 1
     } else if (event.type === 'image' || event.type === 'error' || event.type === 'notice' ||
-      (event.type === 'tool_call' && isExcludedFromProcessRunGrouping(event.toolCall?.name, event.toolCall?.arguments))) {
+      (event.type === 'tool_call' && event.toolCall && (htmlCallIds.has(event.toolCall.id) ||
+        isExcludedFromProcessRunGrouping(event.toolCall.name, event.toolCall.arguments)))) {
       boundary = index
       break
     }
@@ -94,25 +89,18 @@ export function getAgentProgress(blocks: ContentBlock[], events: StreamEvent[] =
   return { toolCount: calls.size, completed, pending: pending.length, status, active: active || Boolean(activeHook), hasFailure }
 }
 
-/** A short trailing answer is still prose; only annotations before later work may fold. */
-export function hasTrailingAgentProse(blocks: ContentBlock[]): boolean {
-  const lastProcess = blocks.reduce((last, block, index) =>
-    block.type === 'tool_use' || block.type === 'thinking' || block.type === 'reasoning_details' ? index : last, -1)
-  return blocks.some((block, index) => block.type === 'text' && Boolean(block.content.trim()) && index > lastProcess)
-}
-
 /** Live ownership is branch/run scoped; retained buffers are gated separately by the caller. */
 export function canAttachLiveAgentGroup(input: {
   enabled: boolean
   active: boolean
   compacting: boolean
   optimistic: boolean
-  trailing?: { kind: string; memberMessageIds?: string[]; bridgedMessageId?: string }
+  trailing?: { kind: string; memberMessageIds?: string[] }
   anchor: string | null
   boundaryAfter: boolean
 }): boolean {
   return input.enabled && input.active && !input.compacting && !input.optimistic &&
-    input.trailing?.kind === 'process_group' && !input.trailing.bridgedMessageId && !input.boundaryAfter &&
+    input.trailing?.kind === 'process_group' && !input.boundaryAfter &&
     input.anchor != null && Boolean(input.trailing.memberMessageIds?.some(id => String(id) === String(input.anchor)))
 }
 
@@ -124,20 +112,16 @@ export type StreamRenderItem = ActivityItem & (
   | { source: 'notice' | 'error' | 'image'; event: StreamEvent }
 )
 
-export function buildStreamRenderItems(events: StreamEvent[], keepTextOutsideGroups = false): StreamRenderItem[] {
+export function buildStreamRenderItems(events: StreamEvent[]): StreamRenderItem[] {
   const items: StreamRenderItem[] = []
   const tools = buildToolCallGroupsFromStream(events)
-  const hiddenSeparator = (index: number) => {
-    const event = events[index]
-    return event?.type === 'text' && (!(event.delta || '').trim() ||
-      (events[index - 1]?.type === 'reasoning' && events[index + 1]?.type === 'reasoning' && isProcessRunSeparatorText(event.delta || '')))
-  }
+  const hiddenSeparator = (index: number) => events[index]?.type === 'text' && !events[index].delta?.trim()
   for (let index = 0; index < events.length;) {
     const event = events[index]
     const group = tools.get(index)
     if (group) {
       if (group.anchorIndex === index) items.push({ key: `stream-tool-${group.id}-${index}`, source: 'tool', group,
-        renderKey: `stream-${group.id}-${index}`, kind: isExcludedFromProcessRunGrouping(group.name, group.args) ? 'other' : 'process' })
+        renderKey: `stream-${group.id}-${index}`, kind: isExcludedFromProcessRunGrouping(group.name, group.args, group.results) ? 'other' : 'process' })
       index++
       continue
     }
@@ -145,8 +129,7 @@ export function buildStreamRenderItems(events: StreamEvent[], keepTextOutsideGro
       let end = index + 1
       let text = event.delta || ''
       while (events[end]?.type === 'text') text += events[end++].delta || ''
-      if (text.trim()) items.push({ key: `text-${index}`, kind: 'other', source: 'text', text, index,
-        ignoreForProcessRunGrouping: !keepTextOutsideGroups && isProcessRunSeparatorText(text) })
+      if (text.trim()) items.push({ key: `text-${index}`, kind: 'other', source: 'text', text, index })
       index = end
       continue
     }

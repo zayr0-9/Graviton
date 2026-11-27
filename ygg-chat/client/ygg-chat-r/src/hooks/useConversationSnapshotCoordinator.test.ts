@@ -86,9 +86,9 @@ const selection = createChatSelectionController({
   createRequestId: () => `request-${++requestNumber}`,
 })
 
-function render(conversationId = 'c') {
+function render(conversationId = 'c', branchOnly = false) {
   hooks.cursor = 0
-  const result = useConversationSnapshotCoordinator(conversationId)
+  const result = useConversationSnapshotCoordinator(conversationId, branchOnly)
   hooks.effects.splice(0).forEach(effect => effect())
   return result
 }
@@ -579,4 +579,43 @@ it('repeated failed Retry remains actionable and a later Retry succeeds', async 
   await vi.waitFor(() => expect(render().acceptedConversationId).toBe('c'))
   await resolveSelection(render())
   expect(chat.selection).toMatchObject({ status: 'ready', error: null })
+})
+
+describe('full-graph consumers (Heimdall modal) toggling', () => {
+  const renderWith = (branchOnly: boolean) => render('c', branchOnly)
+  const row = (id: string, parent: string | null) => ({ id, conversation_id: 'c', parent_id: parent, children_ids: [], role: 'user',
+    content: id, created_at: `2026-01-01T00:00:0${id.length}Z`, revision: 1 }) as unknown as Message
+  const branchOptions = () => vi.mocked(fetchConversationMessagesTree).mock.calls.map(call => Boolean(call[1]?.branch))
+
+  it('opens with one full read when the branch snapshot is partial, then never reloads on close/reopen', async () => {
+    vi.mocked(fetchConversationMessagesTree)
+      .mockResolvedValueOnce({ messages: [row('root', null)], tree: null, retained: [['sibling', 1]] })
+      .mockResolvedValue({ messages: [row('root', null), row('sibling', 'root')], tree: null })
+    selection.request({ kind: 'conversation', conversationId: 'c' }, 'route')
+    renderWith(true)
+    await vi.waitFor(() => expect(renderWith(true).acceptedConversationId).toBe('c'))
+    expect(renderWith(true).data?.retained).toEqual([['sibling', 1]])
+
+    renderWith(false) // Heimdall opens
+    await vi.waitFor(() => expect(renderWith(false).data?.retained).toBeUndefined())
+    renderWith(true) // closes
+    renderWith(false) // reopens
+    renderWith(true)
+    await Promise.resolve()
+    expect(branchOptions()).toEqual([true, false])
+  })
+
+  it('does not fetch at all when the branch snapshot already covers every retained sibling', async () => {
+    chat = { ...chat, conversation: { ...chat.conversation, messages: [{ ...row('sibling', 'root'), conversation_id: 'c' }] } }
+    vi.mocked(fetchConversationMessagesTree).mockResolvedValue({ messages: [row('root', null)], tree: null, retained: [['sibling', 1]] })
+    selection.request({ kind: 'conversation', conversationId: 'c' }, 'route')
+    renderWith(true)
+    await vi.waitFor(() => expect(renderWith(true).acceptedConversationId).toBe('c'))
+    expect(renderWith(true).data?.retained).toBeUndefined()
+    renderWith(false)
+    renderWith(true)
+    renderWith(false)
+    await Promise.resolve()
+    expect(branchOptions()).toEqual([true])
+  })
 })

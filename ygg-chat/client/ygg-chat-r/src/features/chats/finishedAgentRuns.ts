@@ -85,8 +85,11 @@ export const syncFinishedAgentRuns = (liveForkKeys: ReadonlySet<string>, attempt
   async (dispatch: AppDispatch, getState: () => RootState): Promise<void> => {
     const runs = await fetchFinishedAgentRuns(signal).catch(() => [])
     const picked = pickFinishedRunsToInstall(runs, getState().agentRunPreviews, liveForkKeys, attempted)
-    for (const run of picked) attempted.add(run.streamId)
-    if (picked.length) await installFinishedAgentRuns(picked, signal)(dispatch, getState)
+    for (const run of picked) {
+      if (signal?.aborted) return
+      await installFinishedAgentRuns([run], signal)(dispatch, getState)
+      if (!signal?.aborted) attempted.add(run.streamId)
+    }
   }
 
 /** Fetches each run's rows and installs it. A failed fetch leaves the run uninstalled. */

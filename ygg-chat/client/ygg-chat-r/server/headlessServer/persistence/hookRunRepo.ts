@@ -240,15 +240,16 @@ export class HookRunRepo {
    * this is uncapped: the tree read attaches runs per message, and a 500-row cap silently
    * dropped the oldest messages' runs in long conversations.
    */
-  listForConversationMessages(conversationId: string): HookRunRecord[] {
+  listForConversationMessages(conversationId: string, selectedIdsJson?: string): HookRunRecord[] {
     const rows = this.db
       .prepare(`
         SELECT ${COLUMNS.join(', ')}
         FROM hook_runs
         WHERE conversation_id = ? AND message_id IS NOT NULL
+        ${selectedIdsJson === undefined ? '' : 'AND message_id IN (SELECT value FROM json_each(?))'}
         ORDER BY created_at DESC, id DESC
       `)
-      .all(conversationId) as HookRunRow[]
+      .all(...(selectedIdsJson === undefined ? [conversationId] : [conversationId, selectedIdsJson])) as HookRunRow[]
 
     return rows.map((row) => toRecord(row) as HookRunRecord)
   }

@@ -9,6 +9,8 @@ export interface QueuedMessageSubmission {
   watcherCompletion?: WatcherCompletionProvenance
   attachmentsBase64?: HeadlessMessageRequest['attachmentsBase64']
   selectedFiles?: HeadlessMessageRequest['selectedFiles']
+  /** Used only if this submission starts a successor run; live runs keep their launch prompt. */
+  userDisplayName?: string
   /**
    * Mode for the follow-up run this submission starts when the run has already finished.
    * Ignored while the run is live: live switches go through the operation-mode route.

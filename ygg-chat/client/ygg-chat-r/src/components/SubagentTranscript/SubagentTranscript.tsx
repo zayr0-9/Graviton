@@ -1,88 +1,30 @@
 import { hydrateSnapshotEvent } from '../../services/snapshotPayloadClient'
 import 'boxicons'
 import 'boxicons/css/boxicons.min.css'
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useQueryClient } from '@tanstack/react-query'
-import { AppMarkdown } from '../MarkdownContent/AppMarkdown'
-import rehypeHighlight from 'rehype-highlight'
-import remarkGfm from 'remark-gfm'
+import { AgentRunCard } from '../RunningAgentsFloatingButton/AgentRunCard'
+import { AgentTranscriptRows } from '../RunningAgentsFloatingButton/AgentTranscriptRows'
+import type { PreviewRow } from '../RunningAgentsFloatingButton/agentPreviewContent'
+import { subagentPreviewRows } from './subagentPreviewRows'
+import { StreamingThinkingIndicator } from '../StreamingThinkingIndicator'
+import { ConversationLinkRootProvider } from '../MarkdownLink/markdownLinkRoot'
 import type { SubagentRunRow } from '../../../../../shared/types'
 import { useSubagentByToolCall } from '../../hooks/useQueries'
 import { isHostClient } from '../../platform/clientCapabilities'
 import { buildLocalApiUrl } from '../../utils/api'
 import { Button } from '../Button/button'
-import { getMarkdownThemeVars, getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from '../ThemeManager/themeConfig'
-import { MarkdownTable } from '../MarkdownContent/MarkdownTable'
-import { SCROLLABLE_MARKDOWN_COMPONENTS } from '../MarkdownContent/MarkdownCodeBlock'
+import { getThemeModeColor, useCustomChatTheme, useHtmlDarkMode } from '../ThemeManager/themeConfig'
 import {
-  REASONING_CHEVRON_BASE_CLASS,
-  REASONING_TEXT_MARKDOWN_CLASS,
-  TOOL_CHEVRON_BASE_CLASS,
   TOOL_NAME_ERROR_CLASS,
   TOOL_NAME_RUNNING_CLASS,
   TOOL_NAME_SUCCESS_CLASS,
 } from '../ChatMessage/chatMessageShared'
 
-// ── Shared helpers ────────────────────────────────────────────────────────────
-
-/** Parse a persisted content_blocks column (array | JSON string | null) into an array. */
-function normalizeContentBlocks(blocks: any): any[] {
-  if (!blocks) return []
-  if (Array.isArray(blocks)) return blocks
-  if (typeof blocks === 'string') {
-    try {
-      const parsed = JSON.parse(blocks)
-      return Array.isArray(parsed) ? parsed : []
-    } catch {
-      return []
-    }
-  }
-  return []
-}
-
-/**
- * Flatten a run's persisted messages into a single ordered list of renderable
- * blocks (thinking / text / tool_use / tool_result). Mirrors Heimdall's
- * buildDedicatedSubagentMap per-run logic. The initial user prompt is rendered
- * separately (see SubagentRunView) so it is skipped here to avoid duplication.
- */
-function flattenRunToBlocks(run: SubagentRunRow): any[] {
-  const combined: any[] = []
-  const messages = Array.isArray(run.messages) ? run.messages : []
-  const prompt = (run.prompt ?? '').trim()
-
-  messages.forEach((message, index) => {
-    // Only the initial prompt is shown separately. A later steering/resume message
-    // may repeat the task verbatim and must remain in the displayed chronology.
-    if (index === 0 && message.role === 'user' && (message.content ?? '').trim() === prompt) return
-    const blocks = normalizeContentBlocks(message.content_blocks)
-    const hasTextBlock = blocks.some((block: any) => block?.type === 'text')
-    if (message.thinking_block) {
-      combined.push({ type: 'thinking', content: message.thinking_block })
-    }
-    if (message.content && message.content.trim() && !hasTextBlock) {
-      combined.push({ type: 'text', content: message.content })
-    }
-    if (blocks.length > 0) combined.push(...blocks)
-  })
-
-  if (run.status === 'error' && run.error) {
-    combined.push({ type: 'text', content: `Subagent error: ${run.error}` })
-  }
-  return combined
-}
-
 // ── Status presentation ─────────────────────────────────────────────────────
 
 type KnownStatus = 'running' | 'completed' | 'error' | 'aborted'
-
-const STATUS_BADGE_CLASS: Record<KnownStatus, string> = {
-  running: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300',
-  completed: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300',
-  error: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300',
-  aborted: 'bg-stone-200 text-stone-600 dark:bg-neutral-700 dark:text-stone-300',
-}
 
 const STATUS_LABEL: Record<KnownStatus, string> = {
   running: 'Running',
@@ -133,209 +75,43 @@ export const SubagentToolName: React.FC<{
   return <span className={className}>{name || 'tool'}</span>
 }
 
-const StatusBadge: React.FC<{ status: string | null | undefined }> = ({ status }) => {
-  const known = asKnownStatus(status)
-  return (
-    <span
-      className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${STATUS_BADGE_CLASS[known]}`}
-    >
-      {known === 'running' && <span className='h-1.5 w-1.5 rounded-full bg-current animate-pulse' aria-hidden='true' />}
-      {STATUS_LABEL[known]}
-    </span>
-  )
-}
-
-// ── Block + run renderers ─────────────────────────────────────────────────────
-
-/**
- * Collapsed-by-default disclosure for a transcript block: a clickable header
- * row (label + chevron) and a smooth expand/collapse body using the same
- * `tool-expand-container`/`tool-expand-content` transition classes as the main
- * chat's tool/process cards. Defaults to the tool-chevron styling; reasoning
- * blocks pass the reasoning chevron class.
- */
-const CollapsibleBlock: React.FC<{
-  label: string
-  labelClass?: string
-  lineLabelClass?: string
-  chevronBaseClass?: string
-  content: React.ReactNode
-}> = ({ label, labelClass, lineLabelClass, chevronBaseClass = TOOL_CHEVRON_BASE_CLASS, content }) => {
-  const [isExpanded, setIsExpanded] = useState(false)
-  return (
-    <div className='min-w-0 max-w-full space-y-1'>
-      <button
-        type='button'
-        onClick={() => setIsExpanded(v => !v)}
-        aria-expanded={isExpanded}
-        className='flex min-w-0 max-w-full flex-wrap items-center gap-1.5 group/tool hover:opacity-80 transition-opacity cursor-pointer outline-none'
-      >
-        {lineLabelClass ? (
-          <span className={lineLabelClass}>{label}</span>
-        ) : (
-          <span className={labelClass ?? ''}>{label}</span>
-        )}
-        <svg
-          className={`${chevronBaseClass} ${isExpanded ? 'open' : ''}`}
-          fill='none'
-          viewBox='0 0 24 24'
-          stroke='currentColor'
-        >
-          <path strokeLinecap='round' strokeLinejoin='round' strokeWidth={2} d='M9 5l7 7-7 7' />
-        </svg>
-      </button>
-      <div className={`tool-expand-container ${isExpanded ? 'open' : ''}`}>
-        <div className='tool-expand-content'>{content}</div>
+export function SubagentRunView({ run, index = 0, total = 1, live }: {
+  run: SubagentRunRow; index?: number; total?: number; live?: SubagentLiveState
+}) {
+  const status = asKnownStatus(run.status)
+  const active = status === 'running'
+  const rows = useMemo(() => subagentPreviewRows(run), [run])
+  const idPrefix = `subagent-preview:${run.id}`
+  const tail: PreviewRow = { key: 'tail', role: 'assistant', content: live?.text ?? '', blocks: [] }
+  if (live?.reasoning) tail.blocks.push({ type: 'thinking', index: 0, content: live.reasoning })
+  if (live?.text) tail.blocks.push({ type: 'text', index: tail.blocks.length, content: live.text })
+  return <AgentRunCard name={total > 1 ? `Subagent run ${index + 1}` : 'Subagent run'}
+    identifier={run.handle ? `#${run.handle}` : undefined} detail={run.model_name} prompt={run.prompt}
+    status={{ active, hasError: status === 'error', label: STATUS_LABEL[status] }}>
+    <ConversationLinkRootProvider conversationId={run.conversation_id}>
+      <div className='min-w-0 px-1 pb-3'>
+        <AgentTranscriptRows rows={rows} idPrefix={idPrefix} grouped />
+        {active && !live?.done && <>
+          {tail.blocks.length > 0 && <AgentTranscriptRows rows={[tail]} idPrefix={`${idPrefix}:live`} grouped />}
+          <StreamingThinkingIndicator />
+        </>}
       </div>
-    </div>
-  )
+    </ConversationLinkRootProvider>
+  </AgentRunCard>
 }
 
-const REASONING_MARKDOWN_COMPONENTS = { ...SCROLLABLE_MARKDOWN_COMPONENTS, table: MarkdownTable }
-
-const TranscriptReasoning: React.FC<{ content: string }> = ({ content }) => {
-  const { theme, enabled } = useCustomChatTheme()
-  const isDarkMode = useHtmlDarkMode()
-  return (
-    <div className={REASONING_TEXT_MARKDOWN_CLASS} style={enabled ? getMarkdownThemeVars(theme, isDarkMode) : undefined}>
-      <AppMarkdown remarkPlugins={[remarkGfm]} components={REASONING_MARKDOWN_COMPONENTS}>{content}</AppMarkdown>
-    </div>
-  )
-}
-
-const TranscriptBlock: React.FC<{ block: any }> = ({ block }) => {
-  if (block.type === 'text') {
-    const textContent = block.content ?? block.text
-    if (!textContent) return null
-    return (
-      <div className='prose prose-sm dark:prose-invert max-w-none text-stone-700 dark:text-stone-300 prose-p:my-1 prose-pre:my-2 prose-pre:bg-stone-100 dark:prose-pre:bg-neutral-800 prose-code:text-orange-600 dark:prose-code:text-orange-400 prose-pre:text-xs prose-pre:overflow-x-auto'>
-        <AppMarkdown components={SCROLLABLE_MARKDOWN_COMPONENTS} remarkPlugins={[remarkGfm]} rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
-          {textContent}
-        </AppMarkdown>
-      </div>
-    )
-  }
-
-  if (block.type === 'tool_use') {
-    const input = block.input
-    const inputText = input == null ? null : typeof input === 'string' ? input : JSON.stringify(input, null, 2)
-    return (
-      <CollapsibleBlock
-        label={block.name || 'tool'}
-        labelClass={TOOL_NAME_SUCCESS_CLASS}
-        content={
-          inputText != null ? (
-            <pre className='whitespace-pre-wrap break-words text-[0.8125em] leading-relaxed text-neutral-500 dark:text-neutral-400'>
-              {inputText}
-            </pre>
-          ) : null
-        }
-      />
-    )
-  }
-
-  if (block.type === 'tool_result') {
-    const isError = block.is_error
-    const content = typeof block.content === 'string' ? block.content : JSON.stringify(block.content, null, 2)
-    return (
-      <CollapsibleBlock
-        label={isError ? 'Error' : 'Result'}
-        labelClass={isError ? TOOL_NAME_ERROR_CLASS : TOOL_NAME_SUCCESS_CLASS}
-        content={
-          <pre className='whitespace-pre-wrap break-words text-[0.8125em] leading-relaxed text-neutral-500 dark:text-neutral-400'>
-            {content}
-          </pre>
-        }
-      />
-    )
-  }
-
-  if (block.type === 'thinking' && block.content) {
-    return (
-      <CollapsibleBlock
-        label='Thinking'
-        chevronBaseClass={REASONING_CHEVRON_BASE_CLASS}
-        lineLabelClass='text-[0.8125em] leading-none text-neutral-800 dark:text-neutral-500'
-        content={
-          <TranscriptReasoning content={block.content} />
-        }
-      />
-    )
-  }
-
-  return null
-}
-
-/** Renders a single subagent run: status header + prompt + flattened transcript. */
-export const SubagentRunView: React.FC<{ run: SubagentRunRow; index?: number; total?: number }> = ({
-  run,
-  index,
-  total,
-}) => {
-  const blocks = flattenRunToBlocks(run)
-  const prompt = (run.prompt ?? '').trim()
-  const showRunLabel = typeof total === 'number' && total > 1
-
-  return (
-    <div className='px-5 py-4'>
-      <div className='flex flex-wrap items-center gap-2 mb-3'>
-        {showRunLabel && (
-          <span className='inline-flex items-center justify-center w-6 h-6 rounded-full bg-orange-100 dark:bg-orange-900/30 text-orange-600 dark:text-orange-400 text-xs font-bold'>
-            {(index ?? 0) + 1}
-          </span>
-        )}
-        <span className='text-xs font-semibold text-orange-600 dark:text-orange-400 uppercase tracking-wider'>
-          Subagent Run
-        </span>
-        <StatusBadge status={run.status} />
-        {run.handle && (
-          <span className='text-[10px] font-mono text-stone-500 dark:text-stone-400'>#{run.handle}</span>
-        )}
-        {run.model_name && (
-          <span className='text-[10px] text-stone-400 dark:text-stone-500'>{run.model_name}</span>
-        )}
-      </div>
-
-      {prompt && (
-        <div className='mb-3'>
-          <div className='text-[10px] font-medium text-stone-500 dark:text-stone-400 uppercase tracking-wider mb-1'>
-            Prompt
-          </div>
-          <div className='prose prose-sm dark:prose-invert max-w-none text-stone-800 dark:text-stone-200 prose-p:my-1 prose-pre:my-2 prose-pre:bg-stone-100 dark:prose-pre:bg-neutral-800 prose-code:text-orange-600 dark:prose-code:text-orange-400 prose-pre:text-xs prose-pre:overflow-x-auto'>
-            <AppMarkdown components={SCROLLABLE_MARKDOWN_COMPONENTS} remarkPlugins={[remarkGfm]} rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
-              {prompt}
-            </AppMarkdown>
-          </div>
-        </div>
-      )}
-
-      {blocks.length > 0 ? (
-        <div className='space-y-3 mt-3'>
-          {blocks.map((block, blockIdx) => (
-            <TranscriptBlock key={blockIdx} block={block} />
-          ))}
-        </div>
-      ) : (
-        run.status === 'running' && (
-          <div className='text-xs text-stone-500 dark:text-stone-400 italic'>Subagent is still working…</div>
-        )
-      )}
-    </div>
-  )
-}
-
-/** Standalone transcript for a set of runs (no modal chrome). */
-export const SubagentTranscript: React.FC<{ runs: SubagentRunRow[] }> = ({ runs }) => (
-  <div className='divide-y divide-stone-100 dark:divide-neutral-800'>
-    {runs.map((run, i) => (
-      <SubagentRunView key={run.id} run={run} index={i} total={runs.length} />
-    ))}
+export function SubagentTranscript({ runs, live }: { runs: SubagentRunRow[]; live?: SubagentLiveState }) {
+  return <div className='space-y-3 p-3'>
+    {runs.map((run, i) => <SubagentRunView key={run.id} run={run} index={i} total={runs.length}
+      live={run.id === live?.runId ? live : undefined} />)}
   </div>
-)
+}
 
 // ── Live streaming (Phase 6) ──────────────────────────────────────────────────
 
 interface SubagentLiveState {
+  /** Owner reported by the child bootstrap (a tool call may have multiple runs). */
+  runId?: string
   /** Streamed text for the in-progress (not-yet-persisted) turn. */
   text: string
   /** Streamed reasoning for the in-progress turn. */
@@ -380,6 +156,7 @@ export function useSubagentLiveStream(
       void queryClient.invalidateQueries({ queryKey: ['subagents', 'by-tool-call', toolCallId] })
     }
 
+    let runId: string | undefined
     let lastSeq = 0
     let terminalSeen = false
     let needsBootstrap = true
@@ -398,7 +175,8 @@ export function useSubagentLiveStream(
           }))
         }
         textRef.current = snapshot.text; reasoningRef.current = snapshot.reasoning
-        setState({ text: snapshot.text, reasoning: snapshot.reasoning, done: snapshot.terminal })
+        runId = snapshot.subagentRunId
+        setState({ runId, text: snapshot.text, reasoning: snapshot.reasoning, done: snapshot.terminal })
         lastSeq = snapshot.stateSeq
         terminalSeen = snapshot.terminal
         needsBootstrap = false; retryAttempt = 0
@@ -414,16 +192,16 @@ export function useSubagentLiveStream(
       if (event.type === 'chunk' && typeof event.delta === 'string') {
         if (event.part === 'text') {
           textRef.current += event.delta
-          setState({ text: textRef.current, reasoning: reasoningRef.current, done: false })
+          setState({ runId, text: textRef.current, reasoning: reasoningRef.current, done: false })
         } else if (event.part === 'reasoning') {
           reasoningRef.current += event.delta
-          setState({ text: textRef.current, reasoning: reasoningRef.current, done: false })
+          setState({ runId, text: textRef.current, reasoning: reasoningRef.current, done: false })
         }
       } else if (event.type === 'assistant_message_persisted') {
         // A turn just landed in the transcript — fold it in and reset the live tail.
         textRef.current = ''
         reasoningRef.current = ''
-        setState({ text: '', reasoning: '', done: false })
+        setState({ runId, text: '', reasoning: '', done: false })
         invalidatePersisted()
       } else if (event.type === 'queued_user_message_persisted') {
         // Steering landed in this child's transcript, never in the parent chat tree.
@@ -517,14 +295,12 @@ export const SubagentTranscriptModal: React.FC<SubagentTranscriptModalProps> = (
   const isDarkMode = useHtmlDarkMode()
   if (!toolCallId) return null
 
-  const showLiveTail = anyRunning && !live.done && Boolean(live.text || live.reasoning)
   const pickThemeColor = (color: { light: string; dark: string }, fallback: string) =>
     customThemeEnabled ? getThemeModeColor(color, isDarkMode) : fallback
   const themeColors = {
     backdrop: pickThemeColor(customTheme.colors.toolJobsModalBackdrop, 'rgba(0, 0, 0, 0.4)'),
     surface: pickThemeColor(customTheme.colors.toolJobsModalBg, isDarkMode ? '#18181b' : '#fafafa'),
     border: pickThemeColor(customTheme.colors.toolJobsModalBorder, isDarkMode ? '#404040' : '#e7e5e4'),
-    panel: pickThemeColor(customTheme.colors.toolJobsPanelBg, isDarkMode ? 'rgba(23, 23, 23, 0.6)' : 'rgba(250, 250, 250, 0.8)'),
     primaryText: pickThemeColor(customTheme.colors.toolJobsPrimaryText, isDarkMode ? '#f5f5f5' : '#292524'),
     mutedText: pickThemeColor(customTheme.colors.toolJobsMutedText, isDarkMode ? '#a3a3a3' : '#78716c'),
     errorBg: pickThemeColor(customTheme.colors.toolJobsErrorBg, isDarkMode ? 'rgba(127, 29, 29, 0.2)' : 'rgba(255, 241, 242, 0.85)'),
@@ -617,36 +393,7 @@ export const SubagentTranscriptModal: React.FC<SubagentTranscriptModalProps> = (
               No subagent transcript found for this tool call.
             </div>
           )}
-          {!isLoading && !isError && runs.length > 0 && <SubagentTranscript runs={runs} />}
-
-          {/* Live tail: the in-progress turn's streamed output, folded into the
-              persisted transcript as each turn lands. */}
-          {showLiveTail && (
-            <div
-              className='px-5 py-4 border-t border-stone-100 dark:border-neutral-800'
-              style={customThemeEnabled ? { backgroundColor: themeColors.panel, borderColor: themeColors.border } : undefined}
-            >
-              <div
-                className='flex items-center gap-2 mb-2 text-[10px] font-semibold uppercase tracking-wider text-blue-600 dark:text-blue-400'
-                style={customThemeEnabled ? { backgroundColor: themeColors.liveBadgeBg, color: themeColors.liveBadgeText } : undefined}
-              >
-                <span className='h-1.5 w-1.5 rounded-full bg-current animate-pulse' aria-hidden='true' />
-                Streaming
-              </div>
-              {live.reasoning && (
-                <div className='mb-2 prose prose-sm dark:prose-invert max-w-none text-stone-500 dark:text-stone-400 prose-p:my-1'>
-                  <AppMarkdown components={REASONING_MARKDOWN_COMPONENTS} remarkPlugins={[remarkGfm]}>{live.reasoning}</AppMarkdown>
-                </div>
-              )}
-              {live.text && (
-                <div className='prose prose-sm dark:prose-invert max-w-none text-stone-700 dark:text-stone-300 prose-p:my-1 prose-pre:my-2 prose-pre:bg-stone-100 dark:prose-pre:bg-neutral-800 prose-code:text-orange-600 dark:prose-code:text-orange-400 prose-pre:text-xs prose-pre:overflow-x-auto'>
-                  <AppMarkdown components={SCROLLABLE_MARKDOWN_COMPONENTS} remarkPlugins={[remarkGfm]} rehypePlugins={[[rehypeHighlight, { detect: true }]]}>
-                    {live.text}
-                  </AppMarkdown>
-                </div>
-              )}
-            </div>
-          )}
+          {!isLoading && !isError && runs.length > 0 && <SubagentTranscript runs={runs} live={live} />}
         </div>
       </div>
     </div>,

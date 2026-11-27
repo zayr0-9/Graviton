@@ -27,6 +27,8 @@ if (typeof window !== 'undefined') window.addEventListener(HOST_DATA_CHANGED, ((
     else ids.delete(change.entity_id)
   }
 }) as EventListener)
+/** Newest rows of a branch read that arrive with full bodies; older rows hydrate as they scroll into view. */
+export const BRANCH_SNAPSHOT_WINDOW = 80
 const requestGenerations = new Map<string, number>()
 const requestControllers = new Map<string, AbortController>()
 const terminalLeases = new Map<string, TerminalSnapshotLease>()
@@ -94,6 +96,8 @@ export interface CoordinateConversationSnapshotOptions {
   queryClient: QueryClient
   getState: () => RootState
   dispatch: (action: ReturnType<typeof chatSliceActions.conversationSnapshotApplied>) => unknown
+  branchOnly?: boolean
+  savedTip?: string
   fetchSnapshot?: typeof fetchConversationMessagesTree
   /** The mounted caller owns cache/Redux commits as well as local hook state. */
   isCurrent?: () => boolean
@@ -111,6 +115,8 @@ export async function coordinateConversationSnapshot({
   queryClient,
   getState,
   dispatch,
+  branchOnly = false,
+  savedTip,
   fetchSnapshot = fetchConversationMessagesTree,
   isCurrent = () => true,
 }: CoordinateConversationSnapshotOptions): Promise<CoordinateConversationSnapshotResult> {
@@ -123,7 +129,13 @@ export async function coordinateConversationSnapshot({
   requestControllers.set(normalizedId, controller)
 
   try {
+    const { conversation, selection } = getState().chat
+    const target = selection?.status === 'pending' || selection?.status === 'error' ? selection.target : null
+    const tip = (target?.kind === 'message' ? target.path?.at(-1) ?? target.messageId : null) ??
+      conversation.currentPath?.at(-1) ?? conversation.lastViewedTips?.[normalizedId] ?? savedTip
+    const lineage = target?.kind === 'lineage' ? target.lineageId : target?.kind === 'message' ? null : conversation.currentLineageId
     const fetched = await fetchSnapshot(conversationId, {
+      ...(branchOnly && { branch: { tip: tip == null ? undefined : String(tip), lineage: lineage ?? undefined }, window: BRANCH_SNAPSHOT_WINDOW }),
       includeTree: false,
       signal: controller.signal,
     })
@@ -141,14 +153,22 @@ export async function coordinateConversationSnapshot({
       ...activeProtections(state, normalizedId),
       ...leases.map(lease => ({ messageIds: lease.messageIds })),
     ]
+    const retained = new Map(fetched.retained)
+    const cachedSiblings = fetched.retained ? state.chat.conversation.messages.filter(row =>
+      row.revision != null && retained.get(String(row.id)) === row.revision) : []
     const messages = reconcileConversationSnapshot({
-      fetchedMessages: fetched.messages ?? [],
+      fetchedMessages: [...(fetched.messages ?? []), ...cachedSiblings],
       liveMessages: state.chat.conversation.messages,
       protections,
       deletedMessageIds: deletedMessages.get(normalizedId),
     })
+    if (fetched.retained) messages.sort((a, b) => a.created_at.localeCompare(b.created_at))
+    // A branch read whose every retained sibling is already cached at the same revision
+    // yields the whole graph, so Heimdall can open without a full read.
+    const complete = fetched.retained != null && cachedSiblings.length === retained.size
     const data: ConversationMessagesTreeData = {
       ...fetched,
+      retained: complete ? undefined : fetched.retained,
       messages,
       tree: buildConversationTree(messages),
     }
@@ -164,7 +184,7 @@ export async function coordinateConversationSnapshot({
 
     const fetchedIds = new Set((fetched.messages ?? []).map(message => String(message.id)))
     for (const lease of leases) {
-      if (lease.messageIds.every(id => fetchedIds.has(id))) terminalLeases.delete(leaseKey(normalizedId, lease.streamId))
+      if (lease.messageIds.every(id => fetchedIds.has(id) || retained.has(id))) terminalLeases.delete(leaseKey(normalizedId, lease.streamId))
     }
     return { accepted: true, generation, data }
   } catch (cause) {

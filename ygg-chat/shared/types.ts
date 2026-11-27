@@ -58,6 +58,7 @@ export interface BaseMessage {
   content: string
   content_plain_text: string
   parent_id?: MessageId | null
+  lineage_id?: string | null
   children_ids: MessageId[]
   created_at: string // ISO timestamp, consistent naming
   updated_at?: string
@@ -66,6 +67,10 @@ export interface BaseMessage {
   // Optional metadata for optimized attachment fetching
   has_attachments?: boolean
   attachments_count?: number
+  /** Set by a branch read for rows outside its window: large block payloads were dropped and hydrate on demand. */
+  body_omitted?: boolean
+  /** Serialised block characters the host dropped from this row. */
+  body_omitted_chars?: number
   note?: string
   note_color?: string | null
   // External agent fields (for Claude Code, etc.)

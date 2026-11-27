@@ -65,6 +65,24 @@ contextBridge.exposeInMainWorld('electronAPI', {
       take()
       return () => ipcRenderer.removeListener('window:navigate', take)
     },
+    // Detached apps (Task Manager) window. Main window: hand entries over, ask whether it is
+    // open, follow it opening/closing, and take the list it hands back when it closes.
+    openApps: (handoff: unknown) => ipcRenderer.invoke('apps:open', handoff),
+    isAppsOpen: () => ipcRenderer.invoke('apps:isOpen'),
+    onAppsWindowChanged: (callback: (open: boolean) => void) => {
+      const listener = (_event: unknown, open: unknown) => callback(open === true)
+      ipcRenderer.on('apps-window:changed', listener)
+      return () => ipcRenderer.removeListener('apps-window:changed', listener)
+    },
+    takeAppsReturn: () => ipcRenderer.invoke('apps:takeReturn'),
+    // Apps window: take queued hand-offs now and on each ping; report the current list.
+    onAppsHandoff: (callback: (handoffs: unknown[]) => void) => {
+      const take = () => { void ipcRenderer.invoke('apps:takeHandoffs').then(handoffs => { if (Array.isArray(handoffs) && handoffs.length > 0) callback(handoffs) }) }
+      ipcRenderer.on('apps-window:handoff', take)
+      take()
+      return () => ipcRenderer.removeListener('apps-window:handoff', take)
+    },
+    reportApps: (snapshot: unknown) => ipcRenderer.send('apps:report', snapshot),
     // Compact mode controls
     toggleCompact: () => ipcRenderer.invoke('window:toggleCompact'),
     isCompact: () => ipcRenderer.invoke('window:isCompact'),

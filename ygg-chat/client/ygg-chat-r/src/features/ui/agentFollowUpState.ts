@@ -10,6 +10,7 @@ export interface AgentFollowUpAttempt {
   content: string
   requestId: string
   revision: number
+  userDisplayName?: string
   preparedTextSubmission: { epoch: string; fullAccess: boolean; fullAccessNotificationId?: string }
   /** Chat/Agent mode chosen on the card, sent so a finished run's follow-up starts in it. */
   operationMode?: OperationMode

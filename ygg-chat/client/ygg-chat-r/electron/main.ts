@@ -54,6 +54,7 @@ let mainWindow: BrowserWindow | null = null
 let mainRecovery: RendererRecovery | null = null
 let floatingWindow: BrowserWindow | null = null
 let agentsWindow: BrowserWindow | null = null
+let appsWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let isQuitting = false
 const confirmQuit = createQuitConfirmationGuard({
@@ -83,7 +84,7 @@ let localServerUrl: string | null = null
 let localServerLanUrl: string | null = null
 let localServerError: string | null = null
 const installNativeHostSession = createNativeHostSessionInstaller(() => localServerUrl,
-  id => id === mainWindow?.webContents.id || id === floatingWindow?.webContents.id || id === agentsWindow?.webContents.id)
+  id => id === mainWindow?.webContents.id || id === floatingWindow?.webContents.id || id === agentsWindow?.webContents.id || id === appsWindow?.webContents.id)
 
 const LOCAL_SERVER_PREFERRED_PORT = 3002
 const LOCAL_SERVER_FALLBACK_PORTS = Array.from({ length: 13 }, (_, index) => LOCAL_SERVER_PREFERRED_PORT + 1 + index)
@@ -969,23 +970,30 @@ function createFloatingWindow() {
   })
 }
 
-// Detached agents window: the same renderer at #/agents-window, showing only the agents
-// pill's expanded view. "Open chat" there is handed to the main window (window:openInMain).
+// Detached windows load the same renderer at a hash route and show one surface.
+// Agents window (#/agents-window): the agents pill's expanded view. "Open chat" there is
+// handed to the main window (window:openInMain).
+// Apps window (#/apps-window): the Task Manager. It takes ownership of the HTML/MCP app
+// iframes from the main window (apps:*), which keeps only the entry list meanwhile.
 const AGENTS_WINDOW_HASH = '/agents-window'
+const APPS_WINDOW_HASH = '/apps-window'
 let pendingMainNavigation: string | null = null
 
-function createAgentsWindow() {
-  if (agentsWindow && !agentsWindow.isDestroyed()) {
-    if (agentsWindow.isMinimized()) agentsWindow.restore()
-    agentsWindow.show()
-    agentsWindow.focus()
-    return
+type DetachedWindowSpec = { title: string; hash: string; width: number; height: number; webviewTag?: boolean }
+
+/** Focus `existing` if it is open, else create and load a framed detached window. */
+function openDetachedWindow(existing: BrowserWindow | null, spec: DetachedWindowSpec): { win: BrowserWindow; created: boolean } {
+  if (existing && !existing.isDestroyed()) {
+    if (existing.isMinimized()) existing.restore()
+    existing.show()
+    existing.focus()
+    return { win: existing, created: false }
   }
   const win = new BrowserWindow({
-    title: 'Graviton - Agents',
+    title: spec.title,
     icon: getIconPath(nativeTheme.shouldUseDarkColors),
-    width: 1100,
-    height: 760,
+    width: spec.width,
+    height: spec.height,
     minWidth: 420,
     minHeight: 320,
     show: false,
@@ -996,20 +1004,19 @@ function createAgentsWindow() {
       nodeIntegration: false,
       sandbox: false,
       spellcheck: true,
+      ...(spec.webviewTag ? { webviewTag: true } : {}),
     },
   })
-  agentsWindow = win
   installNativeHostSession(win.webContents.session)
   if (app.isPackaged) { win.setMenu(null); win.removeMenu() }
   const isDev = !app.isPackaged
   const entryUrl = isDev ? 'http://localhost:5173/' : pathToFileURL(path.join(__dirname, '../dist-electron/index.html')).href
   installNavigationGuards(win, entryUrl, process.platform, url => openExternalLink(url, win))
   win.once('ready-to-show', () => win.show())
-  if (isDev) void win.loadURL(`http://localhost:5173/#${AGENTS_WINDOW_HASH}`)
-  else void win.loadFile(path.join(__dirname, '../dist-electron/index.html'), { hash: AGENTS_WINDOW_HASH })
+  if (isDev) void win.loadURL(`http://localhost:5173/#${spec.hash}`)
+  else void win.loadFile(path.join(__dirname, '../dist-electron/index.html'), { hash: spec.hash })
   if (shouldOpenDetachedDevTools) win.webContents.openDevTools({ mode: 'detach' })
-  win.on('closed', () => { if (agentsWindow === win) agentsWindow = null })
-  // Copy/paste and spelling suggestions for the follow-up composer.
+  // Copy/paste and spelling suggestions (the agents follow-up composer, app inputs).
   win.webContents.on('context-menu', (_event, params) => {
     const items: Electron.MenuItemConstructorOptions[] = []
     if (params.misspelledWord) {
@@ -1029,6 +1036,67 @@ function createAgentsWindow() {
       { role: 'selectAll', enabled: params.editFlags.canSelectAll },
     )
     Menu.buildFromTemplate(items).popup()
+  })
+  return { win, created: true }
+}
+
+function createAgentsWindow() {
+  const { win, created } = openDetachedWindow(agentsWindow, { title: 'Graviton - Agents', hash: AGENTS_WINDOW_HASH, width: 1100, height: 760 })
+  if (!created) return
+  agentsWindow = win
+  win.on('closed', () => { if (agentsWindow === win) agentsWindow = null })
+}
+
+// Apps window hand-off. A hand-off is the Task Manager entry list (HTML and MCP app entries,
+// JSON) plus the app to focus: `replace` hands over the whole list, `merge` adds or updates
+// entries. The main window queues hand-offs (apps:open); the apps window takes them on the
+// 'apps-window:handoff' ping and on mount. The apps window reports its current list
+// (apps:report); when it closes, that list is parked for the main window (apps:takeReturn).
+const MAX_APPS_HANDOFF_CHARS = 32 * 1024 * 1024
+const MAX_PENDING_APPS_HANDOFFS = 50
+type AppsHandoff = { mode: 'replace' | 'merge'; entries: unknown[]; focusKey: string | null }
+let pendingAppsHandoffs: AppsHandoff[] = []
+let appsWindowSnapshot: AppsHandoff | null = null
+let appsReturnSnapshot: AppsHandoff | null = null
+
+function parseAppsHandoff(value: unknown): AppsHandoff | null {
+  if (!value || typeof value !== 'object') return null
+  const raw = value as { mode?: unknown; entries?: unknown; focusKey?: unknown }
+  if ((raw.mode !== 'replace' && raw.mode !== 'merge') || !Array.isArray(raw.entries)) return null
+  try {
+    if (JSON.stringify(raw.entries).length > MAX_APPS_HANDOFF_CHARS) return null
+  } catch {
+    return null
+  }
+  const focusKey = typeof raw.focusKey === 'string' && raw.focusKey.length <= 1024 ? raw.focusKey : null
+  return { mode: raw.mode, entries: raw.entries, focusKey }
+}
+
+const isAppsWindowOpen = () => Boolean(appsWindow && !appsWindow.isDestroyed())
+
+function notifyMainAppsWindow(open: boolean) {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('apps-window:changed', open)
+}
+
+function createAppsWindow() {
+  const { win, created } = openDetachedWindow(appsWindow, { title: 'Graviton - Task Manager', hash: APPS_WINDOW_HASH, width: 1280, height: 860, webviewTag: true })
+  if (!created) {
+    if (!win.webContents.isLoading()) win.webContents.send('apps-window:handoff')
+    return
+  }
+  appsWindow = win
+  appsWindowSnapshot = null
+  appsReturnSnapshot = null
+  notifyMainAppsWindow(true)
+  win.on('closed', () => {
+    if (appsWindow !== win) return
+    appsWindow = null
+    // Prefer the list the window last reported; a window closed before it reported returns
+    // its untaken full hand-off, or nothing (the main window then keeps its own list).
+    appsReturnSnapshot = appsWindowSnapshot ?? pendingAppsHandoffs.find(handoff => handoff.mode === 'replace') ?? null
+    appsWindowSnapshot = null
+    pendingAppsHandoffs = []
+    notifyMainAppsWindow(false)
   })
 }
 
@@ -1291,13 +1359,18 @@ mainWindowHandle('network-binding:save', (_event, raw: unknown) => {
 })
 function promptHandle(channel: string, handler: (...args: any[]) => any): void {
   ipcMain.handle(channel, (event, ...args) => {
-    const trusted = [mainWindow, floatingWindow, agentsWindow].some(window => window && !window.isDestroyed() && window.webContents === event.sender)
+    const trusted = [mainWindow, floatingWindow, agentsWindow, appsWindow].some(window => window && !window.isDestroyed() && window.webContents === event.sender)
     if (!trusted || event.senderFrame !== event.sender.mainFrame) throw new Error('Untrusted prompt caller')
     return handler(event, ...args)
   })
 }
 promptHandle('execution-preferences:read', () => readHostExecutionPreferences())
-promptHandle('execution-preferences:save', (_event, request) => saveHostExecutionPreferences(request))
+promptHandle('execution-preferences:save', (event, request) => {
+  if (request?.patch && Object.hasOwn(request.patch, 'allowClaudeNativeHooks') && event.sender !== mainWindow?.webContents) {
+    throw new Error('Change Claude Code hook permissions in the main Graviton window.')
+  }
+  return saveHostExecutionPreferences(request)
+})
 promptHandle('execution-preferences:import', (event, raw) => event.sender === mainWindow?.webContents ? importHostExecutionPreferences(raw) : readHostExecutionPreferences())
 promptHandle('prompts:read', () => getHostPromptStore().snapshot())
 promptHandle('prompts:save', (_event, revision: number, prompts: unknown, identity: { hostId: string; epoch: string }) => {
@@ -1344,11 +1417,11 @@ promptHandle('notifications:takeActivation', event => {
   pendingNotificationActivation = null
   return payload
 })
-// Token-free auth snapshots are also readable by the agents window, which needs the local
-// identity to render. Legacy token import stays main-window only.
+// Token-free auth snapshots are also readable by the agents and apps windows, which need the
+// local identity to render. Legacy token import stays main-window only.
 function authReadHandle(channel: string, handler: (...args: any[]) => any): void {
   ipcMain.handle(channel, (event, ...args) => {
-    const trusted = [mainWindow, agentsWindow].some(window => window && !window.isDestroyed() && window.webContents === event.sender)
+    const trusted = [mainWindow, agentsWindow, appsWindow].some(window => window && !window.isDestroyed() && window.webContents === event.sender)
     if (!trusted || event.senderFrame !== event.sender.mainFrame) throw new Error('Untrusted auth caller')
     return handler(event, ...args)
   })
@@ -1548,7 +1621,7 @@ ipcMain.handle('autoUpdater:installNow', async () => {
 // Open a link with the OS (web, mail, editor and confirmed app links; ChatGPT sign-in).
 // Main or floating window main frame only; the shared link policy refuses dangerous schemes.
 ipcMain.handle('shell:openExternal', async (event, url: unknown) => {
-  const window = [mainWindow, floatingWindow, agentsWindow].find(candidate => candidate && !candidate.isDestroyed() && candidate.webContents === event.sender)
+  const window = [mainWindow, floatingWindow, agentsWindow, appsWindow].find(candidate => candidate && !candidate.isDestroyed() && candidate.webContents === event.sender)
   if (!window || event.senderFrame !== event.sender.mainFrame) throw new Error('Untrusted link caller')
   const result = await openExternalLink(url, window)
   if (!result.success && !result.cancelled) console.error('[Electron IPC] Failed to open external URL:', result.error)
@@ -1571,11 +1644,16 @@ ipcMain.handle('shell:openPath', async (_event, path: string) => {
   }
 })
 
+// Dialogs attach to the window that asked (an app in the detached apps window, not main).
+function dialogParent(event: Electron.IpcMainInvokeEvent): BrowserWindow {
+  return BrowserWindow.fromWebContents(event.sender) ?? mainWindow!
+}
+
 // File dialog for custom tool widgets
 ipcMain.handle(
   'dialog:openFile',
   async (
-    _event,
+    event,
     options?: {
       title?: string
       defaultPath?: string
@@ -1585,7 +1663,7 @@ ipcMain.handle(
   ) => {
     // console.log('[Electron IPC] Opening file dialog with options:', options)
     try {
-      const result = await dialog.showOpenDialog(mainWindow!, {
+      const result = await dialog.showOpenDialog(dialogParent(event), {
         title: options?.title || 'Select File',
         defaultPath: options?.defaultPath,
         filters: options?.filters,
@@ -1607,7 +1685,7 @@ ipcMain.handle(
 ipcMain.handle(
   'dialog:saveFile',
   async (
-    _event,
+    event,
     options?: {
       title?: string
       defaultPath?: string
@@ -1616,7 +1694,7 @@ ipcMain.handle(
   ) => {
     // console.log('[Electron IPC] Opening save dialog with options:', options)
     try {
-      const result = await dialog.showSaveDialog(mainWindow!, {
+      const result = await dialog.showSaveDialog(dialogParent(event), {
         title: options?.title || 'Save File',
         defaultPath: options?.defaultPath,
         filters: options?.filters,
@@ -1634,10 +1712,10 @@ ipcMain.handle(
 )
 
 // Select folder dialog
-ipcMain.handle('dialog:selectFolder', async (_event, options?: { title?: string; defaultPath?: string }) => {
+ipcMain.handle('dialog:selectFolder', async (event, options?: { title?: string; defaultPath?: string }) => {
   // console.log('[Electron IPC] Opening folder selection dialog')
   try {
-    const result = await dialog.showOpenDialog(mainWindow!, {
+    const result = await dialog.showOpenDialog(dialogParent(event), {
       title: options?.title || 'Select Folder',
       defaultPath: options?.defaultPath,
       properties: ['openDirectory'],
@@ -2288,6 +2366,55 @@ ipcMain.handle('window:openInMain', async (event, href: unknown) => {
   if (!isAppRoute(href)) return { success: false, error: 'Invalid route' }
   openInMainWindow(href)
   return { success: true }
+})
+
+// Apps window: the main window hands its Task Manager over (main frame only).
+ipcMain.handle('apps:open', async (event, raw: unknown) => {
+  if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== event.sender.mainFrame) return { success: false, error: 'Untrusted caller' }
+  const handoff = parseAppsHandoff(raw)
+  if (!handoff) return { success: false, error: 'Invalid hand-off' }
+  if (handoff.mode === 'replace' || !isAppsWindowOpen()) pendingAppsHandoffs = [handoff]
+  else pendingAppsHandoffs = [...pendingAppsHandoffs, handoff].slice(-MAX_PENDING_APPS_HANDOFFS)
+  try {
+    createAppsWindow()
+    return { success: true }
+  } catch (error) {
+    pendingAppsHandoffs = []
+    console.error('[Electron IPC] Failed to open apps window:', error)
+    return { success: false, error: error instanceof Error ? error.message : String(error) }
+  }
+})
+
+ipcMain.handle('apps:isOpen', async event => {
+  if (!mainWindow || event.sender !== mainWindow.webContents) return false
+  return isAppsWindowOpen()
+})
+
+// Apps window: take queued hand-offs. After a reload of the apps window, nothing is queued,
+// so it gets back the list it last reported.
+ipcMain.handle('apps:takeHandoffs', async event => {
+  if (!appsWindow || event.sender !== appsWindow.webContents || event.senderFrame !== event.sender.mainFrame) return []
+  if (pendingAppsHandoffs.length > 0) {
+    const handoffs = pendingAppsHandoffs
+    pendingAppsHandoffs = []
+    return handoffs
+  }
+  return appsWindowSnapshot ? [appsWindowSnapshot] : []
+})
+
+// Apps window: its current entry list. A send (not invoke) so it can run during unload.
+ipcMain.on('apps:report', (event, raw: unknown) => {
+  if (!appsWindow || event.sender !== appsWindow.webContents || event.senderFrame !== event.sender.mainFrame) return
+  const handoff = parseAppsHandoff(raw)
+  if (handoff) appsWindowSnapshot = { ...handoff, mode: 'replace', focusKey: null }
+})
+
+// Main window: take (and clear) the list the closed apps window handed back.
+ipcMain.handle('apps:takeReturn', async event => {
+  if (!mainWindow || event.sender !== mainWindow.webContents) return null
+  const snapshot = appsReturnSnapshot
+  appsReturnSnapshot = null
+  return snapshot
 })
 
 // Main window: take (and clear) the route the agents window asked it to show.

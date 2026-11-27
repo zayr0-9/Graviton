@@ -22,14 +22,17 @@ vi.mock('../../utils/api', () => ({
   // mock MUST add /api too or it hides double-prefix bugs at the call sites.
   buildLocalApiUrl: async (p: string) => `http://local/api${p}`,
 }))
-vi.mock('../../platform/clientCapabilities', () => ({ isHostClient: false, isNativeShell: false, isBrowserClient: false, isStandaloneClient: false }))
+const host = vi.hoisted(() => ({ enabled: false, admitRun: vi.fn() }))
+vi.mock('../../platform/clientCapabilities', () => ({ get isHostClient() { return host.enabled }, isNativeShell: false, isBrowserClient: false, isStandaloneClient: false }))
+vi.mock('./runAdmissionClient', () => ({ admitRun: host.admitRun }))
 // Force resumable behavior on (decoupled from localStorage/env).
 vi.mock('../../helpers/serverLoopSettings', () => ({ isResumableRunsEnabled: () => true }))
 // Keep watchdog tests fast and prove mainChatClient reads the persisted setting.
 vi.mock('../../helpers/toolExecutionSettings', () => ({ getStreamIdleTimeoutMs: () => 1_000 }))
 
 import { runServerChatLoop, runServerReattach, postStreamAbort, getChatStreamErrorEnvelope } from './mainChatClient'
-import { getPendingFullAccessNotification, setFullAccessEnabled } from '../../helpers/fullAccessSettings'
+import chatReducer, { chatSliceActions } from './chatSlice'
+import { composerFullAccessTarget, resolveComposerFullAccess, resolveLineageFullAccess } from './branchFullAccess'
 
 /** Build a fake SSE Response from a list of events (one `data:` frame each). */
 function sseResponse(events: unknown[], opts: { status?: number } = {}): Response {
@@ -311,9 +314,49 @@ describe('runServerChatLoop resubscribe', () => {
 
 
 describe('deferred Full access acknowledgement', () => {
+  it('does not bind the original opt-in when a confirmed access mismatch retry starts a restricted run', async () => {
+    host.enabled = true
+    host.admitRun.mockRejectedValueOnce(Object.assign(new Error('active run restricted'), { code: 'configuration_mismatch', fullAccess: false }))
+      .mockResolvedValueOnce({ disposition: 'started', streamId: 's' })
+    vi.stubGlobal('window', { confirm: vi.fn(() => true) })
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(sseResponse([
+      { type: 'started', conversationId: 'c', lineageId: 'actual', operationMode: 'execute', parentId: 'u' },
+      { type: 'complete', message: null },
+    ])))
+    const deps = collectDispatch()
+    try {
+      await runServerChatLoop({ operation: 'send', conversationId: 'c', streamId: 's', path: '/conversations/c/messages',
+        request: { fullAccess: true, fullAccessNotificationId: 'opt-in' }, fullAccessSourceKey: '["c",null]',
+        signal: new AbortController().signal }, deps)
+      expect(host.admitRun.mock.calls[1][1]).toMatchObject({ fullAccess: false, fullAccessNotificationId: undefined })
+      expect(deps.actions.some(chatSliceActions.branchFullAccessRunStarted.match)).toBe(false)
+    } finally {
+      host.enabled = false
+      host.admitRun.mockReset()
+    }
+  })
+
+  it('binds a first-send opt-in on bootstrap and clears its notice even when the dedicated frame was compacted', async () => {
+    let state = chatReducer(undefined, chatSliceActions.conversationSet('c'))
+    state = chatReducer(state, chatSliceActions.providerSelected('lmstudio'))
+    state = chatReducer(state, chatSliceActions.branchFullAccessSelected(true))
+    const access = resolveComposerFullAccess(state)
+    const fullAccessSourceKey = composerFullAccessTarget(state)
+    const dispatch = (action: unknown) => { state = chatReducer(state, action as ReturnType<typeof chatSliceActions.branchFullAccessSelected>) }
+    const started = { type: 'started', conversationId: 'c', lineageId: 'new', operationMode: 'execute', parentId: 'u' }
+    const row = { id: 'notice', revision: 1, conversation_id: 'c', role: 'user', parent_id: 'u',
+      meta: { kind: 'full_access_change', requestId: access.fullAccessNotificationId } }
+    const bootstrap = { type: 'bootstrap', snapshot: { kind: 'main', schema: 1, epoch: 'e', streamId: 's', conversationId: 'c',
+      stateSeq: 4, persisted: [{ id: row.id, revision: 1, row }], events: [started, { type: 'complete', message: null }], pendingDecisions: [] } }
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(sseResponse([bootstrap])))
+    await runServerChatLoop({ operation: 'send', conversationId: 'c', streamId: 's', path: '/conversations/c/messages',
+      request: { ...access }, fullAccessSourceKey, signal: new AbortController().signal }, { dispatch, getState: () => ({ chat: state }) })
+    expect(resolveComposerFullAccess(state).fullAccess).toBe(false)
+    expect(resolveLineageFullAccess(state, 'c', 'new')).toEqual({ fullAccess: true })
+  })
+
   it('acknowledges only the notice and leaves image consumption/optimistic clearing to the real user row', async () => {
-    setFullAccessEnabled(true, 'c1')
-    const requestId = getPendingFullAccessNotification('c1')!
+    const requestId = 'notice-fixture'
     const onUserMessagePersisted = vi.fn()
     const events = [
       { type: 'started', parentId: 'u1', seq: 1 },
@@ -326,12 +369,11 @@ describe('deferred Full access acknowledgement', () => {
     const result = await runServerChatLoop({ operation: 'send', conversationId: 'c1', streamId: 's1',
       path: '/conversations/c1/messages', request: {}, signal: new AbortController().signal },
       { ...deps, onUserMessagePersisted, userMessageArtifacts: ['data:image/png;base64,YQ=='] })
-    expect(getPendingFullAccessNotification('c1')).toBeUndefined()
+    expect(deps.actions.filter(chatSliceActions.branchFullAccessNoticePersisted.match).map(action => action.payload)).toEqual([requestId])
     expect(onUserMessagePersisted).toHaveBeenCalledOnce()
     expect(result.userMessage?.id).toBe('u1')
     expect(result.userMessage?.artifacts).toEqual(['data:image/png;base64,YQ=='])
     expect(deps.actions.filter(action => action.type === 'chat/optimisticMessageCleared')).toHaveLength(1)
-    setFullAccessEnabled(false)
   })
 })
 

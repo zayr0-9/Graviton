@@ -9,12 +9,14 @@ vi.hoisted(() => {
 })
 import type { Message } from './chatTypes'
 import {
+  BRANCH_SNAPSHOT_WINDOW,
   clearConversationSnapshotCoordinatorForTests,
   coordinateConversationSnapshot,
   getTerminalSnapshotLeases,
   recordTerminalSnapshotLease,
 } from './conversationSnapshotCoordinator'
 import { conversationQueryKeys } from './conversationQueryKeys'
+import type { fetchConversationMessagesTree } from './conversationMessagesApi'
 
 const message = (id: string, parentId: string | null): Message => ({
   id,
@@ -117,6 +119,30 @@ describe('coordinateConversationSnapshot', () => {
     expect(queryClient.getQueryData(conversationQueryKeys.messages('c1'))).toBeUndefined()
   })
 
+  it('requests the remembered tip and distinguishes intact, stale and deleted siblings', async () => {
+    const rows = ['keep', 'changed', 'deleted'].map(id => ({ ...message(id, 'root'), revision: 1 }))
+    const current = state('c1', rows)
+    current.chat.conversation.lastViewedTips = { c1: 'tip' }
+    const fetchSnapshot = vi.fn(async () => ({ messages: [message('root', null), message('tip', 'root')], tree: null,
+      retained: [['keep', 1], ['changed', 2]] as Array<[string, number]> }))
+    const result = await coordinateConversationSnapshot({ conversationId: 'c1', queryClient: new QueryClient(),
+      branchOnly: true, getState: () => current, dispatch: vi.fn(), fetchSnapshot })
+    expect(fetchSnapshot).toHaveBeenCalledWith('c1', expect.objectContaining({ branch: expect.objectContaining({ tip: 'tip' }) }))
+    expect(result.data?.messages.map(row => row.id)).toEqual(['keep', 'root', 'tip'])
+    // 'changed' is stale in the cache, so the graph is still partial.
+    expect(result.data?.retained).toEqual([['keep', 1], ['changed', 2]])
+  })
+
+  it('marks a branch read complete when every retained sibling is cached at the same revision', async () => {
+    const current = state('c1', [{ ...message('sib', 'root'), revision: 3 }])
+    const fetchSnapshot = vi.fn(async () => ({ messages: [message('root', null), message('tip', 'root')], tree: null,
+      retained: [['sib', 3]] as Array<[string, number]> }))
+    const result = await coordinateConversationSnapshot({ conversationId: 'c1', queryClient: new QueryClient(),
+      branchOnly: true, getState: () => current, dispatch: vi.fn(), fetchSnapshot })
+    expect(result.data?.retained).toBeUndefined()
+    expect(result.data?.messages.map(row => row.id).sort()).toEqual(['root', 'sib', 'tip'])
+  })
+
   it('retains a terminal lease until every protected row is durable', async () => {
     const queryClient = new QueryClient()
     const currentState = state('c1', [message('root', null), message('final', 'root')])
@@ -139,5 +165,26 @@ describe('coordinateConversationSnapshot', () => {
       fetchSnapshot: async () => ({ messages: [message('root', null), message('final', 'root')], tree: null }),
     })
     expect(getTerminalSnapshotLeases('c1')).toHaveLength(0)
+  })
+})
+
+describe('branch window', () => {
+  beforeEach(() => clearConversationSnapshotCoordinatorForTests())
+
+  it('asks a branch read for the newest window only and passes compacted rows through unchanged', async () => {
+    const queryClient = new QueryClient()
+    const compacted: Message = { ...message('old', null), revision: 1, body_omitted: true, content_blocks: [] }
+    const fetchSnapshot = vi.fn<typeof fetchConversationMessagesTree>().mockResolvedValue({ messages: [compacted, message('tip', 'old')], tree: null, retained: [] })
+    const dispatched: Array<{ payload: { messages: Message[] } }> = []
+    const result = await coordinateConversationSnapshot({ conversationId: 'c1', branchOnly: true, queryClient, getState: () => state('c1', []), dispatch: action => dispatched.push(action), fetchSnapshot })
+    expect(fetchSnapshot).toHaveBeenCalledWith('c1', expect.objectContaining({ window: BRANCH_SNAPSHOT_WINDOW, branch: expect.any(Object) }))
+    expect(result.accepted).toBe(true)
+    expect(dispatched[0].payload.messages.map(row => [row.id, row.body_omitted ?? false])).toEqual([['old', true], ['tip', false]])
+  })
+
+  it('never asks a full read for a window', async () => {
+    const fetchSnapshot = vi.fn<typeof fetchConversationMessagesTree>().mockResolvedValue({ messages: [], tree: null })
+    await coordinateConversationSnapshot({ conversationId: 'c1', queryClient: new QueryClient(), getState: () => state('c1', []), dispatch: () => undefined, fetchSnapshot })
+    expect(fetchSnapshot.mock.calls[0][1]).not.toHaveProperty('window')
   })
 })

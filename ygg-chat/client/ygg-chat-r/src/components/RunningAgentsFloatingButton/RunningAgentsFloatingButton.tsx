@@ -327,6 +327,8 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
   presentation = 'pill',
 }) => {
   const windowMode = presentation === 'window'
+  const [expandedState, setExpanded] = useState(false)
+  const expanded = windowMode || expandedState
   const chatNavigate = useNavigate()
   // The agents window has no Chat: hand the route to the main window instead.
   const navigate = (href: string) => {
@@ -339,26 +341,31 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
     streamHistory: allStreamHistory,
     buildAgentStreamListItem,
     streamingRoot,
-  } = useRunningAgentStreams(notes, allConversations)
+  } = useRunningAgentStreams(notes, allConversations, expanded)
   // The run open in Chat is already on screen there. Only while a chat route is showing it:
   // the selection outlives Chat (e.g. on Settings), where the pill should list it again.
   const onChatRoute = useLocation().pathname.startsWith('/chat/')
-  const viewedStreamId = useAppSelector(state =>
+  const chatViewSettled = useAppSelector(state =>
     onChatRoute && state.chat.selection.status !== 'pending' && state.chat.selection.status !== 'error'
-      ? selectCurrentViewStream(state)?.id ?? null
-      : null
   )
+  const viewedStreamId = useAppSelector(state => chatViewSettled ? selectCurrentViewStream(state)?.id ?? null : null)
   // The branch open in Chat, live or finished, so its completed runs are hidden too.
   const viewedForkKey = useAppSelector(state => {
-    if (!onChatRoute || state.chat.selection.status === 'pending' || state.chat.selection.status === 'error') return null
+    if (!chatViewSettled) return null
     const { currentConversationId, currentLineageId } = state.chat.conversation
     return currentConversationId != null && currentLineageId != null
       ? getLineageForkKey(String(currentConversationId), String(currentLineageId))
       : null
   })
+  const currentConversationId = useAppSelector(selectCurrentConversationId)
+  const currentPath = useAppSelector(selectCurrentPath)
+  const viewedPreviews = useAppSelector(state => chatViewSettled ? state.agentRunPreviews.byStreamId : null)
   const { activeStreams, streamHistory } = useMemo(
-    () => excludeViewedAgentFork(allActiveStreams, allStreamHistory, viewedStreamId, viewedForkKey),
-    [allActiveStreams, allStreamHistory, viewedStreamId, viewedForkKey]
+    () => excludeViewedAgentFork(allActiveStreams, allStreamHistory, viewedStreamId, viewedForkKey,
+      currentConversationId != null && viewedPreviews
+        ? { conversationId: String(currentConversationId), path: currentPath, previews: viewedPreviews }
+        : null),
+    [allActiveStreams, allStreamHistory, viewedStreamId, viewedForkKey, currentConversationId, currentPath, viewedPreviews]
   )
   const { activeForks, historyForks } = useMemo(
     () => buildAgentForkGroups(activeStreams, streamHistory),
@@ -367,14 +374,10 @@ export const RunningAgentsFloatingButton: React.FC<RunningAgentsFloatingButtonPr
   const notifications = useAppSelector(state => state.ui.notifications)
   const hiddenForks = useAppSelector(state => state.runningAgentsUi.hiddenForks)
   const collapsedForks = useAppSelector(state => state.runningAgentsUi.collapsedForks)
-  const currentConversationId = useAppSelector(selectCurrentConversationId)
-  const currentPath = useAppSelector(selectCurrentPath)
   const branchDebugQuery = useConversationBranchDebugData(codexDevLogsEnabled ? currentConversationId : null)
   const headerTargets = useAgentsHeader()
   const headerMode = !windowMode && Boolean(onChatRoute && headerTargets.launcher?.isConnected)
   const compactTriggerRef = useRef<HTMLButtonElement>(null)
-  const [expandedState, setExpanded] = useState(false)
-  const expanded = windowMode || expandedState
   const [gridOrderMode, setGridOrderMode] = useState(readAgentGridOrderMode)
   const pillResize = useAgentsPillResize(expanded, className, !headerMode && !windowMode)
   const [selectedRun, setSelectedRun] = useState<AgentStreamListItem | null>(null)

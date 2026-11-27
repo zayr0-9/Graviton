@@ -28,7 +28,6 @@ import { isHostClient } from '../../platform/clientCapabilities'
 import { agentRunPreviewActions } from './agentRunPreviewSlice'
 import { isFullAccessNotification } from '../../../../../shared/accessNotifications'
 import { parseMessageMeta } from '../../../../../shared/contextInjection'
-import { acknowledgeFullAccessNotification } from '../../helpers/fullAccessSettings'
 import { buildLocalApiUrl } from '../../utils/api'
 import { isResumableRunsEnabled } from '../../helpers/serverLoopSettings'
 import { getStreamIdleTimeoutMs } from '../../helpers/toolExecutionSettings'
@@ -63,6 +62,8 @@ export interface RunServerChatLoopParams {
   path: string
   /** The POST body built by buildServerLoopRequest. */
   request: Record<string, unknown>
+  /** Renderer-only source of an opt-in, or null for a branch editor's local choice. */
+  fullAccessSourceKey?: string | null
   signal: AbortSignal
 }
 
@@ -264,8 +265,14 @@ function makeHandleEvent(
   dispatch: (action: unknown) => unknown,
   onMessagePersisted?: () => void,
   onSeq?: (seq: number, event: ServerStreamEvent) => void,
-  onUserMessagePersisted?: () => void
+  onUserMessagePersisted?: () => void,
+  onRunStarted?: (event: Extract<ServerStreamEvent, { type: 'started' }>) => void,
 ): (event: ServerStreamEvent) => void {
+  const acknowledgeAccessNotice = (message: Message) => {
+    if (String(message?.conversation_id) !== String(ctx.conversationId) || !isFullAccessNotification(message)) return
+    const requestId = parseMessageMeta(message.meta)?.requestId
+    if (typeof requestId === 'string') dispatch(chatSliceActions.branchFullAccessNoticePersisted(requestId))
+  }
   return (event: ServerStreamEvent): void => {
     if (!event || typeof event.type !== 'string') return
     if (event.type === 'bootstrap') {
@@ -277,6 +284,9 @@ function makeHandleEvent(
       }
       const rows = new Map(snapshot.persisted.map(ref => [ref.id, ref.row]))
       const started = snapshot.events.find(event => event.type === 'started')
+      if (started?.type === 'started') onRunStarted?.(started)
+      // Compact bootstrap may retain the notice row but not its original frame.
+      for (const row of rows.values()) acknowledgeAccessNotice(row)
       dispatch(agentRunPreviewActions.bootstrapReceived({ streamId: ctx.streamId,
         messages: snapshot.persisted.map(ref => normalizeServerMessage(ref.row)),
         parentId: started?.type === 'started' && !snapshot.events.some(event =>
@@ -345,6 +355,7 @@ function makeHandleEvent(
       dispatch(action)
     }
     // (b) event-specific side effects that need the operation / return ids.
+    if (event.type === 'started') onRunStarted?.(event)
     if (event.type === 'tools_updated') {
       const discovered = event.tools.map((tool): ToolDefinition => {
         const visibility = Array.isArray(tool.ui?.visibility) ? tool.ui.visibility : ['model', 'app']
@@ -370,8 +381,7 @@ function makeHandleEvent(
       dispatch(chatSliceActions.setTools(getAllTools()))
     } else if (event.type === 'user_message_persisted') {
       if (isFullAccessNotification(event.message)) {
-        const requestId = parseMessageMeta(event.message.meta)?.requestId
-        if (typeof requestId === 'string') acknowledgeFullAccessNotification(String(ctx.conversationId), requestId)
+        acknowledgeAccessNotice(event.message)
         onMessagePersisted?.()
         if (nextSeq !== null) { acc.lastSeq = nextSeq; onSeq?.(nextSeq, event) }
         return
@@ -624,7 +634,15 @@ export async function runServerChatLoop(
   const ctx: ProjectionContext = { streamId, conversationId, userMessageArtifacts }
   const acc = newAccumulator()
   const optimisticBubble = params.optimisticBubble === undefined ? defaultOptimisticBubble(operation) : params.optimisticBubble
-  const handleEvent = makeHandleEvent(acc, ctx, optimisticBubble, dispatch, onMessagePersisted, onSeq, onUserMessagePersisted)
+  let accessNoticeId = request.fullAccess === true ? request.fullAccessNotificationId : undefined
+  const sourceKey = params.fullAccessSourceKey
+  const handleEvent = makeHandleEvent(acc, ctx, optimisticBubble, dispatch, onMessagePersisted, onSeq, onUserMessagePersisted,
+    sourceKey === undefined ? undefined : event => {
+      // Synthetic failure frames don't have a committed configuration. Never bind from those.
+      if (typeof accessNoticeId !== 'string' || event.conversationId !== conversationId || !event.operationMode || !event.lineageId || !event.parentId) return
+      dispatch(chatSliceActions.branchFullAccessRunStarted({ conversationId, lineageId: event.lineageId,
+        sourceKey, requestId: accessNoticeId }))
+    })
 
   if (operation === 'branch' || operation === 'edit') {
     const state = getState() as any
@@ -695,7 +713,9 @@ export async function runServerChatLoop(
         }
         throw error
       }
-      admission = await admitRun(conversationId, { ...request, operationId: newClientId(), fullAccess: mismatch.fullAccess }, signal)
+      // Confirmation accepts the other run's captured policy, not a new branch opt-in.
+      accessNoticeId = undefined
+      admission = await admitRun(conversationId, { ...request, operationId: newClientId(), fullAccess: mismatch.fullAccess, fullAccessNotificationId: undefined }, signal)
     }
     if (admission.disposition === 'queued' || admission.streamId !== streamId) {
       dispatch(chatSliceActions.optimisticMessageCleared())

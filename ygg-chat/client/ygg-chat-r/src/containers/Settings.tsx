@@ -2781,7 +2781,7 @@ const Settings: React.FC = () => {
 
         <SettingsSection
           title='Chat Reasoning Defaults'
-          description='These defaults are loaded every time Chat opens, then applied when the selected model supports reasoning/thinking.'
+          description='Used for new chats and any branch without its own level. Each branch remembers the level you pick in the composer, like its model and provider.'
           features={['Default thinking', 'Reasoning effort']}
         >
           <div className='flex flex-col gap-4'>
@@ -3781,6 +3781,14 @@ const Settings: React.FC = () => {
             description='Manage cached HTML tool outputs. Remove problematic tools without rendering them.'
             features={['Cached outputs', 'Favorites', 'Hibernate/restore', 'Remove cache entries']}
           >
+            {htmlRegistry.detached ? (
+              <div className='rounded-[1.75rem] border border-dashed border-stone-200 bg-stone-50/80 p-6 text-center text-sm text-stone-500 dark:border-stone-700 dark:bg-zinc-900/60 dark:text-stone-400'>
+                <p>The Task Manager is open in its own window. Manage cached tools there.</p>
+                <button type='button' className='mt-3 underline underline-offset-2' onClick={() => htmlRegistry.openModal()}>
+                  Show Task Manager window
+                </button>
+              </div>
+            ) : (
             <div>
               {/* Tools list */}
               <div className='space-y-2'>
@@ -3897,6 +3905,7 @@ const Settings: React.FC = () => {
                 </div>
               )}
             </div>
+            )}
           </SettingsSection>
         )}
 

@@ -146,7 +146,7 @@ For persisted structured messages, `ChatMessage` uses `buildContentBlockRenderIt
 - `image` blocks render as clickable images using `MESSAGE_IMAGE_CLASS`.
 - `responses_output_items` blocks are rendered only when there are no explicit normal renderable blocks; assistant message items become Markdown text and reasoning items become reasoning cards.
 
-A content block with short connective text can be marked `ignoreForProcessRunGrouping` so it does not break a larger process/tool/reasoning run.
+Every nonblank text block stays outside Agent steps, including short commentary.
 
 ## Block Stack Layout
 
@@ -158,7 +158,7 @@ Text, images, and the label of every disclosure row share one horizontal inset
 - Reasoning, generic tool cards, and grouped "Agent steps" all use `DisclosureRow` (32px) plus `DisclosurePanel`. The cross-message "Agent steps" row in `Chat.tsx` uses the same `DisclosurePanel`.
 - `DisclosurePanel` mounts its children only while open. On an animated close the children stay until the `grid-template-rows` transition ends (or a 400ms fallback), then unmount. With `disableTransition` (streaming rows) they unmount at once, because `transition: none` fires no `transitionend`. The collapsed track is 0fr, so this never changes the height the virtual list measures. The content wrapper is `inert` while collapsed, so hidden links and copy buttons leave the tab order and the accessibility tree. Mermaid and images inside collapsed reasoning therefore render after expand, not before.
 - `MarkdownBlock` (in `ChatMessage.tsx`) is the memoized `ReactMarkdown` wrapper behind `renderMarkdownNode`. It re-parses only when `markdown`, `className`, `themeVars`, `style`, or `id` change, so `markdownThemeVars` and `messageContentStyle` are memoized in `ChatMessage`. Keep their identity stable when adding props.
-- Tool variants that are always visible (html_renderer, MCP app, plan_md, edit diff, internalLink) use a static 32px row with the same inset. `html_renderer` renders inline `args.html` or file-loaded HTML from its successful result; file-backed fullscreen keys match the result entry registered by `ChatMessage`. Failed file reads remain ordinary error cards.
+- Tool variants that are always visible (HTML app results, html_renderer, MCP app, plan_md, edit diff, internalLink) use a static 32px row with the same inset. `html_renderer` renders inline `args.html` or file-loaded HTML from its successful result; file-backed fullscreen keys match the result entry registered by `ChatMessage`. Failed file reads remain ordinary error cards.
 - The MCP app iframe has one explicit height, shared by its loading box, clamped to `[240, 600]` px (`McpAppIframe/mcpAppSizing.ts`). The app moves it through `ui/notifications/size-changed`; the settled value is remembered per `${messageId}-${toolCallId}-mcp-app` in localStorage, so a remount and the row estimator both use it. `containerDimensions.maxHeight` advertises the same ceiling.
 - Structured tool detail uses `SurfaceCard` and `Badge`. Surfaces are tone only. No borders, no shadows.
 - User rows draw one tinted `rounded-2xl` surface with a small role caption. Assistant rows are flat.
@@ -183,27 +183,51 @@ Generic tool results are a renderer-only projection controlled by `chat:truncate
 
 Collapsed generic tool cards do not construct their result subtree until expanded, and `DisclosurePanel` mounts no children at all while collapsed. Preserve both behaviors when changing tool-card rendering so truncation continues to reduce DOM work rather than only hiding full content with CSS.
 
+## Tool card key/value palette
+
+Generic tool cards colour-code their `key: value` rows so keys, literal values and punctuation
+read apart at a glance, as JSON does in an editor. The palette is derived at render time, not
+stored as theme tokens:
+
+- `src/components/ChatMessage/toolCardPalette.ts` maps each slot (`key`, `text`, `string`,
+  `literal`, `punctuation`) to an existing `markdownSyntax*` theme token plus a per-mode
+  modulation (saturation multiplier, lightness offset, alpha). `getToolCardThemeVars` resolves
+  them to `--tool-*` CSS variables. `ChatMessage` memoizes the result (the default theme stands
+  in while the custom theme is off, exactly like `markdownThemeVars`) and `ToolCallGroupCard`
+  sets it on every card wrapper, so the generic, edit, plan, task and link variants all inherit it.
+- The sources follow the highlight.js mapping in `index.css` (`.hljs-attr` is the variable
+  colour, `.hljs-string` the string colour, `.hljs-number`/`.hljs-literal` the number colour,
+  `.hljs-punctuation` the punctuation colour), so a tool card and a JSON code block agree under
+  any theme. Keys and literals carry colour; nested strings are mostly desaturated; top-level
+  string values are plain text. Tune the look in `TOOL_CARD_PALETTE`; do not add theme tokens.
+- `src/components/ThemeManager/colorModulation.ts` does the arithmetic (`modulateColor`,
+  `parseCssColor`, `mixRgba`). A theme value it cannot parse falls back to CSS relative colour
+  syntax when the runtime supports it, otherwise passes through unchanged.
+- `FieldRows` renders values through `ToolValue` (`messagePrimitives.tsx`): strings stay raw,
+  numbers, booleans and null take the literal colour, and objects and arrays are tokenised from
+  their compact JSON by `toolValueTokens.ts`. The rendered text is unchanged, so copying a row
+  still yields valid JSON. Tokenising stops above 2,000 characters or 400 tokens and the value
+  stays one plain span, which bounds the DOM a large payload can add.
+- Error and incomplete results pass `palette={false}`, so their red or amber tint still owns
+  the row. `toolFields.css` holds the five classes; each falls back to `currentColor` when the
+  variables are absent.
+
+Tests: `colorModulation.test.ts`, `toolCardPalette.test.ts`, `toolValueTokens.test.ts`, plus the
+`FieldRows` and palette cases in `messagePrimitives.test.tsx` and `ToolCallGroupCard.test.tsx`.
+
 ## Process/Tool/Reasoning Grouping
 
 There are two related grouping layers.
 
 ### Cross-message grouping in `Chat.tsx`
 
-When `chat:groupToolReasoningRuns` is enabled, `Chat.tsx` groups consecutive process-only assistant/ex-agent messages into a single `process_group` from its first message. Context injections and message-owned hook records are projected below its collapsed history through `MessageActivity`; they do not split the run. User/compaction rows, substantive or trailing prose, errors, interactive output, and run footers remain boundaries.
+When `chat:groupToolReasoningRuns` is enabled, `persistedAgentRows.ts` projects ordered assistant/ex-agent display blocks into virtual rows. Consecutive tools and reasoning can join across saved message boundaries, including the leading and trailing work of messages that also contain prose. A mixed message keeps its canonical blocks and ID for message actions; only its display is split. Tool results stay with their call, and `responses_output_items` is a fallback only when explicit display blocks are absent.
 
-A message is process-only when it has reasoning/tool/process signals but no substantial text or image content. `Chat.tsx` identifies process signals from:
-- `thinking_block`;
-- parsed `tool_calls`;
-- `content_blocks` of type `thinking`, `tool_use`, `tool_result`, `reasoning_details`;
-- reasoning inside `responses_output_items`.
-
-If a following assistant message contains both process content and substantial final text, `Chat.tsx` may bridge its process blocks into the group and pass only non-process content to that final message row. This avoids showing the same tool/reasoning content twice.
-
-The leading case mirrors this. An assistant message with intro prose followed only by tool work (reasoning/text, then tool calls, no prose after them) keeps its prose row when the next message is process-only. Its process blocks render first in the following group (`leadingMessageId`), so one turn shows one "Agent steps" group. Such a message is never also bridged back into the previous group.
+User/compaction rows, nonblank text, visible errors, images, interactive output and run footers are boundaries. Context/hook activity can remain attached beneath a collapsed group via `MessageActivity`. A footer anchored to a mixed message follows its last fragment.
 
 ### Within-message grouping in `ChatMessage.tsx`
 
-`ChatMessage` groups process items from the first item within a message or stream. Process items include reasoning and tool cards; context and hooks are visible attachments rather than run boundaries. Text that looks like a short process annotation is allowed not to break the group. Interactive/visual surfaces remain outside grouped runs: all legacy `mcp__*` calls and `mcp_manager invoke` calls, `html_renderer`, and `plan_md` visualisation/clarification actions (`display`, `visualize`/`visualise`, and `clarify`). These tools also prevent their containing message from entering a cross-message process group. Group summaries show only the tool count and omit the duplicate run/reasoning counts.
+`ChatMessage` groups process items from the first item within a message or stream. Process items include reasoning and tool cards; context and hooks are visible attachments rather than run boundaries. Every nonblank text block breaks the group. Interactive/visual surfaces remain outside grouped runs: HTML app results, legacy `mcp__*` and `mcp_manager invoke` calls, `html_renderer`, and `plan_md` visualisation/clarification actions (`display`, `visualize`/`visualise`, and `clarify`). Neighbouring work on the same message can still join other process blocks. Compact history keeps an `html_omitted` layout hint for dropped HTML results so hydration does not change which group owns the app. The `Load app` control is only shown on an MCP app card with a UI resource. Group summaries show only the tool count and omit the duplicate run/reasoning counts.
 
 The relevant CSS utilities are `tool-expand-container`, `tool-expand-content`, and `tool-chevron` in `index.css`.
 
@@ -289,9 +313,9 @@ The `fontSizeOffset` is applied through inline `style` on Markdown containers or
 
 ### Change process grouping
 
-1. Update `isProcessContentBlock`, `hasSubstantialTextOrImage`, and count helpers in `Chat.tsx` for cross-message grouping.
-2. Update `buildStreamRenderItems()` / `buildContentBlockRenderItems()` and `renderItemsWithOptionalProcessGrouping()` in `ChatMessage.tsx` for within-message grouping.
-3. Validate with `chat:groupToolReasoningRuns` both enabled and disabled.
+1. Update `projectPersistedAgentRows()` for saved transcript grouping and keep display slices separate from canonical message blocks.
+2. Keep `agentActivity.ts` stream grouping and `ChatMessage.tsx` rendering aligned with the same visible boundaries.
+3. Validate both preference states with `node scripts/test-browser-workspace.cjs --grouped-agent-steps`. `--inline-apps` checks inline app visibility in the production browser renderer.
 
 ## Validation
 

@@ -29,7 +29,8 @@ function install(value: HostPromptSnapshot): void {
 }
 export async function refreshHostPrompts(signal?: AbortSignal): Promise<void> {
   if (isNativeShell) { install(await window.electronAPI!.prompts.read()); return }
-  const response = await fetch(await buildLocalApiUrl('/host/prompts'), { cache: 'no-store', signal })
+  // `no-cache` revalidates against the host's ETag, so an unchanged collection is a 304.
+  const response = await fetch(await buildLocalApiUrl('/host/prompts'), { cache: 'no-cache', signal })
   if (!response.ok) throw new Error('Host prompts unavailable')
   install(await response.json())
 }

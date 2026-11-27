@@ -63,3 +63,16 @@ describe('branch Fast mode attribution', () => {
     }
   })
 })
+
+describe('branch reasoning attribution', () => {
+  it('persists the branch level, including off, and omits it when unknown', () => {
+    for (const reasoningLevel of ['off', 'xhigh'] as const) {
+      const repo = makeFakeRepo()
+      new TreeMessageSink({ messageRepo: repo, reasoningLevel }).persistAssistantMessage({ ...draft, meta: { existing: true } })
+      expect(repo.createMessage.mock.calls[0][0].meta).toEqual({ existing: true, reasoningLevel })
+    }
+    const repo = makeFakeRepo()
+    new TreeMessageSink({ messageRepo: repo }).persistAssistantMessage({ ...draft, meta: { existing: true } })
+    expect(repo.createMessage.mock.calls[0][0].meta).toEqual({ existing: true })
+  })
+})

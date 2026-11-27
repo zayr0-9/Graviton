@@ -151,16 +151,16 @@ export class LineageRepo {
     return this.list(conversationId)
   }
 
-  getDetail(conversationId: string, lineageId: string): (LineageRow & { pathMessageIds: string[]; path: any[] }) | null {
+  getDetail(conversationId: string, lineageId: string, idsOnly = false): (LineageRow & { pathMessageIds: string[]; path: any[] }) | null {
     const lineage = this.get(lineageId)
     if (!lineage || lineage.conversation_id !== conversationId) return null
     if (!lineage.head_message_id) return { ...lineage, pathMessageIds: [], path: [] }
     const path = this.db.prepare(`WITH RECURSIVE path(id, parent_id, depth) AS (
         SELECT id, parent_id, 0 FROM messages WHERE id = ? AND conversation_id = ? UNION ALL
         SELECT m.id, m.parent_id, path.depth + 1 FROM messages m JOIN path ON m.id = path.parent_id WHERE path.depth < 10000
-      ) SELECT m.* FROM path JOIN messages m ON m.id = path.id ORDER BY path.depth DESC`
+      ) SELECT ${idsOnly ? 'path.id' : 'm.*'} FROM path JOIN messages m ON m.id = path.id ORDER BY path.depth DESC`
     ).all(lineage.head_message_id, conversationId) as any[]
-    return { ...lineage, pathMessageIds: path.map(message => message.id), path }
+    return { ...lineage, pathMessageIds: path.map(message => message.id), path: idsOnly ? [] : path }
   }
 
   listRecent(projectId: string, limit: number, userId?: string | null): any[] {

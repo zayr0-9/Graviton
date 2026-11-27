@@ -67,7 +67,9 @@ describe('Claude background task card', () => {
   it("shows a running agent's progress summary and last tool", () => {
     const html = renderToStaticMarkup(<BackgroundTaskView task={{ id: 't2', kind: 'local_agent', status: 'running', description: 'Implement P5',
       progress: 'Running vitest suites', lastTool: 'Bash', usage: { totalTokens: 340_000, toolUses: 12, durationMs: 252_000 } }} />)
-    for (const text of ['Implement P5', 'Running vitest suites', 'Last tool: Bash', '340K tokens', '12 tool uses', '4m 12s']) expect(html).toContain(text)
+    // The key, colon and value are separate palette spans, so compare the visible text.
+    const text = html.replace(/<[^>]+>/g, '')
+    for (const expected of ['Implement P5', 'Running vitest suites', 'Last tool: Bash', '340K tokens', '12 tool uses', '4m 12s']) expect(text).toContain(expected)
   })
 
   it('shows the summary once ended; agents that never finished read as stopped', () => {

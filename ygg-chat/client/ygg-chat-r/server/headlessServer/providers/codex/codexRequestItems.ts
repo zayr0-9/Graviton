@@ -41,11 +41,11 @@ export function toCodexMessages(input: ProviderGenerateInput): CodexMessage[] {
     if (msg.role === 'assistant') {
       const toolCalls = parseToolCalls(messageToolCalls(msg))
       const content = getMessageTextContent(msg)
-      if (content.trim() || toolCalls.length > 0) {
-        messages.push({ role: 'assistant', content, toolCalls })
-      }
+      const blocks = parseJsonArray(msg.content_blocks)
+      const outputItems = blocks.find(block => block?.type === 'responses_output_items')?.items
+      messages.push(...orderedAssistantHistory(content, toolCalls, parseJsonArray(outputItems ?? msg.responses_output_items)))
 
-      for (const block of parseJsonArray(msg.content_blocks)) {
+      for (const block of blocks) {
         if (block?.type !== 'tool_result') continue
         const callId = typeof block.tool_use_id === 'string' ? block.tool_use_id : ''
         if (!callId || toolOutputIds.has(callId)) continue
@@ -80,6 +80,43 @@ export function toCodexMessages(input: ProviderGenerateInput): CodexMessage[] {
   return appendImageAttachmentsToLatestUserMessage(messages, input.turnContext?.attachmentsBase64 ?? null)
 }
 
+// Use the provider's output order for narration, but only replay calls recorded by
+// the tool loop. Raw provider IDs, reasoning and hosted items are not wire input.
+function orderedAssistantHistory(content: string, toolCalls: NonNullable<CodexMessage['toolCalls']>, outputItems: any[]): CodexMessage[] {
+  const isMessage = (item: any) => (item?.type === 'message' || item?.type === 'output_message') && (!item.role || item.role === 'assistant')
+  if (!outputItems.some(item => isMessage(item) && item.phase === 'commentary')) {
+    return content.trim() || toolCalls.length ? [{ role: 'assistant', content, toolCalls }] : []
+  }
+
+  const messages: CodexMessage[] = []
+  const pendingCalls = new Map(toolCalls.map(call => [call.id, call]))
+  let replayedContent = false
+  for (const item of outputItems) {
+    if (item?.type === 'function_call') {
+      const call = pendingCalls.get(item.call_id || item.id)
+      if (call) {
+        messages.push({ role: 'assistant', toolCalls: [call] })
+        pendingCalls.delete(call.id)
+      }
+    } else if (isMessage(item)) {
+      const text = Array.isArray(item.content)
+        ? item.content.filter((part: any) => part?.type === 'output_text' || part?.type === 'text').map((part: any) => part.text).join('')
+        : typeof item.content === 'string' ? item.content : ''
+      if (!text.trim()) continue
+      const matchesContent = text.trim() === content.trim()
+      // The row's selected answer may have been edited. Do not restore stale
+      // answer text from the provider, or append its commentary fallback twice.
+      if (item.phase !== 'commentary' && !matchesContent) continue
+      const phase = item.phase === 'commentary' || item.phase === 'final_answer' || item.phase === 'partial_answer' ? item.phase : undefined
+      messages.push({ role: 'assistant', content: item.phase === 'commentary' ? text : content, phase })
+      replayedContent ||= matchesContent
+    }
+  }
+  if (content.trim() && !replayedContent) messages.push({ role: 'assistant', content })
+  if (pendingCalls.size) messages.push({ role: 'assistant', toolCalls: [...pendingCalls.values()] })
+  return messages
+}
+
 export function toCodexRequestParts(messages: CodexInputMessage[], tools: ProviderToolDefinition[]): CodexRequestParts {
   const instructions =
     messages
@@ -112,7 +149,7 @@ function messageToCodexItems(message: CodexInputMessage, index: number): any[] {
   }
   if (message.role === 'assistant') {
     const items: any[] = []
-    if (message.content) items.push({ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: message.content }] })
+    if (message.content) items.push({ type: 'message', role: 'assistant', ...(message.phase ? { phase: message.phase } : {}), content: [{ type: 'output_text', text: message.content }] })
     for (const toolCall of message.toolCalls || []) items.push(toolCallToCodexItem(toolCall))
     return items
   }

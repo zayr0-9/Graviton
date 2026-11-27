@@ -18,7 +18,14 @@ import {
   SURFACE_INNER_CLASS,
   TEXT_DETAIL_CLASS,
   TEXT_MICRO_CLASS,
+  TOOL_FIELD_KEY_CLASS,
+  TOOL_FIELD_LITERAL_CLASS,
+  TOOL_FIELD_PUNCTUATION_CLASS,
+  TOOL_FIELD_STRING_CLASS,
+  TOOL_FIELD_TEXT_CLASS,
 } from './chatMessageShared'
+import { tokenizeJson, type ToolValueTokenKind } from './toolValueTokens'
+import './toolFields.css'
 
 /**
  * Shared building blocks for every content block kind in a chat message.
@@ -238,11 +245,43 @@ export const SurfaceCard: React.FC<SurfaceCardProps> = ({ title, index, badge, a
   )
 }
 
-/** `key: value` rows in monospace. */
+const TOKEN_CLASS: Record<ToolValueTokenKind, string> = {
+  key: TOOL_FIELD_KEY_CLASS,
+  string: TOOL_FIELD_STRING_CLASS,
+  literal: TOOL_FIELD_LITERAL_CLASS,
+  punctuation: TOOL_FIELD_PUNCTUATION_CLASS,
+}
+
+/**
+ * One tool field value. Strings stay raw text; numbers, booleans and null take the literal
+ * colour; objects and arrays are tokenised from their compact JSON so nested keys, literals and
+ * punctuation are coloured too. The rendered text is always exactly `stringifyToolValue`, so
+ * copying a row still yields valid JSON. Oversized values skip tokenising and stay one span.
+ */
+export const ToolValue: React.FC<{ value: unknown }> = ({ value }) => {
+  if (typeof value === 'string') return <span className={TOOL_FIELD_TEXT_CLASS}>{value}</span>
+  if (value === null || typeof value !== 'object') return <span className={TOOL_FIELD_LITERAL_CLASS}>{String(value)}</span>
+  const json = String(stringifyToolValue(value))
+  const tokens = tokenizeJson(json)
+  if (!tokens) return <span className={TOOL_FIELD_TEXT_CLASS}>{json}</span>
+  return (
+    <span className={TOOL_FIELD_TEXT_CLASS}>
+      {tokens.map((token, index) => (
+        <span key={index} className={TOKEN_CLASS[token.kind]}>
+          {token.text}
+        </span>
+      ))}
+    </span>
+  )
+}
+
+/** `key: value` rows in monospace, colour-coded through the tool card palette. */
 export const FieldRows: React.FC<{
   record: Record<string, unknown> | null
   fallback?: { key: string; value: unknown }
-}> = ({ record, fallback }) => {
+  /** Error and incomplete results turn the palette off so their red/amber tint owns the row. */
+  palette?: boolean
+}> = ({ record, fallback, palette = true }) => {
   const entries: Array<[string, unknown]> = record
     ? Object.entries(record)
     : fallback
@@ -257,7 +296,16 @@ export const FieldRows: React.FC<{
     <div className={`${MONO_DETAIL_CLASS} space-y-0.5 whitespace-pre-wrap`}>
       {entries.map(([fieldKey, fieldValue]) => (
         <div key={fieldKey} className='min-w-0 max-w-full'>
-          <span className={MONO_KEY_CLASS}>{fieldKey}:</span> <span>{stringifyToolValue(fieldValue)}</span>
+          {palette ? (
+            <>
+              <span className={TOOL_FIELD_KEY_CLASS}>{fieldKey}</span>
+              <span className={TOOL_FIELD_PUNCTUATION_CLASS}>:</span> <ToolValue value={fieldValue} />
+            </>
+          ) : (
+            <>
+              <span className={MONO_KEY_CLASS}>{fieldKey}:</span> <span>{stringifyToolValue(fieldValue)}</span>
+            </>
+          )}
         </div>
       ))}
     </div>

@@ -80,6 +80,24 @@ describe('ordinary persisted compaction turns', () => {
     expect(events.some(event => event.type === 'complete')).toBe(false)
   })
 
+  it('continues an OpenAI tool loop when only the replay estimate crosses the threshold', async () => {
+    const reportedUsage = { ...usage, inputTokens: 4400, cachedInputTokens: 4000, totalTokens: 4410, usedTokens: 4410 }
+    const executeTool = vi.fn(async () => 'x'.repeat(40_000))
+    const h = harness([
+      { content: '', toolCalls: [{ id: 't', name: 'read_file', arguments: {} }], contextUsage: reportedUsage },
+      { content: 'Done', contextUsage: reportedUsage },
+    ], { executeTool })
+    const events: any[] = []
+
+    const result = await h.service.run(base, event => events.push(event))
+
+    expect(result.finalAssistantMessage.content).toBe('Done')
+    expect(h.calls).toHaveLength(2)
+    expect(executeTool).toHaveBeenCalledTimes(1)
+    expect(h.calls[1].input.history.some((row: any) => row.meta?.kind === 'compaction_instruction')).toBe(false)
+    expect(events.some(event => event.type === 'context_compaction')).toBe(false)
+  })
+
   it.each(['lmstudio', 'zai', 'bedrock', 'openrouterbyok'])('triggers for %s with the configured percentage', async provider => {
     const h = harness([{ content: 'Short summary' }, { content: 'Done' }])
     await h.service.run({ ...base, provider, compactionThresholdPercent: 40,

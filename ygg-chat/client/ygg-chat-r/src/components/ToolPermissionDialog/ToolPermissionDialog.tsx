@@ -11,6 +11,7 @@ interface ToolPermissionDialogProps {
   /** Claude runs only: approve this call and let Claude's auto classifier handle the rest of the run. */
   onAllowAuto?: () => void
   variant?: 'permission' | 'operation-mode-upgrade'
+  transcriptRevision?: import('../../../../../shared/transcriptRevision').TranscriptRevisionPreview
 }
 
 export const ToolPermissionDialog: React.FC<ToolPermissionDialogProps> = ({
@@ -20,6 +21,7 @@ export const ToolPermissionDialog: React.FC<ToolPermissionDialogProps> = ({
   onAllowAll,
   onAllowAuto,
   variant = 'permission',
+  transcriptRevision,
 }) => {
   const claudePlan = variant === 'operation-mode-upgrade' ? claudePlanFromToolCall(toolCall.name, toolCall.arguments) : null
   const isClaudePlanExit = variant === 'operation-mode-upgrade' && toolCall.name === 'ExitPlanMode'
@@ -122,14 +124,14 @@ export const ToolPermissionDialog: React.FC<ToolPermissionDialogProps> = ({
       <div className='flex items-center px-1'>
         <div className='min-w-0 flex flex-1 mb-1 items-center gap-2'>
           <h3 className='text-sm' style={{ color: titleTextColor }}>
-            {variant === 'operation-mode-upgrade' ? 'Switch to Agent Mode?' : 'Permission requested'}
+            {transcriptRevision ? 'Apply this revision?' : variant === 'operation-mode-upgrade' ? 'Switch to Agent Mode?' : 'Permission requested'}
           </h3>
-          <span
+          {!transcriptRevision && <span
             className='truncate rounded-md text-[10px] px-2 py-0.5 leading-none mt-0.5 tracking-[0.08em]'
             style={{ color: toolNameTextColor }}
           >
             {toolCall.name.replace(/_/g, ' ').toUpperCase()}
-          </span>
+          </span>}
           {bashDescription && (
             <span
               className='min-w-0 truncate text-[11px] mt-0.5'
@@ -141,7 +143,7 @@ export const ToolPermissionDialog: React.FC<ToolPermissionDialogProps> = ({
           )}
         </div>
 
-        <div
+        {!transcriptRevision && <div
           className='rounded-md px-2 py-0.5 text-[10px] uppercase tracking-[0.08em]'
           style={{
             backgroundColor: badgeBgColor,
@@ -149,8 +151,17 @@ export const ToolPermissionDialog: React.FC<ToolPermissionDialogProps> = ({
           }}
         >
           tool
-        </div>
+        </div>}
       </div>
+
+      {transcriptRevision && (
+        <div className='px-1 text-xs' style={{ color: titleTextColor }}>
+          <p>Only this branch’s display will change.</p>
+          <p className='break-words line-clamp-2' title={transcriptRevision.excerpt}>
+            {new Date(transcriptRevision.messageDate).toLocaleString()} · {transcriptRevision.excerpt}
+          </p>
+        </div>
+      )}
 
       {variant === 'operation-mode-upgrade' && (
         <p className='px-1 text-[11px]' style={{ color: badgeTextColor }}>
@@ -164,7 +175,9 @@ export const ToolPermissionDialog: React.FC<ToolPermissionDialogProps> = ({
 
       {/* Terminal-style command preview */}
       <div
-        className='relative mt-1 overflow-y-auto rounded-lg px-3 py-2 thin-scrollbar sm:max-h-8 md:max-h-10 lg:max-h-18 xl:max-h-28 2xl:max-h-32'
+        className={`relative mt-1 overflow-y-auto rounded-lg px-3 py-2 thin-scrollbar ${transcriptRevision ? 'max-h-[min(30dvh,16rem)]' : 'sm:max-h-8 md:max-h-10 lg:max-h-18 xl:max-h-28 2xl:max-h-32'}`}
+        tabIndex={transcriptRevision ? 0 : undefined}
+        aria-label={transcriptRevision ? 'Proposed changes' : undefined}
         style={{ backgroundColor: commandBgColor }}
       >
         {/* <div
@@ -174,9 +187,17 @@ export const ToolPermissionDialog: React.FC<ToolPermissionDialogProps> = ({
           COMMAND
         </div> */}
 
-        <pre className='whitespace-pre-wrap break-all text-[10px] leading-5 font-mono'>
-          <span style={{ color: commandTextColor }}>{formattedArgs}</span>
-        </pre>
+        {transcriptRevision ? transcriptRevision.edits.map(({ block, before, after }, index) => (
+          <div key={index} className='mb-2 last:mb-0 text-xs' style={{ color: commandTextColor }}>
+            <p>Text block {block + 1} · Remove</p>
+            <pre className='whitespace-pre-wrap break-words font-mono'>{before}</pre>
+            {after && <><p className='mt-1'>Add</p><pre className='whitespace-pre-wrap break-words font-mono'>{after}</pre></>}
+          </div>
+        )) : (
+          <pre className='whitespace-pre-wrap break-all text-[10px] leading-5 font-mono'>
+            <span style={{ color: commandTextColor }}>{formattedArgs}</span>
+          </pre>
+        )}
       </div>
 
       {/* Actions */}
@@ -191,7 +212,7 @@ export const ToolPermissionDialog: React.FC<ToolPermissionDialogProps> = ({
             color: denyButtonTextColor,
           }}
         >
-          {isClaudePlanExit ? 'Keep Planning' : variant === 'operation-mode-upgrade' ? 'Stay in Plan Mode' : 'Deny'}
+          {transcriptRevision ? 'Decline' : isClaudePlanExit ? 'Keep Planning' : variant === 'operation-mode-upgrade' ? 'Stay in Plan Mode' : 'Deny'}
         </button>
         <button
           type='button'
@@ -203,9 +224,9 @@ export const ToolPermissionDialog: React.FC<ToolPermissionDialogProps> = ({
             color: allowButtonTextColor,
           }}
         >
-          {isClaudePlanExit ? 'Approve Plan' : variant === 'operation-mode-upgrade' ? 'Switch to Agent Mode' : 'Allow Once'}
+          {transcriptRevision ? 'Apply revision' : isClaudePlanExit ? 'Approve Plan' : variant === 'operation-mode-upgrade' ? 'Switch to Agent Mode' : 'Allow Once'}
         </button>
-        {variant === 'permission' && onAllowAuto && (
+        {!transcriptRevision && variant === 'permission' && onAllowAuto && (
           <button
             type='button'
             onClick={onAllowAuto}
@@ -220,7 +241,7 @@ export const ToolPermissionDialog: React.FC<ToolPermissionDialogProps> = ({
             Auto
           </button>
         )}
-        {variant === 'permission' && onAllowAll && (
+        {!transcriptRevision && variant === 'permission' && onAllowAll && (
           <button
             type='button'
             onClick={onAllowAll}

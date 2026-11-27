@@ -20,9 +20,8 @@ import {
   type HtmlToolRecord,
 } from '../../hooks/useQueries'
 import { buildCachedLocalApiUrl, localApi } from '../../utils/api'
-import { isNativeShell } from '../../platform/clientCapabilities'
+import { isBrowserClient, isNativeShell } from '../../platform/clientCapabilities'
 import { isolateBrowserAppHtml } from '../../utils/browserAppIsolation'
-import { isBrowserClient } from '../../platform/clientCapabilities'
 import { attachMessageBridge as attachSharedMessageBridge } from '../../utils/iframeBridge'
 import {
   buildCspValue,
@@ -35,6 +34,15 @@ import {
 } from '../../utils/mcpApps'
 import { normalizeMcpAppToolResult } from '../../utils/mcpAppToolResult'
 import { McpAppIframe } from '../McpAppIframe/McpAppIframe'
+import {
+  canOpenAppsWindow,
+  isAppsWindowOpen,
+  onAppsWindowChanged,
+  openAppsWindow,
+  takeAppsReturn,
+  type AppsHandoffMode,
+} from '../../platform/appsWindow'
+import { mergeTransferredEntry, parseTransferredEntry, toTransferableEntry } from './appsHandoffEntries'
 import { buildMcpAppContainerDimensions } from '../McpAppIframe/mcpAppSizing'
 
 type HtmlIframeEntryBase = {
@@ -52,13 +60,13 @@ type HtmlIframeEntryBase = {
   kind: 'html' | 'mcp'
 }
 
-type HtmlIframeHtmlEntry = HtmlIframeEntryBase & {
+export type HtmlIframeHtmlEntry = HtmlIframeEntryBase & {
   kind: 'html'
   html: string
   src?: string | null
 }
 
-type HtmlIframeMcpEntry = HtmlIframeEntryBase & {
+export type HtmlIframeMcpEntry = HtmlIframeEntryBase & {
   kind: 'mcp'
   serverName: string
   resourceUri: string
@@ -69,7 +77,7 @@ type HtmlIframeMcpEntry = HtmlIframeEntryBase & {
   reloadToken?: number
 }
 
-type HtmlIframeEntry = HtmlIframeHtmlEntry | HtmlIframeMcpEntry
+export type HtmlIframeEntry = HtmlIframeHtmlEntry | HtmlIframeMcpEntry
 
 type HtmlToolsSettings = {
   maxActive: number
@@ -136,6 +144,16 @@ type HtmlIframeRegistryContextValue = {
   bootstrapFromLocalCache: (userId: string) => Promise<void>
   settings: HtmlToolsSettings
   updateSettings: (updates: Partial<HtmlToolsSettings>) => void
+  /** Main window: the Task Manager (and its iframes) moved to the detached apps window. */
+  detached: boolean
+  /** Main window in Electron: the Task Manager can move to its own window. */
+  canPopOut: boolean
+  /** Move the Task Manager to the apps window, focusing `focusKey`. Apps reload there. */
+  popOut: (focusKey?: string | null) => Promise<boolean>
+  /** JSON copies of every entry, for handing the list to another window. */
+  exportEntries: () => HtmlIframeEntry[]
+  /** Install entries from another window: `replace` the whole list or `merge` these in. */
+  importEntries: (entries: unknown[], mode: AppsHandoffMode) => void
 }
 
 type IframeRecord = {
@@ -859,6 +877,10 @@ export const HtmlIframeRegistryProvider: React.FC<{
   const pendingDeletesRef = useRef<Set<string>>(new Set())
   const flushTimeoutRef = useRef<number | null>(null)
   const lastQuerySyncRef = useRef<string | null>(null)
+  // Main window only: while the apps window owns the Task Manager, this window keeps the
+  // entry list but creates no iframes, persists nothing and enforces no limits.
+  const detachedRef = useRef(false)
+  const [detached, setDetachedState] = useState(false)
 
   useEffect(() => {
     authContextRef.current = { tenantId: userId ?? null }
@@ -960,7 +982,7 @@ export const HtmlIframeRegistryProvider: React.FC<{
   const queuePersistUpsert = useCallback(
     (entry: HtmlIframeEntry) => {
       if (!isHtmlEntry(entry)) return
-      if (!userId || !isElectronEnv) return
+      if (!userId || !isElectronEnv || detachedRef.current) return
       pendingUpsertsRef.current.set(entry.key, entry)
       pendingDeletesRef.current.delete(entry.key)
       if (flushTimeoutRef.current) return
@@ -974,7 +996,7 @@ export const HtmlIframeRegistryProvider: React.FC<{
 
   const queuePersistDelete = useCallback(
     (key: string) => {
-      if (!userId || !isElectronEnv) return
+      if (!userId || !isElectronEnv || detachedRef.current) return
       pendingUpsertsRef.current.delete(key)
       pendingDeletesRef.current.add(key)
       if (flushTimeoutRef.current) return
@@ -1088,6 +1110,7 @@ export const HtmlIframeRegistryProvider: React.FC<{
 
   const enforceLimits = useCallback(
     (now = Date.now()) => {
+      if (detachedRef.current) return false
       const currentEntries = Array.from(entriesRef.current.values())
       if (currentEntries.length === 0) return false
 
@@ -1413,6 +1436,7 @@ export const HtmlIframeRegistryProvider: React.FC<{
       label?: string | null,
       meta?: { conversationId?: string | null; projectId?: string | null; toolName?: string | null }
     ) => {
+      if (detachedRef.current) return
       let record = recordsRef.current.get(key)
       if (!record) {
         record = createIframeRecord(html, fullHeight, getAuthContext, meta?.toolName ?? null)
@@ -1551,6 +1575,7 @@ export const HtmlIframeRegistryProvider: React.FC<{
         className?: string
       }
     ) => {
+      if (detachedRef.current) return
       let record = mcpRecordsRef.current.get(key)
       const isNew = !record
       if (!record) {
@@ -1683,14 +1708,14 @@ export const HtmlIframeRegistryProvider: React.FC<{
       if (!userId || bootstrapInFlightRef.current) return
       bootstrapInFlightRef.current = true
       try {
-        if (entriesRef.current.size > 0) return
+        if (!isBrowserClient && entriesRef.current.size > 0) return
         const cachedTools = getHtmlToolsFromCache(queryClient, userId)
         if (cachedTools.length > 0) {
           syncEntriesFromCache(cachedTools)
           return
         }
 
-        if (isElectronEnv) {
+        if (isElectronEnv || isBrowserClient) {
           const tools = await localApi.get<HtmlToolRecord[]>(`/local/tools?userId=${userId}`)
           if (Array.isArray(tools) && tools.length > 0) {
             queryClient.setQueryData(htmlToolsQueryKey(userId), tools)
@@ -1699,6 +1724,8 @@ export const HtmlIframeRegistryProvider: React.FC<{
           }
         }
 
+        // Never ship conversation histories over LAN to rebuild the host's HTML tool index.
+        if (isBrowserClient) return
         logHtmlTools('bootstrap-start', { userId })
         const conversations = await localApi.get<Conversation[]>(`/app/conversations?userId=${userId}`)
         if (!Array.isArray(conversations) || conversations.length === 0) return
@@ -1746,6 +1773,18 @@ export const HtmlIframeRegistryProvider: React.FC<{
 
   const openModal = useCallback(
     (key?: string | null) => {
+      // The Task Manager lives in the apps window: send it the app (fresh copy) and focus it.
+      if (detachedRef.current) {
+        const entry = key ? entriesRef.current.get(key) : undefined
+        if (entry) {
+          const now = Date.now()
+          entriesRef.current.set(key!, { ...entry, status: 'active', lastUsedAt: now, updatedAt: now })
+          syncEntries()
+        }
+        const transferable = entry ? toTransferableEntry(entriesRef.current.get(key!)!) : null
+        void openAppsWindow({ mode: 'merge', entries: transferable ? [transferable] : [], focusKey: transferable ? key! : null })
+        return
+      }
       if (key) {
         const entry = entriesRef.current.get(key)
         if (entry) {
@@ -1775,6 +1814,113 @@ export const HtmlIframeRegistryProvider: React.FC<{
     setIsModalOpen(false)
     setFocusKey(null)
   }, [])
+
+  const exportEntries = useCallback(
+    () =>
+      Array.from(entriesRef.current.values())
+        .map(toTransferableEntry)
+        .filter((entry): entry is HtmlIframeEntry => entry !== null),
+    []
+  )
+
+  const importEntries = useCallback(
+    (incoming: unknown[], mode: AppsHandoffMode) => {
+      const now = Date.now()
+      const parsed = incoming
+        .map(value => parseTransferredEntry(value, now))
+        .filter((entry): entry is HtmlIframeEntry => entry !== null)
+      if (mode === 'replace') {
+        const keep = new Set(parsed.map(entry => entry.key))
+        for (const key of Array.from(entriesRef.current.keys())) {
+          if (keep.has(key)) continue
+          removeRecord(key)
+          entriesRef.current.delete(key)
+          targetsRef.current.delete(key)
+        }
+        setFocusKey(prev => (prev && keep.has(prev) ? prev : null))
+      }
+      for (const entry of parsed) {
+        const next = mode === 'merge' ? mergeTransferredEntry(entriesRef.current.get(entry.key), entry) : entry
+        entriesRef.current.set(next.key, next)
+        if (next.status === 'hibernated') removeRecord(next.key)
+        // The sender may not have saved it (the main window saves nothing while detached).
+        updateCacheEntry(next)
+        queuePersistUpsert(next)
+      }
+      syncEntries()
+      enforceLimits(now)
+    },
+    [enforceLimits, queuePersistUpsert, removeRecord, syncEntries, updateCacheEntry]
+  )
+
+  const setDetached = useCallback(
+    (next: boolean) => {
+      if (detachedRef.current === next) return
+      if (next) {
+        // Save pending changes first: the apps window starts from this list.
+        if (flushTimeoutRef.current) {
+          window.clearTimeout(flushTimeoutRef.current)
+          flushTimeoutRef.current = null
+        }
+        void flushPersist()
+      }
+      detachedRef.current = next
+      setDetachedState(next)
+      if (!next) return
+      for (const key of [...recordsRef.current.keys(), ...mcpRecordsRef.current.keys()]) removeRecord(key)
+      setIsModalOpen(false)
+      setFocusKey(null)
+    },
+    [flushPersist, removeRecord]
+  )
+
+  const canPopOut = useMemo(() => canOpenAppsWindow(), [])
+
+  const popOut = useCallback(
+    async (focus?: string | null) => {
+      if (!canPopOut) return false
+      if (detachedRef.current) {
+        openModal(focus ?? null)
+        return true
+      }
+      const entries = exportEntries()
+      const focusKeyToSend = focus && entries.some(entry => entry.key === focus) ? focus : null
+      setDetached(true)
+      const opened = await openAppsWindow({ mode: 'replace', entries, focusKey: focusKeyToSend })
+      if (!opened) setDetached(false)
+      return opened
+    },
+    [canPopOut, exportEntries, openModal, setDetached]
+  )
+
+  // Main window: follow the apps window. While it is open this window is detached; when it
+  // closes, take back the list it handed over (or keep this one if it handed nothing back).
+  const importEntriesRef = useRef(importEntries)
+  importEntriesRef.current = importEntries
+  const setDetachedRef = useRef(setDetached)
+  setDetachedRef.current = setDetached
+  useEffect(() => {
+    if (!canPopOut) return
+    let disposed = false
+    void isAppsWindowOpen().then(open => {
+      if (!disposed && open) setDetachedRef.current(true)
+    })
+    const off = onAppsWindowChanged(open => {
+      if (open) {
+        setDetachedRef.current(true)
+        return
+      }
+      void takeAppsReturn().then(handoff => {
+        if (disposed) return
+        setDetachedRef.current(false)
+        if (handoff) importEntriesRef.current(handoff.entries, 'replace')
+      })
+    })
+    return () => {
+      disposed = true
+      off?.()
+    }
+  }, [canPopOut])
 
   const updateSettings = useCallback((updates: Partial<HtmlToolsSettings>) => {
     setSettings(prev => {
@@ -1825,8 +1971,18 @@ export const HtmlIframeRegistryProvider: React.FC<{
       bootstrapFromLocalCache,
       settings,
       updateSettings,
+      detached,
+      canPopOut,
+      popOut,
+      exportEntries,
+      importEntries,
     }),
     [
+      canPopOut,
+      detached,
+      exportEntries,
+      importEntries,
+      popOut,
       bootstrapFromLocalCache,
       closeModal,
       entries,

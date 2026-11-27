@@ -1,5 +1,7 @@
 import { HOST_SKILLS_CHANGED } from '../../services/hostCatalogClient'
 import { useActivityStepLabels, saveActivityStepLabels } from '../../helpers/activityStepLabelsSettings'
+import { saveHideReasoningBlocks, useHideReasoningBlocks } from '../../helpers/hideReasoningSettings'
+import { saveHighlightedTurnFiles, useHighlightedTurnFiles } from '../../helpers/highlightedTurnFilesSettings'
 import {
   MCP_APP_MAX_HEIGHT,
   MCP_APP_MIN_HEIGHT,
@@ -16,6 +18,7 @@ import {
   CheckCircle,
   ChevronDown,
   Download,
+  EyeOff,
   FileJson,
   FolderOpen,
   GitBranch,
@@ -46,6 +49,7 @@ import { fetchMcpTools, selectCurrentConversationId } from '../../features/chats
 import { convContextSet, systemPromptSet, updateContext, updateSystemPrompt } from '../../features/conversations'
 import type { Conversation } from '../../features/conversations/conversationTypes'
 import { selectSelectedProject } from '../../features/projects'
+import { saveChatDisplayName, useChatDisplayName } from '../../helpers/chatDisplayName'
 import { useAppDispatch, useAppSelector } from '../../hooks/redux'
 import { useUserSystemPrompts } from '../../hooks/useUserSystemPrompts'
 import {
@@ -58,7 +62,6 @@ import {
 } from '../../helpers/toolOutputTruncation'
 import { localApi } from '../../utils/api'
 import { executeToolAndWait } from '../../utils/executeToolAndWait'
-import { extractTextFromPdf } from '../../utils/pdfUtils'
 import { InputTextArea } from '../InputTextArea/InputTextArea'
 import { ThemeManager } from '../ThemeManager/ThemeManager'
 import {
@@ -77,6 +80,7 @@ import { SystemNotificationSettings } from './SystemNotificationSettings'
 import { useSettingsSectionThemeColors } from './settingsSectionTheme'
 import { ToolsSettings } from './ToolsSettings'
 import { HookGenerationSettings } from './HookGenerationSettings'
+import { ClaudeHookSettings } from './ClaudeHookSettings'
 import { ClaudeMcpSettings } from './ClaudeMcpSettings'
 import { KeyboardShortcutsModal } from './KeyboardShortcutsModal'
 
@@ -261,6 +265,23 @@ const extractTextFromDocx = async (file: File): Promise<string> => {
   return text.trim()
 }
 
+function DisplayNameSettings({ descriptionStyle }: { descriptionStyle?: React.CSSProperties }) {
+  const name = useChatDisplayName()
+  return (
+    <section className='space-y-2'>
+      <label htmlFor='chat-display-name' className='text-[16px] font-medium text-stone-700 dark:text-stone-200'>
+        Display name
+      </label>
+      <input id='chat-display-name' type='text' className={inputSurfaceClass} placeholder='User'
+        aria-describedby='chat-display-name-help'
+        value={name} maxLength={64} onChange={event => saveChatDisplayName(event.target.value)} />
+      <p id='chat-display-name-help' className='text-xs text-neutral-700 dark:text-neutral-300' style={descriptionStyle}>
+        Sent to your selected model in the system prompt when a run starts. Leave blank to omit it.
+      </p>
+    </section>
+  )
+}
+
 export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => {
   const dispatch = useAppDispatch()
   const queryClient = useQueryClient()
@@ -409,6 +430,8 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
   })
 
   const showActivityStepLabels = useActivityStepLabels()
+  const hideReasoningBlocks = useHideReasoningBlocks()
+  const showHighlightedTurnFiles = useHighlightedTurnFiles()
   const mcpAppConstraintsEnabled = useMcpAppConstraintsEnabled()
 
   const [truncateToolOutput, setTruncateToolOutput] = useState<boolean>(loadToolOutputTruncationEnabled)
@@ -1247,6 +1270,7 @@ export const SettingsPane: React.FC<SettingsPaneProps> = ({ open, onClose }) => 
 
       if (pdfFiles.length > 0) {
         try {
+          const { extractTextFromPdf } = await import('../../utils/pdfUtils')
           const pdfTexts = await Promise.all(
             pdfFiles.map(
               async file => `[Pdf Content for ${file.name}]:
@@ -1519,6 +1543,8 @@ ${block}`
               className='hidden'
               aria-hidden='true'
             />
+
+            <DisplayNameSettings descriptionStyle={settingsSectionTitleStyle} />
 
             {/* System Prompt and Context Collapsible Section */}
             <div className='space-y-2'>
@@ -2035,6 +2061,68 @@ ${block}`
                     </div>
                   </div>
 
+                  {/* Hide Reasoning Blocks Section */}
+                  <div className='space-y-2'>
+                    <div
+                      className='overflow-hidden rounded-2xl bg-neutral-50/70 dark:bg-neutral-900/10'
+                      style={settingsSectionCardStyle}
+                    >
+                      <div className='flex items-start justify-between gap-3 px-3 py-3'>
+                        <div className='flex min-w-0 items-start gap-3'>
+                          <div
+                            className='mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-amber-100 text-amber-600 dark:bg-amber-500/15 dark:text-amber-300'
+                            style={settingsSectionIconStyle}
+                          >
+                            <EyeOff {...lucideIconProps} />
+                          </div>
+                          <div className='min-w-0 pr-3'>
+                            <p
+                              id='hide-reasoning-blocks-label'
+                              className='text-sm font-medium text-stone-700 dark:text-neutral-100'
+                              style={settingsSectionTitleStyle}
+                            >
+                              Hide reasoning blocks
+                            </p>
+                            <p
+                              className='mt-0.5 text-xs text-neutral-500 dark:text-neutral-100'
+                              style={settingsSectionBodyStyle}
+                            >
+                              Remove model reasoning from the chat transcript. Answers and tool calls stay visible, and
+                              reasoning is still saved.
+                            </p>
+                          </div>
+                        </div>
+                        <button
+                          type='button'
+                          onClick={() => saveHideReasoningBlocks(!hideReasoningBlocks)}
+                          className={iconButtonClass}
+                          style={
+                            savedCustomThemesColors
+                              ? {
+                                  backgroundColor: savedCustomThemesColors.buttonBg,
+                                  color: savedCustomThemesColors.buttonText,
+                                }
+                              : undefined
+                          }
+                          title={hideReasoningBlocks ? 'Show reasoning blocks' : 'Hide reasoning blocks'}
+                          aria-labelledby='hide-reasoning-blocks-label'
+                          aria-pressed={hideReasoningBlocks}
+                        >
+                          {hideReasoningBlocks ? (
+                            <Check
+                              {...lucideIconProps}
+                              style={
+                                savedCustomThemesColors ? { color: savedCustomThemesColors.primaryButtonBg } : undefined
+                              }
+                            />
+                          ) : (
+                            <X {...lucideIconProps} />
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
                   <div className='flex items-center justify-between gap-3 rounded-2xl bg-neutral-50/70 px-3 py-3 dark:bg-neutral-900/10'
                     style={savedCustomThemesColors ? { backgroundColor: savedCustomThemesColors.cardBg } : undefined}>
                     <label id='activity-step-labels-label' className='text-sm font-medium text-stone-700 dark:text-neutral-100'
@@ -2047,6 +2135,20 @@ ${block}`
                       style={savedCustomThemesColors ? { backgroundColor: savedCustomThemesColors.buttonBg, color: savedCustomThemesColors.buttonText } : undefined}>
                       {showActivityStepLabels ? <Check {...lucideIconProps}
                         style={savedCustomThemesColors ? { color: savedCustomThemesColors.primaryButtonBg } : undefined} /> : <X {...lucideIconProps} />}
+                    </button>
+                  </div>
+
+                  <div className='flex items-center justify-between gap-3 rounded-2xl bg-neutral-50/70 px-3 py-3 dark:bg-neutral-900/10'
+                    style={settingsSectionCardStyle}>
+                    <span id='highlighted-turn-files-label' className='text-sm font-medium text-stone-700 dark:text-neutral-100'
+                      style={settingsSectionTitleStyle}>
+                      Show modified files for the highlighted turn only
+                    </span>
+                    <button type='button' className={iconButtonClass} aria-labelledby='highlighted-turn-files-label'
+                      aria-pressed={showHighlightedTurnFiles} onClick={() => saveHighlightedTurnFiles(!showHighlightedTurnFiles)}
+                      title={showHighlightedTurnFiles ? 'Show files from the whole branch' : 'Show files from the highlighted turn'}
+                      style={savedCustomThemesColors ? { backgroundColor: savedCustomThemesColors.buttonBg, color: savedCustomThemesColors.buttonText } : undefined}>
+                      {showHighlightedTurnFiles ? <Check {...lucideIconProps} /> : <X {...lucideIconProps} />}
                     </button>
                   </div>
 
@@ -2772,6 +2874,7 @@ ${block}`
                 >
                   <div className='min-h-0 overflow-hidden'>
                     <div className='space-y-4 px-3 pb-3 pt-1'>
+                    {open && hooksExpanded && <ClaudeHookSettings conversationId={conversationId} projectId={selectedProject?.id} />}
                     {hooksExpanded && <HookGenerationSettings />}
                     <div className='flex items-center justify-between gap-3'>
                       <p className='text-sm text-neutral-600 dark:text-neutral-400'>

@@ -18,16 +18,18 @@ import {
   formatToolResultSummary,
   MESSAGE_BLOCK_INSET_CLASS,
   MONO_DETAIL_CLASS,
-  MONO_KEY_CLASS,
   parseMcpQualifiedName,
   stringifyToolValue,
   SURFACE_CARD_CLASS,
   TOOL_NAME_BASE_CLASS,
   TOOL_NAME_ERROR_CLASS,
   TOOL_NAME_RUNNING_CLASS,
+  TOOL_FIELD_KEY_CLASS,
+  TOOL_FIELD_PUNCTUATION_CLASS,
   TOOL_NAME_SUCCESS_CLASS,
   type ToolCallRenderGroup,
 } from './chatMessageShared'
+import type { ToolCardThemeCssProperties } from './toolCardPalette'
 import {
   Badge,
   DisclosurePanel,
@@ -59,6 +61,8 @@ export interface ToolCallGroupCardProps {
   disableExpandTransition?: boolean
   onExpandTransitionEnd?: () => void
   contentStyle?: React.CSSProperties
+  /** `--tool-*` palette variables from `getToolCardThemeVars`, set on the card wrapper. */
+  themeVars?: ToolCardThemeCssProperties
   truncateToolOutput: boolean
   readOnly?: boolean
   toolDefinitions: ToolDefinition[]
@@ -160,6 +164,7 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
   disableExpandTransition,
   onExpandTransitionEnd,
   contentStyle,
+  themeVars,
   truncateToolOutput,
   readOnly = false,
   toolDefinitions,
@@ -182,7 +187,6 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
   const parsedMcp = isMcpInvoke
     ? { serverName: group.args?.name, toolName: group.args?.tool }
     : isMcpGroup ? parseMcpQualifiedName(rawName) : null
-  const mcpServerName = parsedMcp?.serverName
   const hasResults = group.results.length > 0
   const resultSummary = hasResults ? formatToolResultSummary(group.results[0].content) : null
   const hasIncompleteResult = group.results.some(isIncompleteToolResult)
@@ -222,7 +226,10 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
     </button>
   )
 
-  const wrapperStyle = contentStyle
+  // The key/value palette rides on the wrapper so every variant (generic, edit, plan, task)
+  // inherits the same `--tool-*` variables.
+  const wrapperStyle: React.CSSProperties | undefined =
+    themeVars || contentStyle ? { ...themeVars, ...contentStyle } : undefined
 
   // Inspection-only previews share presentation, but never mount executable
   // HTML/MCP apps or offer tool navigation/mutation actions.
@@ -310,7 +317,8 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
           <FieldRows record={Object.keys(fields).length > 0 ? fields : null} fallback={{ key: 'route', value: route }} />
           {!route && errorText && (
             <div className={`${MONO_DETAIL_CLASS} text-red-600 dark:text-red-400`}>
-              <span className={MONO_KEY_CLASS}>error:</span> {errorText}
+              <span className={TOOL_FIELD_KEY_CLASS}>error</span>
+              <span className={TOOL_FIELD_PUNCTUATION_CLASS}>:</span> {errorText}
             </div>
           )}
           {warnings.length > 0 && (
@@ -467,19 +475,13 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
     )
   }
 
-  // Generic tool: collapsible row, inputs and outputs inside.
+  // Remaining tools show either inline HTML output or collapsible inputs and results.
   const isSubagent = normalizedName === 'subagent' || normalizedName === 'subagent_manager'
   const isSubagentSpawn =
     normalizedName === 'subagent' ||
     (normalizedName === 'subagent_manager' && String(group.args?.action ?? '').toLowerCase() === 'spawn')
   const pathContent = extractPathParam(group.args)
-  const htmlResultKeys = group.results
-    .map((result, resultIdx) =>
-      extractHtmlFromToolResult(result.content)?.html ? `${messageId}-${group.id}-result-${resultIdx}` : null
-    )
-    .filter((key): key is string => Boolean(key))
-  const primaryHtmlResultKey = htmlResultKeys[0]
-  const hasHtmlOutput = !readOnly && htmlResultKeys.length > 0
+  const firstHtmlResult = readOnly ? -1 : group.results.findIndex(result => Boolean(extractHtmlFromToolResult(result.content)))
 
   const getGenericToolOutputPreview = (value: unknown) => {
     const text = stringifyToolValue(value)
@@ -534,18 +536,14 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
 
   const trailing = (
     <>
-      {isMcpGroup && mcpServerName && loadAppPill(mcpServerName, `${messageId}-${group.id}-mcp`)}
-      {primaryHtmlResultKey && viewerPill(primaryHtmlResultKey)}
       {isSubagentSpawn && transcriptPill(group.id)}
       {soleNestedSubagent && transcriptPill(soleNestedSubagent.toolCallId)}
     </>
   )
-  const hasTrailing = Boolean(
-    (isMcpGroup && mcpServerName) || primaryHtmlResultKey || isSubagentSpawn || soleNestedSubagent
-  )
+  const hasTrailing = Boolean(isSubagentSpawn || soleNestedSubagent)
 
   const renderInputs = () => {
-    if (hasHtmlOutput || !group.args || Object.keys(group.args).length === 0) return null
+    if (!group.args || Object.keys(group.args).length === 0) return null
 
     if (normalizedName === 'multi_call' && Array.isArray(group.args.calls)) {
       const calls: any[] = group.args.calls
@@ -707,9 +705,30 @@ export const ToolCallGroupCard: React.FC<ToolCallGroupCardProps> = ({
         <SectionLabel label='output'>{group.results.length > 1 && <Badge>{`result ${resultIdx + 1}`}</Badge>}</SectionLabel>
         <SurfaceCard badge={outputStatus ? <Badge tone={outputStatus.tone}>{outputStatus.label}</Badge> : undefined}>
           <div className={errorTextClass}>
-            <FieldRows record={outputRecord} fallback={outputRecord ? undefined : { key: 'content', value: result.content }} />
+            <FieldRows
+              record={outputRecord}
+              fallback={outputRecord ? undefined : { key: 'content', value: result.content }}
+              palette={!errorTextClass}
+            />
           </div>
         </SurfaceCard>
+      </div>
+    )
+  }
+
+  // HTML app output is an artifact, not a disclosure. Keep the existing viewer key and iframe.
+  if (firstHtmlResult >= 0) {
+    return (
+      <div className='min-w-0 max-w-full' style={wrapperStyle} data-chat-block='tool'>
+        <div className={STATIC_ROW_CLASS}>
+          <ToolName name={rawName || 'tool'} tone={tone} />
+          <span className='min-w-0 flex-1' />
+          {viewerPill(`${messageId}-${group.id}-result-${firstHtmlResult}`)}
+          {hasTrailing && trailing}
+        </div>
+        <div className={`${DISCLOSURE_BODY_CLASS} space-y-2`}>
+          {group.results.map(renderResult)}
+        </div>
       </div>
     )
   }

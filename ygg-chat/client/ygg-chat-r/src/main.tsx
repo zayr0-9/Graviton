@@ -28,6 +28,7 @@ import App from './App'
 import { AuthProvider } from './contexts/AuthContext'
 import './index.css'
 import { applyAppFontSettings, FONT_SETTINGS_CHANGE_EVENT, FONT_SETTINGS_STORAGE_KEY } from './helpers/fontSettingsStorage'
+import { initializeThemePreference } from './helpers/themePreference'
 import { initClientTelemetry } from './services/clientTelemetry'
 import { store, startStoreServices } from './store/store'
 import { bootstrapHostRuntime, getHostRuntime } from './services/hostRuntimeBootstrap'
@@ -84,60 +85,9 @@ const persister = createSyncStoragePersister({
 // Initialize Electron-only client error telemetry early in app startup.
 initClientTelemetry()
 
-// Global theme manager: keeps the `dark` class in sync with user preference and system theme
-// Runs once per page load (guarded for HMR) so it applies across all routes
-;(function initThemeManager() {
-  if (typeof window === 'undefined') return
-  const w = window as any
-  if (w.__yggThemeInit) return
-  w.__yggThemeInit = true
-
-  const media = window.matchMedia('(prefers-color-scheme: dark)')
-
-  const apply = () => {
-    try {
-      const pref = localStorage.getItem('theme') // 'light' | 'dark' | null (null => system)
-      const isDark = pref === 'dark' || (pref !== 'light' && media.matches)
-      document.documentElement.classList.toggle('dark', isDark)
-      
-      // Notify Electron to update title bar colors
-      if (window.electronAPI?.theme?.update) {
-        window.electronAPI.theme.update(isDark)
-      }
-    } catch {
-      // If localStorage is blocked, fall back to system
-      const isDark = media.matches
-      document.documentElement.classList.toggle('dark', isDark)
-      
-      // Notify Electron to update title bar colors
-      if (window.electronAPI?.theme?.update) {
-        window.electronAPI.theme.update(isDark)
-      }
-    }
-  }
-
-  // Initial apply
-  apply()
-
-  // Update on system theme changes only when following system (no explicit preference)
-  const onMediaChange = () => {
-    try {
-      if (!localStorage.getItem('theme')) apply()
-    } catch {
-      apply()
-    }
-  }
-  if (typeof media.addEventListener === 'function') {
-    media.addEventListener('change', onMediaChange)
-  } else if (typeof (media as any).addListener === 'function') {
-    ;(media as any).addListener(onMediaChange)
-  }
-
-  // React to preference changes from other tabs/windows
-  window.addEventListener('storage', e => {
-    if (e.key === 'theme') apply()
-  })
-})()
+// Keep the document and native theme in sync across routes, even without a sidebar.
+const disposeThemePreference = initializeThemePreference()
+import.meta.hot?.dispose(disposeThemePreference)
 
 // Edit diff expansion animation preference: default off for virtualized-list scrolling performance.
 ;(function initEditDiffAnimationPreference() {

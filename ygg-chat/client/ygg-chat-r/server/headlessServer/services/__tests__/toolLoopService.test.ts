@@ -1425,22 +1425,23 @@ describe('context_status estimated same-turn results', () => {
 
 
 describe('ToolLoopService REPL capture (in-memory sink)', () => {
-  it('keeps nested data out of model/history while retaining execution events and lazy instructions', async () => {
+  it.each(['read_file', 'multi_call'])('keeps nested %s data out of model/history while retaining execution events and lazy instructions', async tool => {
     const providerRouter = new FakeProviderRouter()
     providerRouter.enqueue({ content: '', toolCalls: [{ id: 'capture', name: 'repl', arguments: {
-      action: 'invoke', tool: 'read_file', args: { path: 'src/a.ts' }, assign: 'source',
+      action: 'invoke', tool, assign: 'source',
+      args: tool === 'multi_call' ? { calls: [{ tool: 'read_file', args: { path: 'src/a.ts' } }] } : { path: 'src/a.ts' },
     } }] })
     providerRouter.enqueue({ content: 'Stored for later processing.' })
     const sessions = new ReplSessions()
     const sink = new FakeSink()
     const events: any[] = []
     const collectLazyInjections = vi.fn(async () => [])
-    const executeTool = createReplDispatchExecutor(async () => ({ content: 'RAW_CONTENT_MUST_NOT_REACH_MODEL' }), sessions)
+    const executeTool = createMultiCallDispatchExecutor(createReplDispatchExecutor(async () => ({ content: 'RAW_CONTENT_MUST_NOT_REACH_MODEL' }), sessions))
     try {
       const service = new ToolLoopService({ sink, providerRouter: providerRouter as any, executeTool })
       await service.run({
         ...baseRunInput, lineageId: 'repl-branch', operationMode: 'plan',
-        tools: ['repl', 'read_file'].map(name => ({ name, description: name, inputSchema: { type: 'object', properties: {} } })),
+        tools: ['repl', 'multi_call', 'read_file'].map(name => ({ name, description: name, inputSchema: { type: 'object', properties: {} } })),
         contextLoader: { collectLazyInjections, buildPostCompactionInjection: async () => null },
       }, e => events.push(e))
       expect(JSON.stringify(providerRouter.calls)).not.toContain('RAW_CONTENT_MUST_NOT_REACH_MODEL')

@@ -40,13 +40,15 @@ export interface ToolBridgeDecision {
   error?: string
 }
 
-export type Decision = PermissionDecision | OperationModeUpgradeDecision | ClarifyDecision | ToolBridgeDecision
-export type DecisionKind = 'permission' | 'operation_mode_upgrade' | 'clarify' | 'tool_bridge' | 'any'
+export type TranscriptRevisionDecision = 'approve_transcript_revision' | 'decline_transcript_revision'
+export type Decision = PermissionDecision | OperationModeUpgradeDecision | TranscriptRevisionDecision | ClarifyDecision | ToolBridgeDecision
+export type DecisionKind = 'permission' | 'operation_mode_upgrade' | 'transcript_revision' | 'clarify' | 'tool_bridge' | 'any'
 
 function decisionMatchesKind(kind: DecisionKind, decision: Decision): boolean {
   if (kind === 'any') return true
   if (kind === 'permission') return decision === 'allow_once' || decision === 'allow_always' || decision === 'allow_auto' || decision === 'deny'
   if (kind === 'operation_mode_upgrade') return decision === 'switch_to_execute' || decision === 'deny'
+  if (kind === 'transcript_revision') return decision === 'approve_transcript_revision' || decision === 'decline_transcript_revision'
   if (!decision || typeof decision !== 'object' || Array.isArray(decision)) return false
   if (kind === 'clarify') return 'answers' in decision || 'cancelled' in decision
   return 'result' in decision || 'error' in decision
@@ -99,7 +101,7 @@ export class DecisionBroker {
   }
 
   receipt(streamId: string, toolCallId: string) {
-    for (const kind of ['permission', 'operation_mode_upgrade', 'clarify', 'tool_bridge', 'any']) {
+    for (const kind of ['permission', 'operation_mode_upgrade', 'transcript_revision', 'clarify', 'tool_bridge', 'any']) {
       const receipt = this.settlements.get(`${keyFor(streamId, toolCallId)}::${kind}`) ?? this.receipts?.get(streamId, toolCallId, kind)
       if (receipt) return receipt.event
     }
@@ -202,7 +204,7 @@ export class DecisionBroker {
   resolve(streamId: string, toolCallId: string, decision: Decision): boolean {
     const key = keyFor(streamId, toolCallId)
     const entry = this.pending.get(key)
-    if (!entry) return (['permission', 'operation_mode_upgrade', 'clarify', 'tool_bridge', 'any'] as DecisionKind[]).some(kind =>
+    if (!entry) return (['permission', 'operation_mode_upgrade', 'transcript_revision', 'clarify', 'tool_bridge', 'any'] as DecisionKind[]).some(kind =>
       decisionMatchesKind(kind, decision) && (this.settlements.get(`${key}::${kind}`) ?? this.receipts?.get(streamId, toolCallId, kind))?.fingerprint === this.fingerprint(decision))
     if (!decisionMatchesKind(entry.kind, decision)) return false
 

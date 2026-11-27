@@ -129,6 +129,10 @@ export function projectCompactionTool(name: string, args: Record<string, unknown
   if (depth >= MAX_NESTING) return { input: { omitted: 'nesting limit' } }
   const policy = COMPACTION_TOOL_POLICIES[name] ?? 300
   const result = decodeCompactionResult(rawResult)
+  if (name === 'revise_transcript') return {
+    input: pick(args, ['action', 'messageId', 'block', 'offset']),
+    output: pick(result, ['applied', 'messageId', 'revisionId', 'count', 'nextOffset']),
+  }
   if (policy === 'input') return { input: args }
   if (policy === 'file') return {
     input: name === 'read_file' || name === 'read_files' || name === 'read_file_continuation' ? args : pick(args, FILE_INPUT_KEYS),

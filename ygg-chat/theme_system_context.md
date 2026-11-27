@@ -142,6 +142,24 @@ Current notable consumers:
 
 ---
 
+## 3.1 Derived colours (no new tokens)
+
+Some surfaces need a variant of a token rather than a token of their own. They derive it at
+render time instead of extending the schema:
+
+- `client/ygg-chat-r/src/components/ThemeManager/colorModulation.ts`: `parseCssColor`,
+  `modulateColor` (saturation multiplier, lightness offset, alpha multiplier, mix toward another
+  colour) and `mixRgba`. Unparseable values fall back to CSS relative colour syntax when the
+  runtime supports it, otherwise pass through unchanged.
+- `client/ygg-chat-r/src/components/ChatMessage/toolCardPalette.ts`: the tool card key/value
+  palette. Each slot names a `markdownSyntax*` token plus a light and dark modulation;
+  `getToolCardThemeVars` resolves them to `--tool-*` variables that `ChatMessage` memoizes and
+  `ToolCallGroupCard` sets on each card wrapper.
+
+Editing a `markdownSyntax*` token in the ThemeManager therefore recolours both code blocks and
+tool cards. To change how tool cards look relative to code blocks, edit the modulation spec, not
+the theme.
+
 ## 4) Schema details and invariants
 
 `CustomChatTheme` is `version: 1` with a fixed `colors` shape.

@@ -13,6 +13,7 @@ export const CHAT_MODE_ALLOWED_TOOL_NAMES = new Set([
   'brave_search',
   'fetch_chats',
   'context_status',
+  'revise_transcript', // Scoped app display only; a user /revise turn and a separate exact-diff approval are required.
   'switch_mode', // Leaving Chat mode goes through its own user-approval dialog.
   'fetch_notes',
   'finance',

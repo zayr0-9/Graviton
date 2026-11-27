@@ -1,3 +1,4 @@
+import { isReasoningLevel } from '../../../../../shared/reasoningLevel.js'
 import { randomUUID } from 'node:crypto'
 import { hostEpoch } from '../../hostEpoch.js'
 import type { RunAdmissionService } from '../services/runAdmissionService.js'
@@ -99,6 +100,10 @@ function validSelectedFiles(value: unknown): boolean {
     typeof file.relativePath === 'string' && file.relativePath.length <= 4096 && typeof file.contents === 'string' &&
     Number.isSafeInteger(file.contentLength) && file.contentLength >= 0 && file.contentLength <= 2_000_000))
 }
+function readUserDisplayName(value: unknown): string | undefined {
+  return typeof value === 'string' ? value.trim().slice(0, 64) || undefined : undefined
+}
+
 function buildHeadlessMessageRequest(req: Request, operation: HeadlessChatOperation): HeadlessMessageRequest {
   const body = req.body ?? {}
   if (!validSelectedFiles(body.selectedFiles ?? body.selected_files)) throw new Error('Invalid selected file context')
@@ -122,6 +127,7 @@ function buildHeadlessMessageRequest(req: Request, operation: HeadlessChatOperat
     accessToken: null,
     accountId: null,
     systemPrompt: body.systemPrompt ?? body.system_prompt ?? null,
+    userDisplayName: readUserDisplayName(body.userDisplayName),
     operationModePrompt: body.operationModePrompt ?? body.operation_mode_prompt ?? null,
     agentModePrompt: body.agentModePrompt ?? body.agent_mode_prompt ?? null,
     subagentModePrompt: body.subagentModePrompt ?? body.subagent_mode_prompt ?? null,
@@ -137,6 +143,7 @@ function buildHeadlessMessageRequest(req: Request, operation: HeadlessChatOperat
     isElectron: typeof body.isElectron === 'boolean' ? body.isElectron : undefined,
     imageConfig: body.imageConfig ?? body.image_config,
     reasoningConfig: body.reasoningConfig ?? body.reasoning_config,
+    reasoningLevel: isReasoningLevel(body.reasoningLevel) ? body.reasoningLevel : undefined,
     subagentReasoningEffort:
       body.subagentReasoningEffort === 'low' || body.subagentReasoningEffort === 'medium' || body.subagentReasoningEffort === 'high' || body.subagentReasoningEffort === 'xhigh'
         ? body.subagentReasoningEffort
@@ -564,6 +571,7 @@ export function registerChatRoutes(app: Express, deps: RegisterChatRoutesDeps): 
   })
   app.post('/api/conversations/:id/streams/:streamId/queue', (req, res) => {
     const { requestId, content, attachmentsBase64, selectedFiles, fullAccess, fullAccessNotificationId, operationMode } = req.body ?? {}
+    const userDisplayName = readUserDisplayName(req.body?.userDisplayName)
     if (typeof requestId !== 'string' || !requestId || requestId.length > 128 || typeof content !== 'string' || !content.trim() ||
       (operationMode != null && operationMode !== 'plan' && operationMode !== 'execute') ||
       content.length > 200_000 || !validSelectedFiles(selectedFiles) || (fullAccess != null && typeof fullAccess !== 'boolean') ||
@@ -578,13 +586,13 @@ export function registerChatRoutes(app: Express, deps: RegisterChatRoutesDeps): 
       if (!orchestrator.submitQueuedMessage || !runSessions || !resumableRuns) throw new Error('Queued messages require resumable runs')
       if (deps.admissions) {
         const result = deps.admissions.enqueue(String(req.params.id), String(req.params.streamId),
-          { requestId, content, attachmentsBase64, selectedFiles, fullAccess, fullAccessNotificationId,
+          { requestId, content, attachmentsBase64, selectedFiles, fullAccess, fullAccessNotificationId, userDisplayName,
             ...(operationMode ? { operationMode } : {}) },
           typeof req.body?.epoch === 'string' ? req.body.epoch : hostEpoch)
         res.json(result); return
       }
       const result = orchestrator.submitQueuedMessage(String(req.params.id), String(req.params.streamId), {
-        requestId, content, attachmentsBase64, selectedFiles, fullAccess, fullAccessNotificationId,
+        requestId, content, attachmentsBase64, selectedFiles, fullAccess, fullAccessNotificationId, userDisplayName,
         ...(operationMode ? { operationMode } : {}),
       })
       if (result.restart) {
@@ -637,7 +645,7 @@ export function registerChatRoutes(app: Express, deps: RegisterChatRoutesDeps): 
     }
     let decision: Decision
     if (typeof body.decision === 'string') {
-      const allowedDecisions = new Set(['allow_once', 'allow_always', 'allow_auto', 'deny', 'switch_to_execute'])
+      const allowedDecisions = new Set(['allow_once', 'allow_always', 'allow_auto', 'deny', 'switch_to_execute', 'approve_transcript_revision', 'decline_transcript_revision'])
       if (!allowedDecisions.has(body.decision)) {
         sendJsonError(res, 400, 'Invalid decision value', 'decision_not_delivered')
         return

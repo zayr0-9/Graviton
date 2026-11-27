@@ -1,10 +1,8 @@
 import { GlobalWorkerOptions, getDocument } from 'pdfjs-dist'
+import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
+import { FileInsertionError } from '../features/fileInsertion/fileInsertionError'
 
-// Set worker source relative to the public folder or use a CDN as a fallback
-// For Vite, we can trying importing via ?url if available, but a reliable method without extra config
-// is often pointing to a CDN or a manually copied worker.
-// Using unpkg for simplicity to match the installed version.
-GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${'5.4.449'}/build/pdf.worker.min.mjs`
+GlobalWorkerOptions.workerSrc = workerUrl
 
 interface PdfTextItem {
   str?: string
@@ -40,27 +38,44 @@ const buildLineAwareText = (items: PdfTextItem[]): string => {
     .join('\n')
 }
 
-export async function extractTextFromPdf(file: File): Promise<string> {
+export async function extractTextFromPdf(
+  file: File,
+  { signal, maxChars = Infinity, maxPages = Infinity }: { signal?: AbortSignal; maxChars?: number; maxPages?: number } = {},
+): Promise<string> {
+  const data = await file.arrayBuffer()
+  signal?.throwIfAborted()
+  const loadingTask = getDocument({ data, isEvalSupported: false, useSystemFonts: false })
+  const destroy = () => loadingTask.destroy().catch(() => undefined)
+  let cleanup: Promise<void | undefined> | undefined
+  const abort = () => { cleanup ??= destroy() }
+  signal?.addEventListener('abort', abort, { once: true })
   try {
-    const arrayBuffer = await file.arrayBuffer()
-    const loadingTask = getDocument({ data: arrayBuffer })
     const pdf = await loadingTask.promise
-
+    if (pdf.numPages > maxPages) throw new FileInsertionError(`PDFs are limited to ${maxPages} pages. Try a smaller excerpt.`)
     let fullText = ''
 
     for (let i = 1; i <= pdf.numPages; i++) {
+      signal?.throwIfAborted()
       const page = await pdf.getPage(i)
       const textContent = await page.getTextContent()
       const pageText = buildLineAwareText(textContent.items as PdfTextItem[])
 
+      page.cleanup()
       if (pageText) {
+        if (fullText.length + pageText.length > maxChars) throw new FileInsertionError('Too much text to insert. Try a smaller excerpt.')
         fullText += pageText + '\n\n'
       }
     }
 
     return fullText.trim()
   } catch (error) {
-    console.error('Error extracting text from PDF:', error)
-    throw new Error('Failed to extract text from PDF')
+    signal?.throwIfAborted()
+    if (error instanceof Error && error.name === 'PasswordException') {
+      throw new FileInsertionError('This PDF is password-protected.')
+    }
+    throw error
+  } finally {
+    signal?.removeEventListener('abort', abort)
+    await (cleanup ?? destroy())
   }
 }

@@ -82,6 +82,8 @@ export interface ToolResultBlock {
   tool_use_id: string
   content: any
   is_error: boolean
+  /** Layout hint on compact history rows whose HTML output is still waiting for hydration. */
+  html_omitted?: boolean
   /** Native Claude Edit/Write hunks with real file line numbers. */
   patch?: ClaudeFilePatch
   /** The background task this call launched (a Claude Workflow, or a backgrounded Agent/Bash call). */
@@ -454,7 +456,7 @@ export interface CompositionState {
   imagePreparationError: string | null
   imagePreparationGeneration: number
   editingBranch: boolean // true when user is editing a branch; controls UI like hiding image drafts
-  branchEditModes?: { operationMode?: OperationMode; fastMode?: boolean; toolAutoApprove?: boolean; claudePlanMode?: boolean; claudeAutoMode?: boolean }
+  branchEditModes?: { operationMode?: OperationMode; fastMode?: boolean; reasoningLevel?: import('../../../../../shared/reasoningLevel').ReasoningLevel; toolAutoApprove?: boolean; claudePlanMode?: boolean; claudeAutoMode?: boolean; claudeUltracode?: boolean; fullAccess?: import('./branchFullAccess').FullAccessSubmission }
   branchEditMessageId?: MessageId
   branchEditModelSelection?: { provider: string; model: string | null }
   optimisticMessage: Message | null // temp message for instant UI feedback in web mode only
@@ -506,6 +508,7 @@ export interface InitializationState {
 
 export interface ToolCallPermissionRequest {
   toolCall: ToolCall
+  transcriptRevision?: import('../../../../../shared/transcriptRevision').TranscriptRevisionPreview
   // Set when the request originates from the server-owned loop (Phase 2): the
   // resolver thunk POSTs the decision to /api/resume keyed by these, instead of
   // resolving the in-process client-loop promise.
@@ -547,6 +550,7 @@ export interface ChatState {
    * resume correlation.
    */
   toolPermissionRequestsByStream: Record<string, ToolCallPermissionRequest>
+  transcriptRevisionRequestsByStream?: Record<string, ToolCallPermissionRequest>
   operationModeUpgradeRequestsByStream: Record<string, OperationModeUpgradeRequest>
   planClarificationRequestsByStream: Record<string, PlanClarificationRequest>
   toolAutoApprove: boolean
@@ -555,8 +559,10 @@ export interface ChatState {
   claudeAutoMode?: boolean
   /** Claude provider's default approval; undefined follows toolAutoApprove. */
   claudeToolAutoApprove?: boolean
-  /** Claude provider: run each turn with ultracode (standing Workflow orchestration). */
-  claudeUltracode?: boolean
+  /** Claude Ultracode choices scoped to the same branch keys as Fast mode. */
+  claudeUltracodeDrafts?: Record<string, boolean>
+  /** Session-only Full Access choices; never reconstructed from persisted messages. */
+  branchFullAccessChoices?: Record<string, import('./branchFullAccess').FullAccessSubmission>
   /**
    * Claude provider: Plan toggle or /plan choices for native plan mode, keyed by conversation and
    * branch tip like the other branch drafts. resolveBranchPlanMode combines them with the plan
@@ -571,6 +577,7 @@ export interface ChatState {
   operationModeDrafts: Record<string, OperationMode>
   branchModelDrafts?: Record<string, import('./branchModelSelection').BranchModelSelection>
   branchFastModeDrafts?: Record<string, boolean>
+  branchReasoningDrafts?: Record<string, import('../../../../../shared/reasoningLevel').ReasoningLevel>
   branchToolApprovalDrafts?: Record<string, boolean>
   /** Pending live switches, keyed by `operationModeChangeKey(conversationId, streamId)`. */
   operationModeChanges: Record<string, {
@@ -633,6 +640,8 @@ export interface SendMessagePayload {
   retrigger?: boolean
   imageConfig?: ImageConfig
   reasoningConfig?: ReasoningConfig
+  /** The branch's chosen level, recorded on persisted rows; defaults to the branch's resolved level. */
+  reasoningLevel?: import('../../../../../shared/reasoningLevel').ReasoningLevel
   serviceTier?: OpenAIServiceTier
   cwd?: string | null
   // Captured at send time: 'plan' = Chat Mode, 'execute' = Agent Mode.
@@ -656,6 +665,9 @@ export interface EditMessagePayload {
   modelOverride?: string
   systemPrompt?: string
   think: boolean
+  reasoningConfig?: ReasoningConfig
+  /** The branch's chosen level, recorded on persisted rows; defaults to the branch's resolved level. */
+  reasoningLevel?: import('../../../../../shared/reasoningLevel').ReasoningLevel
   serviceTier?: OpenAIServiceTier
   cwd?: string | null
   // Captured at send time: 'plan' = Chat Mode, 'execute' = Agent Mode.

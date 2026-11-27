@@ -158,7 +158,7 @@ describe('registerChatRoutes', () => {
     })
   })
 
-  it('forwards operation mode prompt settings', async () => {
+  it('forwards operation mode prompt settings and the display name separately', async () => {
     await fetch(`${baseUrl}/api/conversations/c1/messages`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -167,6 +167,7 @@ describe('registerChatRoutes', () => {
         operationMode: 'plan',
         includeOperationModePrompt: false,
         operationModePrompt: 'Custom Plan baseline',
+        userDisplayName: 'Ada',
         agentModePrompt: 'Custom Agent baseline',
         subagentModePrompt: 'Custom Subagent baseline',
         planModeVerbosity: 'detailed',
@@ -177,6 +178,7 @@ describe('registerChatRoutes', () => {
       operationMode: 'plan',
       includeOperationModePrompt: false,
       operationModePrompt: 'Custom Plan baseline',
+      userDisplayName: 'Ada',
       agentModePrompt: 'Custom Agent baseline',
       subagentModePrompt: 'Custom Subagent baseline',
       planModeVerbosity: 'detailed',

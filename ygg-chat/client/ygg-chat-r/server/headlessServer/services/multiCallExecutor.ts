@@ -4,7 +4,7 @@ import type { ToolExecutionContext, ToolExecutor } from './toolLoopService.js'
 
 const MAX_CALLS = 20
 const MAX_CONCURRENCY = 4
-const FORBIDDEN_NESTED_TOOLS = new Set(['multi_call', 'html_renderer', 'switch_mode'])
+const FORBIDDEN_NESTED_TOOLS = new Set(['multi_call', 'html_renderer', 'switch_mode', 'revise_transcript'])
 
 type NestedCall = { tool?: unknown; toolName?: unknown; args?: unknown }
 
@@ -70,8 +70,10 @@ export async function executeMultiCall(
   context: ToolExecutionContext,
   executeNested: ToolExecutor
 ): Promise<{ results: MultiCallResult[]; parallel: boolean; stopOnError: boolean }> {
+  if (context.insideMultiCall) throw new Error('multi_call cannot invoke nested tool: multi_call')
   const args = parseArguments(toolCall)
   const calls = normalizeCalls(toolCall)
+  const nestedContext = { ...context, insideMultiCall: true }
   const parallel = args.parallel === true
   const stopOnError = args.stopOnError !== false
   const concurrency = Math.max(1, Math.min(Number.isInteger(args.maxConcurrency) ? args.maxConcurrency : MAX_CONCURRENCY, MAX_CONCURRENCY))
@@ -90,7 +92,8 @@ export async function executeMultiCall(
 
     try {
       assertToolAllowedForOperationMode(nestedToolCall, context.operationMode ?? 'execute')
-      const data = await executeNested(nestedToolCall, context)
+      context.assertReplCaptureAllowed?.(nestedToolCall)
+      const data = await executeNested(nestedToolCall, nestedContext)
       results[index] = { tool: call.tool, ok: true, data: modelSafeData(data) }
     } catch (error) {
       if (context.signal?.aborted || (error instanceof Error && error.name === 'AbortError')) throw error

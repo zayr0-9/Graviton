@@ -1,7 +1,7 @@
 {
   "name": "graviton",
   "private": true,
-  "version": "0.3.31",
+  "version": "0.3.36",
   "description": "YggChat desktop client",
   "homepage": "https://yggchat.com",
   "author": {
@@ -78,6 +78,7 @@
     "diff": "^8.0.3",
     "env-paths": "^3.0.0",
     "express": "^4.21.2",
+    "fflate": "^0.8.3",
     "framer-motion": "^12.23.12",
     "glob": "^13.0.0",
     "highlight.js": "^11.11.1",
@@ -96,6 +97,7 @@
     "react-markdown": "^10.1.0",
     "react-redux": "^9.2.0",
     "react-router-dom": "^7.6.2",
+    "read-excel-file": "^9.3.20",
     "recharts": "^2.15.4",
     "rehype-highlight": "^7.0.2",
     "rehype-katex": "^7.0.1",
@@ -104,6 +106,7 @@
     "remark-parse": "^11.0.0",
     "remark-stringify": "^11.0.0",
     "sanitize-html": "^2.17.0",
+    "saxen": "^11.2.0",
     "sqlite-vec": "^0.1.9",
     "strip-markdown": "^6.0.0",
     "tokenx": "^1.2.1",

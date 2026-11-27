@@ -1,6 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest'
 vi.mock('../utils/api', () => ({ buildLocalApiUrl: async (path: string) => `http://host/api${path}` }))
-vi.mock('../helpers/fullAccessSettings', () => ({ isFullAccessEnabled: () => false }))
 import { createHostAppClient } from './hostAppClient'
 afterEach(() => vi.unstubAllGlobals())
 it('serializes app calls and retries uncertain delivery with one immutable command', async () => {
@@ -17,6 +16,7 @@ it('serializes app calls and retries uncertain delivery with one immutable comma
   const client = createHostAppClient(() => ({ rootPath: '/work', mode: 'execute', toolName: 'app' }))
   await client.call('exec.run', { command: 'echo fixture' }, 'request')
   expect(calls.filter(([url]) => url.endsWith('/sessions'))).toHaveLength(1)
+  expect(JSON.parse(calls[0][1].body)).toMatchObject({ fullAccess: false })
   expect(calls[1][1].body).toBe(calls[2][1].body)
   expect(JSON.parse(calls[1][1].body)).toMatchObject({ requestId: 'request', method: 'exec.run' })
   client.dispose()

@@ -4,6 +4,7 @@
 
 import { CLAUDE_SESSION_SCHEMA } from './headlessServer/persistence/claudeSessionRepo.js'
 import { HEIMDALL_COLLAPSE_SCHEMA } from './headlessServer/persistence/heimdallCollapseRepo.js'
+import { TRANSCRIPT_REVISION_SCHEMA } from './headlessServer/persistence/transcriptRevisionRepo.js'
 import { opaqueMutationFence } from './nativeClientFence.js'
 import { allowsClientUpgrade } from './clientOriginPolicy.js'
 import { DECISION_RECEIPT_SCHEMA, installDecisionReceiptSchema } from './headlessServer/persistence/decisionReceiptRepo.js'
@@ -49,6 +50,7 @@ import { canFallbackToLocalExecution } from './tools/runtime/toolRuntimeSandbox.
 // server/server/builtinToolRegistry.ts with the registrations.
 import { registerHeadlessServerRoutes, stopHeadlessSessions } from './headlessServer/index.js'
 import { registerBrowserUiRoutes } from './routes/browserUiRoutes.js'
+import { jsonCompressionMiddleware } from './responseCompression.js'
 import { setServerInternalOrigin } from './serverHost.js'
 import { attachChatErrorCode } from './headlessServer/providers/providerErrorFormatter.js'
 import {
@@ -531,6 +533,11 @@ const SCHEMA_MIGRATIONS: SchemaMigration[] = [
     // Visual-only Heimdall collapse groups per conversation (CREATE ... IF NOT EXISTS).
     up: database => database.exec(HEIMDALL_COLLAPSE_SCHEMA),
   },
+  {
+    version: 14,
+    name: 'transcript_revisions',
+    up: database => database.exec(TRANSCRIPT_REVISION_SCHEMA),
+  },
 ]
 
 /**
@@ -906,6 +913,7 @@ function initializeLocalDatabase(dbPath: string) {
   db.exec(DECISION_RECEIPT_SCHEMA)
   db.exec(CLAUDE_SESSION_SCHEMA)
   db.exec(HEIMDALL_COLLAPSE_SCHEMA)
+  db.exec(TRANSCRIPT_REVISION_SCHEMA)
   runSchemaMigrations(db)
 
   db.exec(`
@@ -1722,6 +1730,8 @@ function setupServer() {
       exposedHeaders: ['Authorization'],
     })
   )
+  // Every finite JSON response negotiates gzip and carries an ETag; SSE never uses res.json.
+  app.use(jsonCompressionMiddleware)
   app.use('/api', opaqueMutationFence)
   app.use(express.json({ limit: '25mb' }))
 

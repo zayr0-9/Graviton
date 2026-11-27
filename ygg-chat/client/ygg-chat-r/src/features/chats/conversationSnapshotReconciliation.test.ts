@@ -57,3 +57,13 @@ it('explicit host deletion wins over protected live and stale fetched rows', () 
   const row = message('deleted', null)
   expect(reconcileConversationSnapshot({ fetchedMessages: [row], liveMessages: [row], protections: [{ messageIds: ['deleted'] }], deletedMessageIds: ['deleted'] })).toEqual([])
 })
+
+it('keeps a hydrated live row over a compacted fetched row of the same revision, but takes a newer compacted row', () => {
+  const hydrated: Message = { ...message('old', null, 'full'), revision: 3, content_blocks: [{ type: 'tool_result', index: 0, tool_use_id: 't', content: 'big output', is_error: false }] }
+  const compacted: Message = { ...message('old', null, 'full'), revision: 3, body_omitted: true, content_blocks: [{ type: 'tool_result', index: 0, tool_use_id: 't', is_error: false, omitted: true } as unknown as NonNullable<Message['content_blocks']>[number]] }
+  expect(reconcileConversationSnapshot({ fetchedMessages: [compacted], liveMessages: [hydrated] })).toEqual([hydrated])
+  const newer = { ...compacted, revision: 4 }
+  expect(reconcileConversationSnapshot({ fetchedMessages: [newer], liveMessages: [hydrated] })).toEqual([newer])
+  // A live row that is itself compacted does not shadow the fetched copy.
+  expect(reconcileConversationSnapshot({ fetchedMessages: [compacted], liveMessages: [compacted] })).toEqual([compacted])
+})

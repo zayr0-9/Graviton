@@ -11,6 +11,25 @@ export interface BranchModelSelection { provider: string; model: string | null }
 export const branchModelKey = (conversationId: unknown, tip: unknown) =>
   JSON.stringify([String(conversationId), tip == null ? null : String(tip)])
 
+export const lineageSettingsKey = (conversationId: unknown, lineageId: string) =>
+  branchModelKey(conversationId, `lineage:${lineageId}`)
+
+/** Conversation-only navigation can omit the lineage ID; the visible tip records its owner. */
+export function branchSettingsTarget(
+  chat: ChatState,
+  path = chat.conversation.currentPath,
+  conversationId = chat.conversation.currentConversationId,
+  lineageId = chat.conversation.currentLineageId,
+) {
+  if (conversationId == null) return { key: null, lineageId: null, mismatch: false }
+  const tip = path.at(-1) ?? null
+  const tipLineageId = tip == null ? null : chat.conversation.messages.find(row =>
+    String(row.id) === String(tip) && String(row.conversation_id) === String(conversationId))?.lineage_id ?? null
+  const resolvedLineageId = lineageId ?? tipLineageId
+  return { key: resolvedLineageId ? lineageSettingsKey(conversationId, resolvedLineageId) : branchModelKey(conversationId, tip),
+    lineageId: resolvedLineageId, mismatch: Boolean(lineageId && tipLineageId && lineageId !== tipLineageId) }
+}
+
 const providerKey = (name: string) => {
   const key = name.toLowerCase().replace(/[\s().-]/g, '')
   return key === 'google' ? 'gemini' : key === 'awsbedrock' || key === 'amazonbedrock' ? 'bedrock' : key === 'glm' ? 'zai' : key

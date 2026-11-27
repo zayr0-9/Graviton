@@ -510,6 +510,7 @@ export function projectServerEvent(event: ServerStreamEvent, ctx: ProjectionCont
       // Carry streamId + toolCallId so the resolver thunk can POST /resume (Phase 2).
       return [
         chatSliceActions.toolPermissionRequested({
+          ...(event.transcriptRevision ? { transcriptRevision: event.transcriptRevision } : {}),
           toolCall: { id: event.toolCallId, name: event.toolName, arguments: event.toolInput, status: 'pending' } as any,
           streamId,
           toolCallId: event.toolCallId,

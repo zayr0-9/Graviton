@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { isAgentsWindow } from '../platform/agentsWindow'
-import { isHostClient } from '../platform/clientCapabilities'
+import { isBrowserClient, isHostClient } from '../platform/clientCapabilities'
 import { useAppDispatch } from './redux'
 
 const FINISHED_RUNS_POLL_MS = 5000
@@ -14,15 +14,16 @@ const FINISHED_RUNS_POLL_MS = 5000
  * The chat modules load lazily: this hook sits under the pill's data hook, whose
  * importers should not pull in the chat store.
  */
-export function useHostAgentRunSync(hostRuns: ReadonlyArray<{ streamId: string; conversationId: string }>, liveForkKeys: ReadonlySet<string>) {
+export function useHostAgentRunSync(hostRuns: ReadonlyArray<{ streamId: string; conversationId: string }>, liveForkKeys: ReadonlySet<string>, showFinished: boolean) {
   const dispatch = useAppDispatch()
   const liveForkKeysRef = useRef(liveForkKeys)
   liveForkKeysRef.current = liveForkKeys
   const attemptedFinishedRef = useRef(new Set<string>())
   const attachedRef = useRef(new Set<string>())
 
+  const syncFinished = isHostClient && (!isBrowserClient || showFinished)
   useEffect(() => {
-    if (!isHostClient) return
+    if (!syncFinished) return
     const controller = new AbortController()
     let timer: ReturnType<typeof setTimeout> | undefined
     const poll = async () => {
@@ -34,7 +35,7 @@ export function useHostAgentRunSync(hostRuns: ReadonlyArray<{ streamId: string; 
     }
     void poll()
     return () => { controller.abort(); if (timer) clearTimeout(timer) }
-  }, [dispatch])
+  }, [dispatch, syncFinished])
 
   useEffect(() => {
     if (!isAgentsWindow()) return
